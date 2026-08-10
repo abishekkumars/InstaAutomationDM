@@ -20,10 +20,10 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-/// A human account. Provider-independent by design: the auth provider (Clerk vs Auth.js,
-/// decided in Phase 5) is not known yet, so this table never embeds a provider's own schema
-/// assumptions. `authProviderId` is where whichever provider ends up plugging in, once
-/// chosen — see docs/DATABASE.md, "User model" for the full reasoning.
+/// A human account. `authProviderId`/`authProvider` (Auth.js, Phase 5 — see
+/// docs/ADR/0004-authentication-provider.md) name which provider owns this identity;
+/// `passwordHash` exists only because the `Credentials` provider was chosen over an OAuth
+/// provider — see docs/DATABASE.md, "User model" for the full reasoning.
 model User {
   id String @id @default(cuid())
 
@@ -42,6 +42,12 @@ model User {
   /// same reason as `authProviderId`; kept separate rather than folded into a single
   /// "provider:id" string so each half stays independently queryable/indexable.
   authProvider String? @map("auth_provider")
+
+  /// Bcrypt hash of the account password (Auth.js `Credentials` provider, Phase 5 — see
+  /// docs/ADR/0004-authentication-provider.md). Nullable: a user created by a future OAuth
+  /// provider would have no password at all. Never the plaintext password; never selected
+  /// into any API/session response.
+  passwordHash String? @map("password_hash")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

@@ -20,8 +20,8 @@ needed renumbering. History (the Phase 0/1/2 reports) is preserved exactly as wr
 - [x] Phase 2 — Application shells: Next.js (`apps/web`) + NestJS (`apps/api`) + worker bootstrap (`apps/worker`). Absorbs what was originally planned as a separate "Phase 3 — NestJS backend shell" (see the numbering note above and the Phase 2 report below).
 - [x] Phase 2 stabilization — project-local Node runtime enforcement + diagnostics (`scripts/pnpm.ps1`, `scripts/doctor.ps1`). See "Phase 2 stabilization report" below.
 - [x] Phase 4 — PostgreSQL + Prisma (`User`/`Organization`/`OrganizationMember` foundation for auth + multi-tenancy). See "Phase 4 report" below.
-- [ ] **Phase 5 — Authentication** (Clerk vs Auth.js decision + implementation) — **next phase**
-- [ ] Phase 6 — Multi-tenancy (`organizations`, `organization_members`, tenant-isolation tests)
+- [x] Phase 5 — Authentication (Auth.js decision + real sign-in, see "Phase 5 report" below).
+- [ ] **Phase 6 — Multi-tenancy** (`organizations`, `organization_members`, tenant-isolation tests) — **next phase**
 - [ ] Phase 7 — Instagram account domain model (`instagram_accounts` table, no Zernio calls yet)
 - [ ] Phase 8 — Zernio provider abstraction (`InstagramProvider` interface + `ZernioInstagramProvider` skeleton)
 - [ ] Phase 9 — Zernio account connection (real OAuth flow)
@@ -435,9 +435,118 @@ confirmed via `git check-ignore -v`); `.tools/postgres-data/` and
 - Auth provider (Clerk vs Auth.js) still unresolved — Phase 5, next.
 - Local Redis strategy still unresolved — Phase 11.
 
+## Phase 5 report
+
+**Decision**: Auth.js (`next-auth@5`), `Credentials` provider — chosen over Clerk (paid,
+external account, not self-hosted) specifically because this project's requirement is
+open-source/free/self-hosted, and chosen over an OAuth provider within Auth.js because that
+would require external app registration + credentials from the user before this phase could
+proceed. Full reasoning, alternatives, and security review:
+`docs/ADR/0004-authentication-provider.md`.
+
+**What was built**
+- `packages/database`: `User.passwordHash` (nullable), one migration
+  (`20260810182347_add_password_hash`); `docs/DATABASE.md`'s `User` section rewritten to
+  match — `authProviderId`/`authProvider` finally populated (`"credentials"` / the user's
+  lowercased email), reserved since Phase 4 for exactly this.
+- `packages/validation`: scaffolded for real (previously an empty placeholder) —
+  `credentialsSchema` (Zod), builds to `dist/` via `tsc` the same way `packages/database`
+  does, since `apps/web` now consumes it as a real runtime dependency.
+- `apps/web`: `src/auth.config.ts` (Edge-safe: providers `[]`, `callbacks.authorized` for
+  route protection) + `src/auth.ts` (the real config: `Credentials` provider, `authorize()`
+  hashes/compares via `bcryptjs` against `packages/database`); `src/proxy.ts` (Next.js 16's
+  current name for `middleware.ts`) redirects unauthenticated requests to `/sign-in` for
+  every route except `/sign-in`, `/sign-up`, `/status`, and `/api/auth/*`;
+  `src/app/(auth)/actions.ts` (`signInAction`/`registerAction`/`signOutAction` server
+  actions); `/sign-in` and `/sign-up` pages with client-side form components using React
+  19's `useActionState`; `src/app/api/auth/[...nextauth]/route.ts` (Auth.js's own handler);
+  `src/types/next-auth.d.ts` (module augmentation adding `id` to `Session.user`);
+  `src/app/layout.tsx` now shows the signed-in user's email + a sign-out button, or a
+  sign-in link.
+- `.env.example`: `AUTH_SECRET`'s comment now points at the ADR and shows a local
+  PowerShell one-liner to generate a value — explicitly not an external credential.
+- Docs: `docs/ADR/0004-authentication-provider.md` (new); `docs/ARCHITECTURE.md` (stack
+  table + new "Authentication (Phase 5)" section, open-decisions entry removed);
+  `docs/SECURITY.md` (AuthN/AuthZ section rewritten); `docs/DATABASE.md` (`User` section +
+  migrations list + status line); `docs/DEVELOPMENT-SETUP.md` (new "Authentication (Phase
+  5)" section); `apps/web/README.md` (rewritten); this file.
+
+**A real regression found and fixed during this phase's own manual browser test** (per
+`CLAUDE.md`'s "start the dev server and use the feature in a browser" rule): `apps/web`'s
+plain `next dev`/`next start` fell back to the ambient `PORT=4000` env var (loaded from
+`.env` by Phase 4's `Import-DotEnv`, intended for `apps/api`), so `apps/web` tried to bind
+the same port as `apps/api` instead of `3000`. Fixed by pinning `-p 3000` explicitly in both
+scripts — confirmed via Next's own bundled CLI docs that an explicit flag always wins over
+the env var. Full detail: `docs/DEVELOPMENT-SETUP.md`'s Phase 5 section.
+
+**Also found while building this**: Next.js 16 deprecates the `middleware.ts` file
+convention in favor of `proxy.ts` (same API). Used the new name from the start since this is
+new code, not a migration — confirmed the deprecation warning disappears and the build
+output correctly still lists `ƒ Proxy (Middleware)`.
+
+**Commands executed and results**
+| Command | Result |
+|---|---|
+| `pnpm install` (adds `next-auth`, `bcryptjs`, `zod`, workspace links for `@automationdm/database`/`@automationdm/validation` into `apps/web`) | Exit 0. |
+| `prisma migrate dev --name add_password_hash` | Applied migration, regenerated Prisma Client 6.19.3. Reviewed the generated SQL by hand (single nullable column add) before proceeding. |
+| `pnpm --filter @automationdm/database run build` / `run test` | `tsc` exit 0; **11/11 vitest tests pass** (unchanged suite, confirms the new nullable column didn't break anything). |
+| `pnpm --filter @automationdm/validation run build` | `tsc`, exit 0 (first real build — was previously an empty placeholder). |
+| `pnpm --filter @automationdm/web run typecheck` / `run build` (1st attempt) | Both passed; build initially warned "middleware file convention is deprecated" — addressed by renaming to `proxy.ts` (see above), rebuilt clean afterward. |
+| Manual browser test: `pnpm --filter @automationdm/web run dev` (before the port fix), navigate to `http://localhost:3000` | **Failed** — server actually bound to `4000`, colliding with `apps/api`'s port; see the port regression above. |
+| Same, after pinning `-p 3000` | `http://localhost:3000/` correctly redirected (unauthenticated) to `/sign-in` via `src/proxy.ts`. |
+| Sign up at `/sign-up` with a fresh email/password | Account created, immediately signed in, redirected to `/`; header shows the email + "Sign out". |
+| Click "Sign out" | Session cleared, redirected to `/sign-in`. |
+| Sign in again with the same credentials | Succeeds, redirected to `/`, session restored. |
+| Sign in with the correct email + a wrong password | Rejected with "Invalid email or password." — no redirect, form re-rendered with the error. |
+| Sign up again with the same, now-existing email | Rejected with "An account with that email already exists." — no duplicate row created. |
+| Direct DB query (throwaway script, deleted after use) against the row created above | `authProvider: "credentials"`, `authProviderId: "<the email>"`, `passwordHash` present and bcrypt-formatted (`$2b$12$...`) — confirms the fields populate exactly as designed, and the hash, not the plaintext, is what's stored. |
+| `.\scripts\lint.ps1` (ESLint + typecheck across all 9 workspace projects + Prettier) | ESLint 0 errors, typecheck 9/9 `Done`, Prettier all pass. Exit 0. |
+| `.\scripts\test.ps1` | `packages/database`: 11/11 passed (unchanged). |
+| `pnpm --filter @automationdm/api run build` / `@automationdm/worker run build` | Both `nest build`/`tsc`, exit 0 — confirms this phase's schema/package changes didn't regress either app. |
+| `pnpm --filter @automationdm/validation run build` / `@automationdm/web run build` (final) | Both exit 0; `apps/web`'s route list now includes `/sign-in`, `/sign-up`, `/api/auth/[...nextauth]`, and `ƒ Proxy (Middleware)`. |
+| `node --version` / `npm --version`, fresh shell, throughout | `v16.13.0` / `8.1.0` at `C:\Program Files\nodejs` — **unchanged**. |
+
+**Files created**
+`docs/ADR/0004-authentication-provider.md`;
+`packages/database/prisma/migrations/20260810182347_add_password_hash/migration.sql`;
+`packages/validation/src/auth.ts`;
+`apps/web/src/{auth.config.ts,auth.ts,proxy.ts,types/next-auth.d.ts,app/(auth)/{actions.ts,sign-in-form.tsx,sign-up-form.tsx},app/sign-in/page.tsx,app/sign-up/page.tsx,app/api/auth/[...nextauth]/route.ts}`.
+
+**Files modified**
+`packages/database/{prisma/schema.prisma}`;
+`packages/validation/{package.json,tsconfig.json,src/index.ts,README.md}`;
+`apps/web/{package.json,src/app/layout.tsx,README.md}`; `.env.example`;
+`docs/{ADR n/a,ARCHITECTURE.md,SECURITY.md,DATABASE.md,DEVELOPMENT-SETUP.md}`; this file.
+`apps/web/AGENTS.md` and `apps/web/CLAUDE.md` were auto-generated by `next dev`/`next build`
+itself (Next.js 16's own per-directory agent guidance files, regenerated on every run) —
+committed rather than left as permanent uncommitted diffs, per the file's own instruction.
+
+**Files intentionally not committed**
+`.env` (gained a real local `AUTH_SECRET`, gitignored, generated for this phase's own
+verification — confirmed via `git check-ignore -v`, unchanged from Phase 4's `DATABASE_URL`
+handling).
+
+**Known limitations / risks**
+- `next-auth@5` is still on a `5.0.0-beta.*` tag (currently `beta.32`) despite roughly two
+  years of production use under that tag — a real, ongoing risk, tracked in the ADR rather
+  than hidden.
+- No password reset / email verification flow — out of scope for "real sign-in" as
+  literally requested; would need either an SMTP/email provider decision (its own
+  stop-and-ask point) or a manual admin-driven reset, whichever a future phase needs.
+- `apps/api` has no session verification / guards yet — it has no protected endpoint to
+  guard. Deferred to Phase 6, which is when the first real tenant-scoped API endpoint
+  arrives; noted in both the ADR and `docs/ARCHITECTURE.md`.
+- Local-only manual verification (one browser session, one dev machine) — no automated
+  Playwright/e2e coverage of the sign-in flow yet (`docs/TESTING.md`'s e2e layer isn't wired
+  up until a later phase); this phase's confidence comes from the manual browser walkthrough
+  above plus the unchanged `packages/database` test suite, not new automated tests.
+- Auth provider decision is now closed; **local Redis strategy remains the only open
+  decision** in `docs/ARCHITECTURE.md`.
+
 **Next phase**
 
-Phase 5 — Authentication: choose Clerk vs Auth.js (an explicit stop-and-decide point per
-`CLAUDE.md` — enabling either is a paid/external-service decision), then wire real sign-in
-and populate `User.authProviderId`/`authProvider` for the first time. Will not start until
-the user says to proceed.
+Phase 6 — Multi-tenancy: `Organization`/`OrganizationMember` already exist from Phase 4;
+this phase wires real org creation/membership into the authenticated session (every
+tenant-owned query scoped server-side by `organization_id`, never client input — per
+`docs/ARCHITECTURE.md`'s multi-tenancy rule), and is the first phase that needs `apps/api`
+to actually verify who's calling it. Will not start until the user says to proceed.

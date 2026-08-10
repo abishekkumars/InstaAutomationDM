@@ -20,7 +20,7 @@ rewrite — but none is extracted until there's a real operational reason to.
 | Database | PostgreSQL + Prisma | Relational data (orgs, contacts, automations) with strong migration story |
 | Queue | Redis + BullMQ | Webhook processing and DM sending must never block the HTTP request/response cycle |
 | External integration | Zernio API (Instagram via Meta Graph API under the hood) | See `docs/ZERNIO-INTEGRATION.md` |
-| Auth | Clerk or Auth.js — **not yet decided**, see Open Decisions | SaaS auth (orgs, invites, sessions) without hand-rolling password storage |
+| Auth | Auth.js (`next-auth` v5), `Credentials` provider | Open-source, free, self-hosted — see `docs/ADR/0004-authentication-provider.md` |
 | Object storage | S3-compatible, Cloudflare R2 in production | Media attachments, exports |
 | Infra | Docker Compose (dev), Nginx (self-hosted deploy), Cloudflare (DNS/CDN/WAF) | Per master spec; local dev fallback documented in `docs/DEVELOPMENT-SETUP.md` since Docker isn't installed on the current dev machine |
 
@@ -182,12 +182,28 @@ from client-supplied input — the service layer resolves it from the authentica
 session/membership on every request. Tenant isolation is covered by dedicated tests (see
 `docs/TESTING.md`), not just code review.
 
+## Authentication (Phase 5)
+
+Auth.js (`next-auth@5`) runs entirely inside `apps/web`'s own Next.js server process — a
+`Credentials` provider (email + bcrypt-hashed password) backed directly by
+`packages/database`'s `User.passwordHash`, JWT session strategy (no `Session`/`Account`
+adapter tables needed, since there's no OAuth token to persist). Registration is a Next.js
+server action that validates input with a `packages/validation` Zod schema, hashes the
+password, and creates the `User` row with `authProvider: "credentials"` and
+`authProviderId` set to the (lowercased) email — the first real population of those two
+fields, reserved since Phase 4. `apps/web/src/middleware.ts` redirects unauthenticated
+requests to `/sign-in` for every route except the auth pages themselves, `/status`, and
+Auth.js's own `/api/auth/*` routes.
+
+`apps/api` is untouched by this phase: it has no endpoint yet that reads/writes user-owned
+data, so there is nothing to guard with a session check. Verifying an Auth.js session from
+`apps/api` (or a NestJS `auth` module/guard) is deferred to whichever phase adds the first
+real protected API endpoint — see `docs/ADR/0004-authentication-provider.md` for the full
+reasoning, including why Clerk was rejected and why a `Credentials` provider was chosen over
+an OAuth provider.
+
 ## Open decisions (to resolve before the phase that needs them)
 
-- **Auth provider** (Clerk vs Auth.js) — decide in Phase 5. Clerk is faster to ship
-  multi-tenant org/invite flows out of the box; Auth.js avoids a paid third-party auth
-  dependency but means building org/invite UX by hand. Not decided yet — this is an
-  external-service choice, flagged for the user rather than picked unilaterally.
 - **Local Redis strategy** (Docker vs portable binaries vs cloud dev service) — decide in
   Phase 11. Postgres's equivalent decision is resolved: `docs/ADR/0003-local-postgresql-strategy.md`.
 - **pnpm workspaces vs Turborepo** — start with plain pnpm workspaces (section 7 of the

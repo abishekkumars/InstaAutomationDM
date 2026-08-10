@@ -1,9 +1,12 @@
 # Database Design
 
-Status: Phase 4 — `User`, `Organization`, `OrganizationMember` exist as real, migrated
-Prisma models (`packages/database/prisma/schema.prisma`), the minimum needed for Phase 5
-(Authentication) and Phase 6 (Multi-tenancy). Every other table below is still the Phase 0
-conceptual map, introduced only when the phase that needs it arrives.
+Status: Phase 5 — `User` gained `passwordHash` and had `authProviderId`/`authProvider`
+populated for the first time (Auth.js `Credentials` provider — see
+`docs/ADR/0004-authentication-provider.md`). `User`, `Organization`, `OrganizationMember`
+exist as real, migrated Prisma models (`packages/database/prisma/schema.prisma`), the
+minimum needed for Phase 5 (Authentication) and Phase 6 (Multi-tenancy). Every other table
+below is still the Phase 0 conceptual map, introduced only when the phase that needs it
+arrives.
 
 ## Engine
 
@@ -69,31 +72,46 @@ recorded now so it governs every future query from the start.
   user's orgs) — both are going to be hit on effectively every authenticated request once
   Phase 6 lands.
 - **Nullable fields**: nullable only when there's a real reason a value can legitimately be
-  absent (see `User.name`/`authProviderId`/`authProvider` below) — not as a default.
+  absent (see `User.name`/`authProviderId`/`authProvider`/`passwordHash` below) — not as a
+  default.
 
 ## `User`
 
-Provider-independent by design, because the auth provider (Clerk vs Auth.js) is an
-explicitly open decision (Phase 5) at the time this schema was written. Fields:
+Provider-independent by design — `id`, not `authProviderId`, is what every other table's FK
+points at, so the auth provider could change later without touching any other table. As of
+Phase 5 the provider is decided: Auth.js (`next-auth@5`), `Credentials` provider — see
+`docs/ADR/0004-authentication-provider.md` for why (open-source/free/self-hosted vs. Clerk,
+and why `Credentials` over an OAuth provider). Fields:
 
 - `id` — internal primary key (`cuid()`). Every other table's `userId` FK points here, not
   at any external provider's ID — this is what makes the provider swappable later without
   touching any other table.
 - `email` — unique. The one identity attribute virtually every provider supplies, and the
-  natural target for org invites (Phase 6).
+  natural target for org invites (Phase 6). Normalized to lowercase at the application layer
+  before every lookup/insert (Postgres's `unique` constraint is case-sensitive by default);
+  not enforced at the schema level since Prisma has no built-in case-insensitive unique
+  constraint for this column type.
 - `name` — nullable. Not every provider hands us a display name immediately (or a user may
-  not have set one yet).
-- `authProviderId` — nullable + unique `String`. Whatever opaque subject/ID the eventually-
-  chosen provider uses (a Clerk user ID, an Auth.js account ID, or any future provider's
-  `sub` claim). Nullable because no provider is wired up yet (Phase 5); reserving the field
-  now means Phase 5 populates it rather than migrating the schema to add it.
-- `authProvider` — nullable `String`, naming *which* provider `authProviderId` belongs to
-  (e.g. `"clerk"`, `"authjs"`). Kept as a separate field rather than folding into a single
-  `"provider:id"` string so each half stays independently queryable/indexable, and so a
-  provider migration (if it ever happens) can filter on `authProvider` directly.
-- No password fields of any kind — this project never stores passwords (see
-  `docs/SECURITY.md`); if a credentials-based flow is ever chosen in Phase 5, that decision
-  gets its own schema change and its own security review then, not a placeholder now.
+  not have set one yet). Unset by the Phase 5 registration flow (email/password only asks
+  for those two fields); a user can set it later once profile editing exists.
+- `authProviderId` — nullable + unique `String`. Populated as of Phase 5: the user's own
+  lowercased email, since a `Credentials` provider has no separate external "subject" the
+  way an OAuth provider's `sub` claim would be — email is the closest real analogue, and
+  kept distinct from `id` so a future OAuth provider migration could populate this
+  differently without touching `id`-based foreign keys anywhere else.
+- `authProvider` — nullable `String`, naming *which* provider `authProviderId` belongs to.
+  Populated as of Phase 5 with the literal value `"credentials"`. Kept as a separate field
+  rather than folding into a single `"provider:id"` string so each half stays independently
+  queryable/indexable, and so a provider migration (if it ever happens) can filter on
+  `authProvider` directly.
+- `passwordHash` — nullable `String`. Bcrypt hash (`bcryptjs`, cost factor 12) of the
+  account password, used by the `Credentials` provider's `authorize()` callback
+  (`apps/web/src/auth.ts`). Nullable because a user created by a future OAuth provider would
+  have no password at all. Never the plaintext password (hashed before the first `prisma`
+  call touches it), never selected into any API/session response, never logged — see
+  `docs/ADR/0004-authentication-provider.md`'s "Security considerations" for the full review
+  of why storing this doesn't conflict with this project's "never store passwords" rule
+  (that rule is about Instagram account passwords, not this project's own user accounts).
 
 ## `Organization`
 
@@ -188,6 +206,9 @@ Schema changes always go through a generated migration file committed to the rep
   `organization_members`, and the `OrganizationRole` enum — reviewed by hand (see
   `packages/database/prisma/migrations/20260810172436_init/migration.sql`) before being
   committed, not blindly trusted.
+- `20260810182347_add_password_hash` (Phase 5) adds the single nullable `users.password_hash`
+  column for the Auth.js `Credentials` provider — see
+  `docs/ADR/0004-authentication-provider.md`.
 
 ## Prisma client
 

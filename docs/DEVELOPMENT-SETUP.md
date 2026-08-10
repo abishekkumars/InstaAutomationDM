@@ -287,3 +287,36 @@ only in bypassing those wrapper scripts for ad hoc verification commands. **Take
 assume a `pnpm run <script>` invocation ran under the intended Node version just because it
 exited 0 — either use the wrapper scripts, or verify `node --version` inside the same shell
 session first.**
+
+## Authentication (Phase 5, 2026-08-10/11)
+
+Full decision record: `docs/ADR/0004-authentication-provider.md`. Short version: Auth.js
+(`next-auth@5`), `Credentials` provider (email + bcrypt-hashed password) — open-source,
+free, self-hosted, no external account/OAuth-app registration needed.
+
+**Setup**, beyond what Phase 4 already requires (local Postgres running):
+
+```powershell
+# Generate your own local AUTH_SECRET (not an external credential - a session-signing key
+# only this app ever sees) and put it in your local .env:
+powershell -NoProfile -Command "$b=New-Object byte[] 32; (New-Object System.Security.Cryptography.RNGCryptoServiceProvider).GetBytes($b); [Convert]::ToBase64String($b)"
+```
+
+Then sign up at `http://localhost:3000/sign-up`, or sign in at `/sign-in` if you already have
+an account — both are real, working flows against the local Postgres, not placeholders.
+
+**A real port-collision bug found and fixed while manually testing this in a browser** (per
+`CLAUDE.md`'s "start the dev server and use the feature in a browser" rule): `apps/web`'s
+`dev`/`start` scripts used to be plain `next dev`/`next start`, which fall back to reading
+the `PORT` env var when no `-p` flag is given. Since Phase 4's `Import-DotEnv` loads the
+whole repo-root `.env` — including `PORT=4000`, which is meant for `apps/api` — into every
+`scripts/pnpm.ps1`-wrapped process's environment, `apps/web` was silently also trying to
+bind port `4000`, colliding with `apps/api`. Fixed by pinning `apps/web`'s scripts to
+`next dev -p 3000` / `next start -p 3000` — an explicit CLI flag always wins over the `PORT`
+env var (confirmed via Next's own bundled CLI reference docs), so this is a small, local fix
+that doesn't touch `Import-DotEnv` or `apps/api`'s use of `PORT` at all.
+
+**Next.js 16 renamed `middleware.ts` to `proxy.ts`** (same API, new file-naming convention;
+the old name still works but logs a deprecation warning with a codemod pointer) — this
+project uses the new name (`apps/web/src/proxy.ts`) since Phase 5 is new code, not a
+migration.

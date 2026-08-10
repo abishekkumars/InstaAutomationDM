@@ -25,9 +25,18 @@ or query string). Covered by explicit cross-tenant tests, not just review.
 
 ## AuthN/AuthZ
 
-- AuthN: Clerk or Auth.js (decision pending, Phase 5).
+- AuthN: Auth.js (`next-auth@5`), `Credentials` provider — email + password, hashed with
+  `bcryptjs` (cost factor 12) before it ever touches the database; the plaintext password is
+  never logged, persisted, or returned in any response. Runs entirely server-side inside
+  `apps/web`; session is a signed JWT (`AUTH_SECRET`, local-only env var, never committed).
+  Chosen over Clerk (paid, external account, not self-hosted) and over wiring an OAuth
+  provider (would require external app registration + credentials from the user before this
+  phase could proceed) — full reasoning in `docs/ADR/0004-authentication-provider.md`. This
+  is specifically about *this project's own* user accounts — unrelated to, and does not
+  change, the Instagram-password rule below.
 - AuthZ: role-based within an organization (owner/admin/member — exact roles finalized
   Phase 6), enforced at the NestJS service layer via guards, not just hidden in the UI.
+  `apps/api` has no protected endpoints yet, so guard implementation is deferred to Phase 6.
 
 ## Webhooks
 
