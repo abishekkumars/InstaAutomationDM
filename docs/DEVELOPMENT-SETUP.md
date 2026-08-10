@@ -135,3 +135,29 @@ touching anything outside this folder.
   normal `PATH` are still `v16.13.0` / `8.1.0` at `C:\Program Files\nodejs` — unchanged.
 
 Full command log and file list: `docs/IMPLEMENTATION-ROADMAP.md`, "Phase 1 report".
+
+## Phase 2 update (2026-08-10): application dev commands, and a PATH gotcha
+
+Each app now has real `dev`/`build`/`start` scripts (via `pnpm --filter <name> run <script>`,
+or through `scripts/dev.ps1` for all three at once):
+
+| App | Dev | Build | Start (after build) |
+|---|---|---|---|
+| `apps/web` | `pnpm --filter @automationdm/web run dev` → http://localhost:3000 | `... run build` | `... run start` |
+| `apps/api` | `pnpm --filter @automationdm/api run dev` → http://localhost:4000/api/health | `... run build` (`nest build`) | `node apps/api/dist/main.js` |
+| `apps/worker` | `pnpm --filter @automationdm/worker run dev` | `... run build` (`tsc`) | `node apps/worker/dist/main.js` |
+
+**Important — always go through `scripts/*.ps1`, or explicitly prepend `.tools/node` to
+`PATH`, before invoking `pnpm`/`corepack` directly.** During Phase 2 verification, running
+`.\.tools\node\corepack.cmd pnpm ...` directly in a fresh PowerShell session — without first
+running `$env:PATH = ".tools\node;$env:PATH"` — invoked the right `pnpm`, but `pnpm` then
+spawned each script's process (`next build`, `nest build`, `tsc`) using whatever `node` was
+*first on that session's PATH*, which was still the machine's global Node 16. `next build`
+explicitly checks `process.version` and refused to run ("Node.js version \">=20.9.0\" is
+required"), which is what surfaced the bug; `nest build`/`tsc` have no such check and ran
+"successfully" under Node 16 anyway, silently, which is arguably worse. `scripts/_env.ps1`
+(sourced by every `scripts/*.ps1`) already does this `PATH` prepend correctly — the bug was
+only in bypassing those wrapper scripts for ad hoc verification commands. **Takeaway: never
+assume a `pnpm run <script>` invocation ran under the intended Node version just because it
+exited 0 — either use the wrapper scripts, or verify `node --version` inside the same shell
+session first.**

@@ -1,25 +1,64 @@
 # API Specification
 
-Status: Phase 0 placeholder. No `apps/api` endpoints exist yet (Phase 3 scaffolds the
-NestJS app; individual endpoints land with the phase that needs them: auth in Phase 5,
-instagram-accounts in Phase 7/9, webhooks in Phase 10, automations in Phase 12/13, etc.).
+Status: Phase 2 — `apps/api` exists as a minimal shell with one real endpoint
+(`GET /api/health`) plus the error/request-id foundation every future endpoint sits on.
+Business endpoints land with the phase that needs them: auth in Phase 5,
+instagram-accounts in Phase 7/9, webhooks in Phase 10, automations in Phase 12/13, etc.
 
-## Convention (applies once endpoints exist)
+## Convention
 
+- All routes are served under the global prefix `/api` (set in `apps/api/src/main.ts` via
+  `app.setGlobalPrefix('api')`).
 - REST, JSON bodies, resources scoped under the caller's organization implicitly (never a
   client-supplied `organizationId` in the path/body for tenant-owned resources — see
   `docs/DATABASE.md`/`docs/SECURITY.md`).
-- Versioned under `/v1` if/when a breaking change is ever needed; unversioned for the MVP
-  since there are no external API consumers yet.
-- Errors: consistent `{ error: { code, message, requestId } }` shape, no stack traces in
-  production responses (see `docs/SECURITY.md`).
-- `GET /health` and `GET /ready` from the start of `apps/api` existing (Phase 3), per the
-  observability requirement in the master spec — liveness vs. "ready to serve traffic"
-  (DB/Redis reachable) are distinct checks.
+- Versioned under `/api/v1` if/when a breaking change is ever needed; unversioned for the
+  MVP since there are no external API consumers yet.
+- Errors: every unhandled/thrown exception is caught by
+  `apps/api/src/common/filters/all-exceptions.filter.ts` and returned as
+  `{ error: { code, message, requestId } }` — `code` is the exception class name for
+  `HttpException`s (`NotFoundException`, `BadRequestException`, ...) or
+  `InternalServerError` otherwise; `message` is generic ("Internal server error") for
+  non-`HttpException`s so internals never leak (see `docs/SECURITY.md`); full detail is
+  logged server-side against the same `requestId`.
+- Every request gets an `X-Request-Id` response header — either echoed back from an
+  inbound `X-Request-Id` header, or generated (`crypto.randomUUID()`) by
+  `apps/api/src/common/middleware/request-id.middleware.ts`. This is the correlation id
+  used in server logs and in every error response body.
+- `GET /api/ready` is **deferred**, not forgotten: a readiness probe needs something real
+  to check (DB/Redis reachability), neither of which exists until Phase 4/11. Adding it now
+  would just hardcode `{status:"ready"}` with nothing behind it.
 
 ## Endpoint inventory
 
-Populated incrementally as each is actually implemented, with full request/response shape,
-auth requirement, and example — not speculatively written ahead of the NestJS controller
-that implements it, to avoid this document drifting from reality. Track "next endpoint to
-document" via `docs/IMPLEMENTATION-ROADMAP.md`.
+### `GET /api/health`
+
+Liveness check. No auth. Always `200` if the process is up.
+
+Response:
+```json
+{
+  "status": "ok",
+  "service": "api",
+  "timestamp": "2026-08-10T15:31:46.908Z",
+  "uptimeSeconds": 13
+}
+```
+
+### Error shape example
+
+`GET /api/does-not-exist` → `404`:
+```json
+{
+  "error": {
+    "code": "NotFoundException",
+    "message": "Cannot GET /api/does-not-exist",
+    "requestId": "5f1da08d-94a9-4d30-9787-61dad753b047"
+  }
+}
+```
+
+Further endpoints are documented here as each is actually implemented, with full request/
+response shape, auth requirement, and example — not speculatively written ahead of the
+NestJS controller that implements it, to avoid this document drifting from reality. Track
+"next endpoint to document" via `docs/IMPLEMENTATION-ROADMAP.md`.

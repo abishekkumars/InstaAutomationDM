@@ -8,7 +8,7 @@ Assert-ProjectLocalNode
 
 Push-Location $RepoRoot
 try {
-    & "$NodeDir\corepack.cmd" pnpm run --parallel --recursive dev
+    & "$NodeDir\corepack.cmd" pnpm run --parallel --recursive --if-present dev
 }
 finally {
     Pop-Location

@@ -49,6 +49,42 @@ tests/e2e/   Playwright specs
 `apps/api` so the execution engine can be unit tested with no NestJS or database
 dependency, and so Zernio is never called directly from anywhere except that one package.
 
+## Application shells (Phase 2)
+
+`apps/web`, `apps/api`, and `apps/worker` are scaffolded as minimal, featureless shells —
+no auth, no database, no Redis, no Zernio, no automation engine. Real versions installed
+(pnpm-resolved, not hand-picked):
+
+| App | Framework | Key versions |
+|---|---|---|
+| `apps/web` | Next.js, App Router | Next.js `16.3.0`, React `19.2.8`, Tailwind CSS `4.3.3` |
+| `apps/api` | NestJS | `@nestjs/core`/`common`/`platform-express` `11.1.29`, `@nestjs/config` `4.0.4` |
+| `apps/worker` | plain TypeScript (no framework yet) | `tsx 4.23` for dev-mode watch |
+
+- **`apps/web`**: a responsive shell (mobile-first Tailwind utility classes, a header/main/
+  footer layout, `viewport` metadata) with a dashboard placeholder (`/`) and a status page
+  (`/status`) that does a server-side fetch of `apps/api`'s `GET /api/health` — proving the
+  `NEXT_PUBLIC_API_URL` env wiring works end to end, and degrading gracefully (still `200`,
+  shows a "not reachable" message) when the API isn't running rather than erroring. No
+  `eslint-config-next` — it reuses the repo's single shared `eslint.config.mjs`
+  (`docs/DEVELOPMENT-SETUP.md`/`docs/IMPLEMENTATION-ROADMAP.md` Phase 2 report has the
+  rationale); React-specific lint rules (hooks correctness, etc.) can be added later if
+  needed.
+- **`apps/api`**: global `/api` prefix, `ConfigModule` with a hand-written `validateEnv`
+  (no Zod/Joi dependency added yet — deliberately minimal), a request-id middleware
+  (`X-Request-Id`, generated or echoed from the caller), a global exception filter
+  producing the `{ error: { code, message, requestId } }` shape from `docs/API-SPEC.md`,
+  and `GET /api/health`. `GET /ready` is **not** implemented yet — a readiness check with
+  nothing real to check (no DB/Redis exist yet) would be a hollow endpoint; it lands with
+  Phase 4/11 when there's something to actually report on.
+- **`apps/worker`**: bootstrap only — process startup logging and `SIGINT`/`SIGTERM`
+  handling, kept alive via `process.stdin.resume()`. No Redis/BullMQ connection; queue
+  consumers land in `src/processors/` starting Phase 11 (see that directory's `README.md`).
+
+Original roadmap Phase 3 ("NestJS backend shell") is functionally complete as part of this
+Phase 2 work, per explicit instruction to scaffold web + api + worker together — see
+`docs/IMPLEMENTATION-ROADMAP.md`'s Phase 2 report for the full rationale.
+
 ## Backend modules (apps/api)
 
 `auth`, `organizations`, `users`, `members`, `instagram`, `zernio`, `webhooks`,

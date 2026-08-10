@@ -19,6 +19,7 @@ dist/
 build/
 out/
 coverage/
+*.tsbuildinfo
 
 # Local Postgres/Redis fallback data (if the portable-binary option from
 # docs/DEVELOPMENT-SETUP.md is used)
