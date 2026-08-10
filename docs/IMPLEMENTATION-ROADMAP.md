@@ -19,14 +19,14 @@ needed renumbering. History (the Phase 0/1/2 reports) is preserved exactly as wr
 - [x] Phase 1 — Repository/monorepo foundation (pnpm workspace, root tsconfig/eslint/prettier, CI skeleton). See "Phase 1 report" below.
 - [x] Phase 2 — Application shells: Next.js (`apps/web`) + NestJS (`apps/api`) + worker bootstrap (`apps/worker`). Absorbs what was originally planned as a separate "Phase 3 — NestJS backend shell" (see the numbering note above and the Phase 2 report below).
 - [x] Phase 2 stabilization — project-local Node runtime enforcement + diagnostics (`scripts/pnpm.ps1`, `scripts/doctor.ps1`). See "Phase 2 stabilization report" below.
-- [ ] **Phase 4 — PostgreSQL + Prisma** (first migration: `users` groundwork only as auth needs it) — **next phase**
-- [ ] Phase 5 — Authentication (Clerk vs Auth.js decision + implementation)
+- [x] Phase 4 — PostgreSQL + Prisma (`User`/`Organization`/`OrganizationMember` foundation for auth + multi-tenancy). See "Phase 4 report" below.
+- [ ] **Phase 5 — Authentication** (Clerk vs Auth.js decision + implementation) — **next phase**
 - [ ] Phase 6 — Multi-tenancy (`organizations`, `organization_members`, tenant-isolation tests)
 - [ ] Phase 7 — Instagram account domain model (`instagram_accounts` table, no Zernio calls yet)
 - [ ] Phase 8 — Zernio provider abstraction (`InstagramProvider` interface + `ZernioInstagramProvider` skeleton)
 - [ ] Phase 9 — Zernio account connection (real OAuth flow)
 - [ ] Phase 10 — Webhook ingestion (`POST /webhooks/zernio`, `webhook_events`, idempotency)
-- [ ] Phase 11 — Redis + BullMQ (queue wiring; `apps/worker`'s bootstrap shell already exists from Phase 2 — this phase adds the actual queue connection and processors; local Postgres/Redis strategy finalized)
+- [ ] Phase 11 — Redis + BullMQ (queue wiring; `apps/worker`'s bootstrap shell already exists from Phase 2 — this phase adds the actual queue connection and processors; local Redis strategy still to be decided, see `docs/ARCHITECTURE.md` open decisions)
 - [ ] Phase 12 — Automation engine (`packages/automation-engine`, generic trigger/condition/action model)
 - [ ] Phase 13 — Comment keyword automation (first real trigger wired end to end)
 - [ ] Phase 14 — Public comment reply + DM actions
@@ -320,10 +320,124 @@ one of the fixed-purpose scripts instead.
 No application functionality was added or changed — same three shells as the end of
 Phase 2, just built/linted through the hardened entry points instead of ad hoc commands.
 
+## Phase 4 report
+
+**PostgreSQL strategy**: `embedded-postgres` (npm package, wrapping official Postgres 17.10
+binaries), controlled via direct `pg_ctl` calls rather than that package's own start/stop
+API. Full reasoning, alternatives considered, and security notes:
+`docs/ADR/0003-local-postgresql-strategy.md`.
+
+**What was built**
+- `packages/database`: `prisma/schema.prisma` (`User`, `Organization`,
+  `OrganizationMember`, `OrganizationRole` enum — see `docs/DATABASE.md` for the full
+  per-field reasoning), one migration (`20260810172436_init`), a hot-reload-safe
+  `PrismaClient` singleton (`src/client.ts`) exported via `src/index.ts`, an idempotent
+  dev-only seed (`prisma/seed.mjs`), 11 Vitest integration tests against a real local
+  Postgres (`src/__tests__/database.test.ts`), and the local DB lifecycle tool
+  (`dev/local-db.mjs`, invoked via `scripts/db.ps1 start|stop|status|reset`).
+- `apps/api`: `DatabaseModule`/`PrismaService` (`src/database/`, `@Global()`, Nest
+  `OnModuleInit`/`OnModuleDestroy` + `app.enableShutdownHooks()` in `main.ts`), and a new
+  `GET /api/ready` (`src/health/readiness.controller.ts`) that runs `SELECT 1` through
+  Prisma and returns `503` (standard `{error:{code,message,requestId}}` shape) if the
+  database is unreachable — the first endpoint with something real to check, exactly as
+  Phase 2's report said it would when this phase arrived.
+- `scripts/_env.ps1`: new `Import-DotEnv` function, called from `scripts/pnpm.ps1`,
+  `scripts/dev.ps1`, and `scripts/test.ps1` — loads the repo-root `.env` into the process
+  environment (ambient env vars, e.g. from CI, always win over the file), **except
+  `NODE_ENV`**, which is deliberately never imported this way (see the regression below).
+- `.github/workflows/ci.yml`: new `database-tests` job — a `postgres:16-alpine` service
+  container, `prisma migrate deploy`, then the database test suite. **Not executed
+  remotely** — no `act`/Docker locally (unchanged since Phase 0/1), no push done.
+- `eslint.config.mjs`: added the `globals` package and a `**/*.mjs`/`**/*.cjs` override
+  declaring Node globals — needed because typescript-eslint's recommended config disables
+  the base `no-undef` rule for `.ts` files (the compiler already covers it), but plain
+  `.mjs` dev scripts aren't processed by that parser and had no Node-global awareness at
+  all until this phase's `local-db.mjs`/`seed.mjs` needed `console`/`process`.
+- Docs: `docs/DATABASE.md` (full rewrite — real schema + conventions, not just the
+  conceptual map), `docs/ARCHITECTURE.md` (new "Database (Phase 4)" section, open-decisions
+  list updated), `docs/API-SPEC.md` (`GET /api/ready` documented), `docs/DEVELOPMENT-SETUP.md`
+  (new "Local PostgreSQL" section), `.env.example` (`DATABASE_URL` comment points at the
+  ADR; still just `DATABASE_URL=`, no value), `packages/database/README.md` and
+  `apps/api/README.md` rewritten to match reality.
+
+**A real regression found and fixed during this phase's own validation pass**: adding
+`Import-DotEnv` to `scripts/pnpm.ps1` caused `apps/web`'s build to start failing —
+`NODE_ENV=development` from `.env` was being forced onto the `next build` invocation, which
+needs to manage its own internal production/development mode; the conflict surfaced as a
+dev/prod React-instance mismatch (`TypeError: Cannot read properties of null (reading
+'useContext')` while prerendering Next's built-in `_global-error` page). Fixed by excluding
+`NODE_ENV` from `Import-DotEnv` entirely — every tool that cares about it (`next`, `nest`,
+`tsc`) already manages it correctly on its own, and `apps/api/src/config/env.validation.ts`
+already has its own sensible default for when it's genuinely unset. Caught by this phase's
+own "rebuild all three apps" validation step, not shipped unnoticed.
+
+**Also found and fixed (Windows-specific, documented in full in the ADR)**: `pg_ctl start`
+hung indefinitely on Windows because the `postgres.exe` grandchild process it spawns can
+inherit `pg_ctl`'s stdout/stderr pipe handles, so Node's `spawnSync` waited forever for
+those pipes to close even though the server had already started successfully and `pg_ctl`
+itself had exited. Fixed with `stdio: 'ignore'` for that specific call.
+
+**Commands executed and results**
+| Command | Result |
+|---|---|
+| `pnpm install` (adds prisma, `@prisma/client`, `embedded-postgres`, `@embedded-postgres/windows-x64`, vitest, dotenv) | Exit 0. ~97 MB Windows Postgres binary downloaded; its `postinstall` (`hydrate-symlinks.js`) ran without needing any pnpm build-script approval. |
+| `node dev/local-db.mjs start` (1st attempt, before the Windows pipe-inheritance fix) | Hung indefinitely despite the server actually starting (confirmed via the Postgres log file and `Get-Process` while the call was still blocked) — killed manually, fixed, retested clean. |
+| `.\scripts\db.ps1 start` / `status` / `stop` / `start` again (full cycle, after the fix) | All exit 0; `status` correctly reports running/not-running across separate invocations; re-`start` correctly detects "already running" and no-ops. |
+| `prisma migrate dev --name init` | Created database `automationdm`, applied migration `20260810172436_init`, generated Prisma Client 6.19.3, ran the seed (`"user dev@automationdm.local owns organization dev-workspace"`). Exit 0. |
+| `prisma migrate status` | "1 migration found ... Database schema is up to date!" |
+| `prisma validate` | "The schema at prisma\schema.prisma is valid" |
+| `pnpm --filter @automationdm/database run build` | `tsc`, exit 0 |
+| `pnpm --filter @automationdm/database run test` (vitest) | **11/11 passed** — connectivity, User/Organization/OrganizationMember creation, relation traversal both directions, cascade delete, and three `P2002` unique-constraint-violation assertions (email, slug, and the org+user composite) |
+| `pnpm --filter @automationdm/api run build` | `nest build`, exit 0 |
+| Manual smoke test: `node dist/main.js` (api) with `DATABASE_URL` set, `GET /api/ready` | `200 {"status":"ready",...}` |
+| Same, with an inbound `X-Request-Id` header and after `.\scripts\db.ps1 stop` | `503`, standard error shape, `requestId` matches the response header — confirmed graceful failure, not a crash |
+| `pnpm --filter @automationdm/worker run build` | `tsc`, exit 0 |
+| `pnpm --filter @automationdm/web run build` (1st attempt, before the `NODE_ENV` fix) | **Failed** — see regression above |
+| Same, after the fix | `next build` (Turbopack), exit 0, same route summary as Phase 2/2-stabilization |
+| `.\scripts\lint.ps1` (1st run, before the `globals` fix) | ESLint: **26 errors** (`no-undef` on `console`/`process` in the two new `.mjs` files) + Prettier flagged 3 files. Typecheck: 8/8 `Done`. |
+| `pnpm run format` + `eslint.config.mjs`/`package.json` fix (added `globals`) + reinstall | — |
+| `.\scripts\lint.ps1` (2nd run) | ESLint 0 errors, typecheck 8/8 `Done`, Prettier all pass. Exit 0. |
+| Rebuild `packages/database`, `apps/api`, `apps/worker`, `apps/web` once more after the lint fixes | All exit 0 again; database tests re-run 11/11 |
+| `node --version` / `npm --version`, fresh shells, before/after everything above | `v16.13.0` / `8.1.0` at `C:\Program Files\nodejs` — **unchanged** |
+
+**Files created**
+`docs/ADR/0003-local-postgresql-strategy.md`; `scripts/db.ps1`;
+`packages/database/{prisma/{schema.prisma,seed.mjs,migrations/20260810172436_init/migration.sql},
+dev/local-db.mjs,src/{client.ts,__tests__/database.test.ts},vitest.config.ts,vitest.setup.ts}`;
+`apps/api/src/{database/{database.module.ts,prisma.service.ts},health/readiness.controller.ts}`.
+
+**Files modified**
+`packages/database/{package.json,tsconfig.json,README.md,src/index.ts}`;
+`apps/api/{package.json,README.md,src/{app.module.ts,main.ts,health/health.module.ts}}`;
+`scripts/{_env.ps1,pnpm.ps1,dev.ps1,test.ps1}`; `eslint.config.mjs`; `package.json` (root);
+`.github/workflows/ci.yml`; `.env.example`;
+`docs/{DATABASE.md,ARCHITECTURE.md,API-SPEC.md,DEVELOPMENT-SETUP.md}`; this file.
+`apps/web/next-env.d.ts` auto-regenerated by `next build` again, as in prior phases.
+
+**Files intentionally not committed**
+`.env` (real local `DATABASE_URL`, gitignored, created for this phase's own verification —
+confirmed via `git check-ignore -v`); `.tools/postgres-data/` and
+`.tools/postgres-data.log` (local Postgres data directory + log, gitignored since Phase 0).
+
+**Known limitations / risks**
+- Prisma 6.19.3 has a major update available (7.9.1) — not taken in this phase; upgrading a
+  major version mid-foundation is its own decision, not a side effect of adding the schema.
+- The `package.json#prisma` config key (used for the seed command) is deprecated as of
+  Prisma 6 in favor of a `prisma.config.ts` file, removed entirely in Prisma 7 — noted, not
+  migrated yet, since it still works today and migrating it is naturally bundled with
+  whichever future phase does take the Prisma 7 upgrade.
+- Local Postgres lifecycle (`local-db.mjs`) is verified on `win32-x64` only; the
+  platform-package lookup table covers Mac/Linux names but only the Windows binary package
+  is an installed dependency right now (see the ADR).
+- No tenant-isolation tests yet — there's nothing to isolate until Phase 6 adds
+  `organization_id` scoping to real queries; this phase's tests cover the schema itself
+  (constraints, relations), not authorization.
+- Auth provider (Clerk vs Auth.js) still unresolved — Phase 5, next.
+- Local Redis strategy still unresolved — Phase 11.
+
 **Next phase**
 
-Phase 4 — PostgreSQL + Prisma: introduce `packages/database`'s Prisma schema, starting
-with only the tables the very next phase (Phase 5, Authentication) actually needs, and
-finally resolve the local Postgres/Redis strategy left open since Phase 0
-(`docs/ADR/0002-project-local-node-and-no-docker-fallback.md`). Will not start until the
-user says to proceed.
+Phase 5 — Authentication: choose Clerk vs Auth.js (an explicit stop-and-decide point per
+`CLAUDE.md` — enabling either is a paid/external-service decision), then wire real sign-in
+and populate `User.authProviderId`/`authProvider` for the first time. Will not start until
+the user says to proceed.

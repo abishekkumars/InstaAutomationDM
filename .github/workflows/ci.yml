@@ -29,3 +29,47 @@ jobs:
 
       - name: Prettier format check
         run: pnpm run format:check
+
+  database-tests:
+    runs-on: ubuntu-latest
+    # NOTE: unlike the local dev machine (no admin rights, no Docker - see
+    # docs/ADR/0003-local-postgresql-strategy.md), GitHub's hosted runners have Docker
+    # available, so a plain Postgres service container is the simplest CI-side option -
+    # no need to reuse the local embedded-postgres tooling here.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: automationdm
+          POSTGRES_PASSWORD: automationdm
+          POSTGRES_DB: automationdm
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U automationdm"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      DATABASE_URL: postgresql://automationdm:automationdm@localhost:5432/automationdm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prisma generate
+        run: pnpm --filter @automationdm/database run generate
+
+      - name: Apply migrations
+        run: pnpm --filter @automationdm/database run migrate:deploy
+
+      - name: Database tests
+        run: pnpm --filter @automationdm/database run test

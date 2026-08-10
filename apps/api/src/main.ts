@@ -12,6 +12,7 @@ async function bootstrap(): Promise<void> {
   app.setGlobalPrefix('api');
   app.use(requestIdMiddleware);
   app.useGlobalFilters(new AllExceptionsFilter());
+  app.enableShutdownHooks();
 
   const port = config.get<number>('PORT', 4000);
   await app.listen(port);

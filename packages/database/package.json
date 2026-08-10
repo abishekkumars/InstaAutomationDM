@@ -2,8 +2,36 @@
   "name": "@automationdm/database",
   "version": "0.0.0",
   "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "prisma": {
+    "seed": "node prisma/seed.mjs"
+  },
   "scripts": {
+    "build": "tsc -p tsconfig.json",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "generate": "prisma generate",
+    "migrate:dev": "prisma migrate dev",
+    "migrate:deploy": "prisma migrate deploy",
+    "migrate:reset": "prisma migrate reset --skip-seed",
+    "validate": "prisma validate",
+    "seed": "node prisma/seed.mjs",
+    "db:start": "node dev/local-db.mjs start",
+    "db:stop": "node dev/local-db.mjs stop",
+    "db:status": "node dev/local-db.mjs status",
+    "db:reset": "node dev/local-db.mjs reset"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.1.0"
+  },
+  "devDependencies": {
+    "@embedded-postgres/windows-x64": "17.10.0-beta.17",
+    "@types/node": "^24.0.0",
+    "dotenv": "^16.4.0",
+    "embedded-postgres": "17.10.0-beta.17",
+    "prisma": "^6.1.0",
+    "vitest": "^2.1.0"
   }
 }

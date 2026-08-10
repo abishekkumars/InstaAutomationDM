@@ -205,6 +205,63 @@ instead of em/en dashes, straight quotes instead of curly ones, `->` instead of 
 Markdown/`.md` files are unaffected (not parsed by PowerShell) and can keep using them
 normally.
 
+## Local PostgreSQL (Phase 4, 2026-08-10)
+
+Full decision record: `docs/ADR/0003-local-postgresql-strategy.md`. Short version: a
+project-local Postgres 17.10 server, distributed via the `embedded-postgres` npm package
+(installed as a normal part of `pnpm install` — no separate download step), controlled via
+direct `pg_ctl` calls so it works across separate terminal sessions. No admin rights, no
+Docker, nothing outside this repository.
+
+**Setup:**
+
+```powershell
+.\scripts\db.ps1 start     # first run: initializes .tools/postgres-data/, then starts
+```
+
+Then create a local `.env` (never committed — copy `.env.example` and fill in):
+
+```
+DATABASE_URL=postgresql://automationdm:automationdm@localhost:5432/automationdm
+```
+
+That user/password is a fixed, documented, localhost-only dev credential (see the ADR's
+"Security considerations") — not something you need to invent or keep secret.
+
+**Day to day:**
+
+```powershell
+.\scripts\db.ps1 status    # "server is running (PID: ...)" or "no server running"
+.\scripts\db.ps1 stop
+.\scripts\db.ps1 reset     # stop (if running) + delete .tools/postgres-data/ entirely
+```
+
+`.\scripts\test.ps1` and `.\scripts\dev.ps1` now call a new `Import-DotEnv` helper (in
+`scripts/_env.ps1`) that loads the repo-root `.env` into the process environment before
+running anything — so `DATABASE_URL` (and every other `.env` value) is available to
+`packages/database`'s tests and to `apps/api`/`apps/worker` in dev, without needing a
+second copy of `.env` inside any individual package. Ambient environment variables (e.g.
+ones a CI service container sets) always win over the `.env` file's values, never the
+reverse.
+
+**Prisma commands** (run from the repo root via `scripts/pnpm.ps1`, or `cd
+packages/database` first):
+
+```powershell
+.\scripts\pnpm.ps1 --filter "@automationdm/database" run migrate:dev    # new migration from schema changes
+.\scripts\pnpm.ps1 --filter "@automationdm/database" run generate       # regenerate the Prisma client only
+.\scripts\pnpm.ps1 --filter "@automationdm/database" run seed           # re-run the dev seed (idempotent)
+.\scripts\pnpm.ps1 --filter "@automationdm/database" run test           # vitest, against the running local DB
+```
+
+**A real Windows bug found and fixed while building this** (full detail in the ADR): the
+first version of the `start` command hung indefinitely — `pg_ctl start` spawns
+`postgres.exe` as a background process, and on Windows that grandchild process can inherit
+`pg_ctl`'s own stdout/stderr pipe handles, so Node's `spawnSync` waited forever for those
+pipes to close even though the server was already up and `pg_ctl` itself had exited. Fixed
+by not piping that specific call's output at all (`stdio: 'ignore'` — the server's own
+output already goes to a log file via `pg_ctl -l`).
+
 ## Phase 2 update (2026-08-10): application dev commands, and a PATH gotcha
 
 Each app now has real `dev`/`build`/`start` scripts (via `pnpm --filter <name> run <script>`,

@@ -52,3 +52,42 @@ function Assert-ProjectLocalNode {
 
     $script:ResolvedNodeVersion = $versionOutput
 }
+
+function Import-DotEnv {
+    param([string]$Path = (Join-Path $RepoRoot ".env"))
+
+    if (-not (Test-Path $Path)) {
+        return
+    }
+
+    Get-Content $Path | ForEach-Object {
+        $line = $_.Trim()
+        if ($line -eq "" -or $line.StartsWith("#")) {
+            return
+        }
+        $eq = $line.IndexOf("=")
+        if ($eq -lt 1) {
+            return
+        }
+        $key = $line.Substring(0, $eq).Trim()
+        $value = $line.Substring($eq + 1).Trim()
+
+        # NODE_ENV is deliberately never imported from .env: `next build`/`next dev`/`next
+        # start`, `nest build`/`nest start`, and tsc each manage their own NODE_ENV
+        # expectations for the command being run. Forcing NODE_ENV=development from .env
+        # onto e.g. `next build` (which needs its own internal "production" mode) causes a
+        # real, reproducible crash - a dev/prod React instance mismatch surfacing as
+        # "Cannot read properties of null (reading 'useContext')" during static generation.
+        # Anything that actually reads process.env.NODE_ENV at runtime (e.g.
+        # apps/api/src/config/env.validation.ts) already has its own sensible default.
+        if ($key -eq "NODE_ENV") {
+            return
+        }
+
+        # Ambient env vars (e.g. set by CI for a service container) win over the .env file -
+        # never let a local dotenv silently shadow something the environment already set.
+        if (-not (Test-Path "env:$key")) {
+            Set-Item -Path "env:$key" -Value $value
+        }
+    }
+}

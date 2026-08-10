@@ -5,6 +5,7 @@
 $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\_env.ps1"
 Assert-ProjectLocalNode
+Import-DotEnv
 
 Push-Location $RepoRoot
 try {

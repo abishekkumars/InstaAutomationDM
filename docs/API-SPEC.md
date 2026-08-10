@@ -1,8 +1,8 @@
 # API Specification
 
-Status: Phase 2 — `apps/api` exists as a minimal shell with one real endpoint
-(`GET /api/health`) plus the error/request-id foundation every future endpoint sits on.
-Business endpoints land with the phase that needs them: auth in Phase 5,
+Status: Phase 4 — `apps/api` has `GET /api/health` (liveness) and `GET /api/ready`
+(readiness, checks the database) plus the error/request-id foundation every future endpoint
+sits on. Business endpoints land with the phase that needs them: auth in Phase 5,
 instagram-accounts in Phase 7/9, webhooks in Phase 10, automations in Phase 12/13, etc.
 
 ## Convention
@@ -25,9 +25,8 @@ instagram-accounts in Phase 7/9, webhooks in Phase 10, automations in Phase 12/1
   inbound `X-Request-Id` header, or generated (`crypto.randomUUID()`) by
   `apps/api/src/common/middleware/request-id.middleware.ts`. This is the correlation id
   used in server logs and in every error response body.
-- `GET /api/ready` is **deferred**, not forgotten: a readiness probe needs something real
-  to check (DB/Redis reachability), neither of which exists until Phase 4/11. Adding it now
-  would just hardcode `{status:"ready"}` with nothing behind it.
+- `GET /api/ready` checks the database (Phase 4). Redis readiness is added to the same
+  endpoint once Phase 11 gives it something real to check too — not before.
 
 ## Endpoint inventory
 
@@ -42,6 +41,31 @@ Response:
   "service": "api",
   "timestamp": "2026-08-10T15:31:46.908Z",
   "uptimeSeconds": 13
+}
+```
+
+### `GET /api/ready`
+
+Readiness check. No auth. `200` if the database is reachable, `503` (standard error shape)
+otherwise.
+
+Response (`200`):
+```json
+{
+  "status": "ready",
+  "service": "api",
+  "timestamp": "2026-08-10T17:27:49.662Z"
+}
+```
+
+Response (`503`, database unreachable):
+```json
+{
+  "error": {
+    "code": "ServiceUnavailableException",
+    "message": "Database unreachable",
+    "requestId": "bed45b6f-d6ee-4ed6-b1c7-63e088fb8c21"
+  }
 }
 ```
 

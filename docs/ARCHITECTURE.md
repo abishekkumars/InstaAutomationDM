@@ -85,6 +85,39 @@ Original roadmap Phase 3 ("NestJS backend shell") is functionally complete as pa
 Phase 2 work, per explicit instruction to scaffold web + api + worker together — see
 `docs/IMPLEMENTATION-ROADMAP.md`'s Phase 2 report for the full rationale.
 
+## Database (Phase 4)
+
+`packages/database` owns the Prisma schema, migrations, generated client, and a singleton
+`PrismaClient` (`src/client.ts`) — nothing outside this package imports `@prisma/client`
+directly. `apps/api` depends on it via the pnpm workspace protocol
+(`"@automationdm/database": "workspace:*"`) and wraps the singleton in a NestJS
+`DatabaseModule`/`PrismaService` (`apps/api/src/database/`) for lifecycle management
+(connect on `OnModuleInit`, disconnect on `OnModuleDestroy` + `app.enableShutdownHooks()`).
+
+```
+apps/api (NestJS)
+   |  DatabaseModule -> PrismaService
+   v
+packages/database (Prisma schema, migrations, client singleton)
+   v
+PostgreSQL
+```
+
+`GET /api/ready` (added this phase, alongside the existing `GET /api/health`) runs
+`SELECT 1` through `PrismaService` and returns `503` if it fails — the first endpoint with
+something real to check, per the plan noted in Phase 2's report.
+
+Local Postgres runs project-locally with no admin rights and no Docker, via the
+`embedded-postgres` npm package wrapping the official Postgres binaries, controlled through
+direct `pg_ctl` calls (`scripts/db.ps1` / `packages/database/dev/local-db.mjs`) rather than
+that package's own in-process start/stop API — see
+`docs/ADR/0003-local-postgresql-strategy.md` for the full reasoning, including a real
+Windows-specific `spawnSync` hang that was found and fixed while building this.
+
+Schema (`User`, `Organization`, `OrganizationMember` — the minimum Phase 5/6 need) and every
+convention (ID strategy, naming, cascade behavior, indexing) are documented in
+`docs/DATABASE.md`, not duplicated here.
+
 ## Backend modules (apps/api)
 
 `auth`, `organizations`, `users`, `members`, `instagram`, `zernio`, `webhooks`,
@@ -155,8 +188,8 @@ session/membership on every request. Tenant isolation is covered by dedicated te
   multi-tenant org/invite flows out of the box; Auth.js avoids a paid third-party auth
   dependency but means building org/invite UX by hand. Not decided yet — this is an
   external-service choice, flagged for the user rather than picked unilaterally.
-- **Local Postgres/Redis strategy** (Docker vs portable binaries vs cloud dev DBs) — see
-  `docs/DEVELOPMENT-SETUP.md`. Decide in Phase 4/11.
+- **Local Redis strategy** (Docker vs portable binaries vs cloud dev service) — decide in
+  Phase 11. Postgres's equivalent decision is resolved: `docs/ADR/0003-local-postgresql-strategy.md`.
 - **pnpm workspaces vs Turborepo** — start with plain pnpm workspaces (section 7 of the
   master spec only requires Turborepo "if it provides clear value"); revisit once build
   times across `apps/*` actually justify a task-graph build tool.

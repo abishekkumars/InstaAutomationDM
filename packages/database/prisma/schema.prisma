@@ -1,0 +1,111 @@
+// Prisma schema for AutomationDM.
+//
+// Conventions (documented in full in docs/DATABASE.md "Conventions"):
+// - Primary keys: `cuid()` — opaque, non-sequential, no extra dependency (Prisma-native).
+// - Timestamps: `createdAt`/`updatedAt` on every table, `updatedAt` via `@updatedAt`.
+// - Table/column names: snake_case in Postgres (`@@map`/`@map`), camelCase/PascalCase in
+//   Prisma/TypeScript.
+// - Every `@@index` exists for a specific, named query pattern — see docs/DATABASE.md.
+//
+// Phase 4 (PostgreSQL + Prisma) scope only: User, Organization, OrganizationMember. No
+// Instagram/automation/contact/billing tables yet — those arrive with the phases that need
+// them (docs/IMPLEMENTATION-ROADMAP.md).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// A human account. Provider-independent by design: the auth provider (Clerk vs Auth.js,
+/// decided in Phase 5) is not known yet, so this table never embeds a provider's own schema
+/// assumptions. `authProviderId` is where whichever provider ends up plugging in, once
+/// chosen — see docs/DATABASE.md, "User model" for the full reasoning.
+model User {
+  id String @id @default(cuid())
+
+  email String @unique
+
+  /// Display name. Nullable: not every provider hands us one immediately.
+  name String?
+
+  /// Opaque subject/id string from whichever auth provider is eventually wired up
+  /// (e.g. a Clerk user id, or an Auth.js account id). Nullable + unique: unpopulated until
+  /// Phase 5 picks a provider, but already reservable so nothing about this table's shape
+  /// needs to change when that decision lands.
+  authProviderId String? @unique @map("auth_provider_id")
+
+  /// Which provider `authProviderId` belongs to (e.g. "clerk", "authjs"). Nullable for the
+  /// same reason as `authProviderId`; kept separate rather than folded into a single
+  /// "provider:id" string so each half stays independently queryable/indexable.
+  authProvider String? @map("auth_provider")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  memberships OrganizationMember[]
+
+  @@map("users")
+}
+
+/// A tenant/workspace. Deliberately minimal — future billing (Phase 20) hangs a
+/// `Subscription` table off `Organization.id` rather than growing fields on this table.
+model Organization {
+  id String @id @default(cuid())
+
+  name String
+
+  /// URL-safe unique handle (e.g. for future `/org/:slug` routing). Uniqueness/format
+  /// validation beyond "is it unique" happens at the application layer (Phase 6) — the
+  /// schema only guarantees the constraint that matters at the data layer.
+  slug String @unique
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  memberships OrganizationMember[]
+
+  @@map("organizations")
+}
+
+/// OWNER: full control, including billing/deletion (once those exist). ADMIN: manage
+/// automations/members short of billing/deletion. MEMBER: use the product, no member
+/// management. Full RBAC/permissions are a later concern (Phase 6+) — this is just the
+/// database-level vocabulary for "what kind of member is this."
+enum OrganizationRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+/// Join table: which users belong to which organizations, and in what role. A single
+/// surrogate `id` (rather than a composite `@@id([organizationId, userId])`) so other
+/// tables can reference "this specific membership" by one column later (e.g. an audit log
+/// entry recording which membership performed an action) without carrying a compound key
+/// around — see docs/DATABASE.md, "OrganizationMember" for the full reasoning. The
+/// uniqueness guarantee itself lives in the `@@unique` below, not the primary key.
+model OrganizationMember {
+  id String @id @default(cuid())
+
+  organizationId String @map("organization_id")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  role OrganizationRole @default(MEMBER)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// The same user cannot be added to the same organization twice.
+  @@unique([organizationId, userId])
+  /// "List members of an organization" — every org dashboard load.
+  @@index([organizationId])
+  /// "List organizations a user belongs to" — every session/membership check.
+  @@index([userId])
+  @@map("organization_members")
+}
