@@ -22,8 +22,10 @@ file is a short pointer plus anything that isn't Claude-specific.
 - No global package installs on this machine.
 - Tenant isolation on every query touching org-owned data — see `docs/DATABASE.md` /
   `docs/SECURITY.md`.
-- No synchronous automation processing inside the webhook HTTP handler — see
-  `docs/WEBHOOKS.md`.
+- In-process automation execution inside the webhook HTTP handler is fine (no queue
+  infrastructure — see `docs/ADR/0005-simplified-mvp-architecture.md`), but keep it fast:
+  never more than the DB insert plus the small, bounded set of Zernio calls one automation
+  needs — see `docs/WEBHOOKS.md`.
 - No arbitrary code execution in the automation engine — see `docs/AUTOMATION-ENGINE.md`.
 - Don't invent Zernio API behavior beyond what's documented in `docs/ZERNIO-INTEGRATION.md`
   or the live docs at docs.zernio.com.

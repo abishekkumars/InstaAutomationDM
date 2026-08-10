@@ -15,44 +15,55 @@ not written speculatively ahead of the code they test.
 
 ## What gets tested at each level
 
-**Unit** (`packages/automation-engine`, `packages/zernio`, `packages/validation`, NestJS
-services in isolation):
-- Keyword matching (contains/word/exact, case sensitivity, empty-keyword = match-any).
-- Condition evaluation and short-circuiting.
-- Full trigger→conditions→actions execution against fake evaluators/executors.
+**Unit** (`packages/automation-engine` if it ends up holding real logic — see
+`docs/AUTOMATION-ENGINE.md`'s open question, `packages/zernio`, `packages/validation`,
+NestJS services in isolation):
+- Keyword matching (contains/word/exact, case sensitivity, empty-keyword = match-any) — only
+  if matching turns out to be our own responsibility rather than Zernio's.
 - Tenant authorization at the service layer (org A cannot fetch org B's rows — see below).
 - Webhook idempotency logic (duplicate event id → no-op).
-- Rate limiting logic.
 - `ZernioInstagramProvider` adapter behavior against a mocked HTTP layer (never real Zernio).
 
-**Integration** (real Postgres + Redis in a test/dev instance, real NestJS app):
+**Integration** (real Postgres in a test/dev instance, real NestJS app):
 - Database: Prisma queries against a real (test) database, including the tenant-isolation
   constraint queries.
-- Redis/BullMQ: job enqueue → job processed by a worker under test.
 - Webhook ingestion: POST to `/webhooks/zernio` with a valid signature → row in
-  `webhook_events` → job enqueued; duplicate POST → still one row.
-- Automation execution: a queued webhook-processing job results in the expected
-  `automation_runs`/`automation_run_steps` rows, using a mocked Zernio provider.
+  `webhook_events` → automation executed in-process (no queue, per
+  `docs/ADR/0005-simplified-mvp-architecture.md`); duplicate POST → still one row, no
+  duplicate send.
+- Automation execution: a webhook for a tracked post/reel + matching keyword results in the
+  expected `automation_runs` row, using a mocked Zernio provider.
 
 **E2E** (Playwright, against a fully running local stack):
 1. Sign in.
 2. Create organization.
 3. Connect an Instagram account through a mocked/test Zernio integration.
-4. Create a comment automation.
-5. Simulate an inbound webhook (via the app's own webhook endpoint with a test-signed
+4. List posts/reels, click one.
+5. Create a comment automation for it (keyword, public reply, DM).
+6. Simulate an inbound webhook (via the app's own webhook endpoint with a test-signed
    payload, or Zernio's sandbox `POST /v1/webhooks/test` once that's wired up).
-6. Verify the automation run appears with the expected steps.
-7. Verify a DM-send job was enqueued/executed against the mock provider.
-8. Verify a contact was created.
-9. Verify the analytics counter incremented.
+7. Verify the automation's basic status/history reflects the trigger.
+8. Verify the mock provider recorded the expected public reply + DM.
 
 ## Tenant isolation tests (explicit, not incidental)
 
-For every tenant-owned resource (automations, contacts, conversations, Instagram accounts,
-analytics, billing, webhook data), a test proves: authenticated as a member of Org A,
-requesting/mutating a resource that belongs to Org B returns a not-found/forbidden result,
-never the data. These tests live alongside the module they cover and are run on every PR,
-not just written once and forgotten.
+For every tenant-owned resource (Instagram accounts, automations, webhook data), a test
+proves: authenticated as a member of Org A, requesting/mutating a resource that belongs to
+Org B returns a not-found/forbidden result, never the data. These tests live alongside the
+module they cover and are run on every PR, not just written once and forgotten.
+
+**First real example (Phase 6)**:
+`apps/api/src/organizations/__tests__/organizations.e2e.test.ts` — Vitest + Supertest against
+a real `@nestjs/testing` app instance and the real local Postgres (`scripts/db.ps1 start`,
+same disposable dev database `packages/database`'s tests use). Bootstraps two real users,
+has one create an organization, then asserts the other gets a plain `404` (not the data, not
+a `403` that would confirm the org's existence) when requesting its member list. This is the
+template for every future tenant-isolation test — real HTTP requests through the real guard
+and service layer, not a unit test mocking the authorization check away.
+
+`apps/api`'s Vitest config needs `unplugin-swc` (`docs/DEVELOPMENT-SETUP.md` has the why —
+NestJS's DI relies on `emitDecoratorMetadata`, which Vitest's default esbuild transform
+doesn't produce).
 
 ## Mocking external calls
 

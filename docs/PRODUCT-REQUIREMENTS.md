@@ -1,8 +1,20 @@
 # Product Requirements
 
-Status: Phase 0 baseline, living document.
+Status: **Scope simplified 2026-08-11** — see
+`docs/ADR/0005-simplified-mvp-architecture.md`. This supersedes the original, broader SaaS
+framing below the "Vision" section's history note.
 
 ## Vision
+
+A small, internal/limited-use tool (~3-4 users, under 1,000 API calls/month) for connecting
+one or more Instagram accounts (via Zernio) and attaching a single keyword-triggered
+comment-automation to a specific post or reel: a commenter who uses the configured keyword
+gets a public reply and a DM. Not a general-purpose multi-tenant SaaS, not a
+SuperProfile/ManyChat competitor — the earlier framing below this note described that larger
+product; it's kept here as history, not as the current target.
+
+<details>
+<summary>Original vision statement (superseded, kept for history)</summary>
 
 A multi-tenant SaaS where creators/businesses connect Instagram accounts (via Zernio) and
 build automations that react to comments, DMs, and story replies with public replies,
@@ -10,70 +22,81 @@ private DMs, and DM buttons/links — tracking contacts, executions, and deliver
 along the way. Conceptually similar to SuperProfile / AutoDM/ManyChat-style comment-to-DM
 tools, scoped initially to what Zernio's Instagram integration actually supports.
 
+</details>
+
 ## Primary persona
 
-An Instagram creator or small business running giveaways/lead-gen via comment keywords
-("Comment LINK and I'll DM you the guide"), who today does this manually or via a
-point-and-click competitor tool, and wants it automated with visibility into what happened
-(who was DMed, did they open it, how many converted).
+One of the small number of people using this internal tool, who wants a specific Instagram
+post/reel to auto-reply and auto-DM commenters who use a chosen keyword, without needing to
+do it by hand or pay for a third-party point-and-click tool.
 
-## MVP scope (build this first, nothing more)
+## MVP scope (exactly this, nothing more)
 
-1. Account creation + organization/workspace creation.
-2. Connect one Instagram account via Zernio (OAuth).
-3. Create one automation: comment trigger → keyword match → public comment reply → private
-   DM → DM button/link.
-4. Contact is created/updated from the DM recipient.
-5. Every trigger match produces an automation run record with per-step status.
-6. Basic analytics: triggers matched, DMs sent, DMs failed, per automation.
+1. Authentication.
+2. Organization/multi-tenancy.
+3. Connect Instagram through Zernio.
+4. List Instagram posts/reels with pagination.
+5. Click a post/reel.
+6. Create a comment automation for that specific post/reel.
+7. Configure keyword.
+8. Configure public comment reply.
+9. Configure private DM.
+10. Save the automation.
+11. Receive the relevant Zernio webhook.
+12. Trigger the configured automation.
+13. Basic automation status/history.
 
-This is the full path from section 1 of the master prompt, deliberately narrowed — it is
-the thinnest end-to-end slice that proves the architecture (webhook → queue → engine →
-Zernio → DB → analytics) actually works, per master prompt section 1's instruction not to
-build every SuperProfile feature first.
+Items 1-2 are done (Phase 5-6). See `docs/IMPLEMENTATION-ROADMAP.md` for the phase mapping
+of the rest.
 
-## Explicitly out of scope for MVP (later phases, see roadmap)
+## Explicitly out of scope (retired, not deferred — see ADR 0005)
 
-- Story reply triggers — **not currently supported by Zernio's Instagram integration**
-  (Meta Graph API limitation; confirmed via `docs.zernio.com/platforms/instagram`, see
-  `docs/ZERNIO-INTEGRATION.md`). The master prompt lists story replies as a target trigger;
-  this is a real external constraint, not a scoping choice, and is called out explicitly so
-  it isn't silently designed around later.
-- Workflow builder UI (React Flow) — Phase 17.
-- Inbox/conversations UI — Phase 18.
-- Follow-up workflows / delays / branching beyond a single linear automation — Phase 19.
-- Billing, plans, usage limits, team members beyond the org owner — Phase 20.
-- Multiple Instagram accounts per organization — supported by the data model from the
-  start (see `docs/DATABASE.md`), but the UI/flows for managing many accounts are not an
-  MVP requirement.
+- Story reply triggers — also a real Zernio/Meta limitation regardless (see
+  `docs/ZERNIO-INTEGRATION.md`), but moot either way since this scope is comment triggers
+  only.
+- A generic trigger/condition/action workflow engine, or any visual workflow builder UI.
+- Contact management / CRM, an inbox/conversations UI.
+- Follow-up workflows, delays, branching.
+- Billing, plans, usage limits, team roles beyond what Phase 4's `OrganizationRole` vocabulary
+  already provides.
+- An analytics pipeline beyond the basic per-automation status/history in item 13.
+- Multiple automations per post/reel, or automations scoped to "any post" — one automation
+  per specific post/reel, matching the MVP list exactly.
+
+Any of the above could return as a genuine future requirement, but it would get its own ADR
+and its own roadmap phase at that point — it is not "coming later" on the current plan.
 
 ## Functional requirements (MVP)
 
-- FR1: A user can sign up and is placed into a new organization as its owner.
-- FR2: An organization owner can connect an Instagram account through Zernio's OAuth flow.
-- FR3: An organization owner can create an automation with: a comment trigger scoped to
-  "any post" or a specific post, an optional keyword list with match mode
-  (contains/word/exact), a public reply template, a DM template, and 1-3 DM buttons.
-- FR4: Incoming Zernio webhooks for matching comment events cause the automation to
-  execute: public reply sent, DM sent, contact upserted, run recorded.
-- FR5: A user can view a list of automation runs with status (success/partial/failed) and
-  drill into per-step detail.
-- FR6: A user can view aggregate counts (triggered/sent/failed) per automation per day.
-- FR7: An organization cannot see or affect another organization's accounts, automations,
-  contacts, or runs, under any code path.
+- FR1: A user can sign up and is placed into a new organization as its owner (done, Phase
+  5-6).
+- FR2: An organization member can connect an Instagram account through Zernio's OAuth flow.
+- FR3: An organization member can list an account's posts/reels (paginated per Zernio's own
+  mechanism) and open one.
+- FR4: From a specific post/reel, a member can configure and save one automation: a
+  keyword (or short keyword list) with a match mode, a public reply template, and a DM
+  template.
+- FR5: An incoming Zernio webhook for a matching comment on a tracked post/reel causes the
+  saved automation's public reply and DM to be sent.
+- FR6: A member can view basic status/history for an automation (did it trigger, did the
+  reply/DM succeed).
+- FR7: An organization cannot see or affect another organization's accounts or automations,
+  under any code path (already proven for organizations/membership in Phase 6; extends to
+  every tenant-owned table added from here on).
 
 ## Non-functional requirements
 
-- Webhook endpoint responds in low tens of milliseconds; all automation execution is
-  asynchronous (BullMQ).
-- Webhook duplicate deliveries never double-send a DM (idempotency on Zernio event id).
+- The webhook endpoint responds promptly. At this project's actual volume (<1,000 calls/
+  month total), in-process handling — no queue — is sufficient; see ADR 0005.
+- Webhook duplicate deliveries never double-send a DM (idempotency on Zernio event id, via
+  `webhook_events`).
 - No Zernio credentials or Instagram tokens ever reach the browser.
 - All tenant-owned queries are authorized server-side against the caller's org membership.
 
 ## Success criteria for the MVP milestone
 
-A real (or Zernio test-mode) Instagram comment containing the configured keyword results,
-within a few seconds, in: a public reply visible on the post, a DM delivered to the
-commenter with the configured button, a contact record, an automation run with all steps
-`succeeded`, and an incremented daily analytics counter — end to end, with tests covering
-each stage per `docs/TESTING.md`.
+A real (or Zernio test-mode) Instagram comment containing the configured keyword, on the
+specific post/reel an automation was saved for, results within a few seconds in: a public
+reply visible on the post, a DM delivered to the commenter, and that outcome visible in the
+automation's basic status/history — end to end, with tests covering each stage per
+`docs/TESTING.md`.

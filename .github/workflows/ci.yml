@@ -30,7 +30,7 @@ jobs:
       - name: Prettier format check
         run: pnpm run format:check
 
-  database-tests:
+  backend-tests:
     runs-on: ubuntu-latest
     # NOTE: unlike the local dev machine (no admin rights, no Docker - see
     # docs/ADR/0003-local-postgresql-strategy.md), GitHub's hosted runners have Docker
@@ -52,6 +52,10 @@ jobs:
           --health-retries=10
     env:
       DATABASE_URL: postgresql://automationdm:automationdm@localhost:5432/automationdm
+      # A throwaway value that only needs to exist for the lifetime of this CI run (apps/api's
+      # tests sign/verify their own internal tokens with it) - not a real secret, same as the
+      # fixed Postgres credentials above. Never used outside this job.
+      API_INTERNAL_SECRET: ci-only-not-a-real-secret-1c9f3a7b2e4d6f81
     steps:
       - uses: actions/checkout@v4
 
@@ -73,3 +77,12 @@ jobs:
 
       - name: Database tests
         run: pnpm --filter @automationdm/database run test
+
+      - name: Build packages consumed by apps/api (database, shared, validation)
+        run: |
+          pnpm --filter @automationdm/database run build
+          pnpm --filter @automationdm/shared run build
+          pnpm --filter @automationdm/validation run build
+
+      - name: API tests
+        run: pnpm --filter @automationdm/api run test

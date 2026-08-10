@@ -1,7 +1,13 @@
 # ADR 0001: Modular monolith, not microservices, at project start
 
 ## Status
-Accepted
+Accepted. **Note (2026-08-11)**: the product scope this ADR's "Context" describes (contacts,
+conversations, analytics, billing) was later narrowed substantially, and `apps/worker`
+turned out not to need BullMQ/queue consumers at all — see
+`docs/ADR/0005-simplified-mvp-architecture.md`. The modular-monolith *decision* itself
+(`apps/web` + `apps/api`, one process, NestJS modules, framework-independent `packages/*`)
+still stands unchanged; only the assumed eventual surface area and the worker's role did
+not.
 
 ## Context
 The product vision (master prompt section 1) covers a large eventual surface area:

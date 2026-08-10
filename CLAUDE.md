@@ -5,7 +5,9 @@ file, plus the relevant `docs/*.md`, before writing or changing any code.
 
 ## What this project is
 
-Instagram DM automation SaaS built on the Zernio API. Full context: `docs/PRODUCT-REQUIREMENTS.md`.
+A small, internal-use Instagram comment-automation tool built on the Zernio API — roughly
+3-4 users, under 1,000 API calls/month. Simplified from an originally broader SaaS scope; see
+`docs/ADR/0005-simplified-mvp-architecture.md`. Full context: `docs/PRODUCT-REQUIREMENTS.md`.
 Architecture: `docs/ARCHITECTURE.md`. Current phase status: `docs/IMPLEMENTATION-ROADMAP.md`.
 
 ## Before coding, every time
@@ -44,10 +46,13 @@ Architecture: `docs/ARCHITECTURE.md`. Current phase status: `docs/IMPLEMENTATION
 - Never store Instagram passwords — connection is OAuth via Zernio only.
 - Every query touching tenant-owned data enforces `organization_id` scoping, derived
   server-side from the authenticated session — never from client input.
-- Never process automation logic synchronously inside the `/webhooks/zernio` HTTP handler —
-  validate, persist, enqueue, return. Everything else happens in `apps/worker`.
-- Never execute user-supplied code as part of the automation engine — trigger/condition/
-  action types are a fixed, versioned set (`docs/AUTOMATION-ENGINE.md`).
+- The `/webhooks/zernio` HTTP handler validates the signature, persists a `webhook_events`
+  row for idempotency, then may execute the matched automation's actions in-process
+  (no queue/worker infrastructure — see `docs/ADR/0005-simplified-mvp-architecture.md`).
+  Keep it fast regardless: never more than the DB insert plus the small, bounded number of
+  Zernio REST calls one automation's actions require — no unbounded loops, no fan-out.
+- Never execute user-supplied code as part of automation handling — the automation shape is
+  fixed and versioned (`docs/AUTOMATION-ENGINE.md`), not a user-scriptable engine.
 - Never install anything globally on this machine (`npm install -g ...`) and never modify
   the global Node 16 install — everything project-specific lives inside this repo
   (`docs/DEVELOPMENT-SETUP.md`).
@@ -82,7 +87,8 @@ without asking.
 - Keep every `scripts/*.ps1` file plain ASCII (no em dashes, curly quotes, arrows) — Windows
   PowerShell 5.1 misreads multi-byte characters in BOM-less `.ps1` files and produces
   confusing parse errors. `.md` files are unaffected.
-- Local Postgres/Redis strategy is **not yet decided** (Docker vs portable binaries vs cloud
-  dev DB) — see `docs/ADR/0002-project-local-node-and-no-docker-fallback.md`. Don't assume
-  Docker Compose "just works" here until that's resolved.
-- Auth provider (Clerk vs Auth.js) is **not yet decided** — Phase 5.
+- Local Postgres strategy is decided: project-local `embedded-postgres`, no Docker — see
+  `docs/ADR/0003-local-postgresql-strategy.md`. Redis is not part of this project's
+  architecture at all — see `docs/ADR/0005-simplified-mvp-architecture.md`.
+- Auth provider is decided: Auth.js (`next-auth@5`), `Credentials` provider — see
+  `docs/ADR/0004-authentication-provider.md`.

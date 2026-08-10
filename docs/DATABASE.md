@@ -1,46 +1,41 @@
 # Database Design
 
-Status: Phase 5 — `User` gained `passwordHash` and had `authProviderId`/`authProvider`
-populated for the first time (Auth.js `Credentials` provider — see
-`docs/ADR/0004-authentication-provider.md`). `User`, `Organization`, `OrganizationMember`
-exist as real, migrated Prisma models (`packages/database/prisma/schema.prisma`), the
-minimum needed for Phase 5 (Authentication) and Phase 6 (Multi-tenancy). Every other table
-below is still the Phase 0 conceptual map, introduced only when the phase that needs it
-arrives.
+Status: Phase 6, **scope simplified** — see
+`docs/ADR/0005-simplified-mvp-architecture.md`. `User`, `Organization`, `OrganizationMember`
+exist as real, migrated Prisma models (`packages/database/prisma/schema.prisma`). Every
+other table below is the (now much smaller) conceptual map for the remaining MVP phases —
+introduced only when the phase that needs it arrives, per this project's usual practice.
 
 ## Engine
 
 PostgreSQL, accessed exclusively through Prisma from `packages/database`. `apps/api`
 depends on `packages/database` via the pnpm workspace protocol and never imports
-`@prisma/client` directly; `apps/worker` will do the same once it needs the database
-(Phase 11+). Local dev Postgres strategy (no admin rights, no Docker): see
+`@prisma/client` directly. Local dev Postgres strategy (no admin rights, no Docker): see
 `docs/ADR/0003-local-postgresql-strategy.md`.
 
 ## Core relationship
 
 ```
 User ──< OrganizationMember >── Organization ──< InstagramAccount ──< Automation ──< AutomationRun
-                                      │                                    │
-                                      ├──< Contact                         └──< AutomationRunStep
-                                      ├──< Conversation ──< Message
-                                      ├──< AnalyticsDaily
-                                      ├──< AuditLog
-                                      ├──< WebhookEvent
-                                      └──< Subscription (── Plan), UsageRecord
+                                      │
+                                      └──< WebhookEvent
 ```
 
 Only `User ──< OrganizationMember >── Organization` (the left-hand side) exists today.
+Instagram posts/reels are **not** modeled here at all — per ADR 0005 they're read live from
+Zernio, never duplicated into Postgres; `Automation` references a Zernio post/reel by its
+Zernio-issued id (a plain string column), not a local foreign key.
 
 ## Tenant isolation rule
 
-Every table below except `users`, `plans`, and `webhook_events` (which is keyed by
-provider + external event id and resolved to an org during processing, not before) carries
+Every table below except `users` and `webhook_events` (which is keyed by provider +
+external event id and resolved to an org during processing, not before) carries
 `organization_id`. No query for tenant-owned data may run without a `WHERE organization_id
 = :callerOrgId` clause, and `:callerOrgId` is always derived server-side from the
 authenticated session's membership — never from a client-supplied field. This is enforced
 at the service layer and proven with explicit cross-tenant-access tests (see
-`docs/TESTING.md`). No service-layer query code exists yet (Phase 6+); this rule is
-recorded now so it governs every future query from the start.
+`docs/TESTING.md`) — first real example:
+`apps/api/src/organizations/organizations.service.ts` (Phase 6).
 
 ## Conventions (established in Phase 4, apply to every future table)
 
@@ -115,8 +110,8 @@ and why `Credentials` over an OAuth provider). Fields:
 
 ## `Organization`
 
-Deliberately minimal — future billing (Phase 20) hangs a `Subscription` table off
-`Organization.id` rather than growing fields on this table itself.
+Deliberately minimal, and stays that way — no billing/plan fields are planned (retired per
+`docs/ADR/0005-simplified-mvp-architecture.md`).
 
 - `id` — `cuid()`.
 - `name` — display name, no uniqueness constraint (two orgs can share a display name).
@@ -149,26 +144,19 @@ The join table between `User` and `Organization`, plus a role.
 
 ## Conceptual tables (not yet built — introduced per-phase)
 
+Per ADR 0005, this is the **complete** remaining list — not a subset of a larger planned
+schema. No `contacts`, `conversations`, `messages`, `analytics_daily`, `audit_logs`,
+`subscriptions`/`plans`/`usage_records`, or a `jobs`/queue-bookkeeping table are planned;
+that scope is retired, not deferred.
+
 | Table | Introduced in | Purpose |
 |---|---|---|
-| `instagram_accounts` | Phase 7 | Connected IG account, Zernio account/profile id, connection status |
-| `automations` | Phase 12 | Name, status, org + account scope |
-| `automation_triggers` | Phase 12 | Trigger type + config for an automation |
-| `automation_conditions` | Phase 12 | Ordered condition list for an automation |
-| `automation_actions` | Phase 12 | Ordered action list for an automation |
-| `automation_runs` | Phase 12 | One row per trigger match; overall status |
-| `automation_run_steps` | Phase 12 | One row per action executed within a run |
-| `contacts` | Phase 15 (Contacts, engine writes to it from Phase 13 on) | The Instagram user an automation interacted with |
-| `contact_events` | Phase 15 | Timeline of things that happened to a contact |
-| `conversations` | Phase 18 (Inbox) | DM thread with a contact on an account |
-| `messages` | Phase 18 | Individual inbound/outbound DM |
-| `webhook_events` | Phase 10 (Webhooks) | Raw inbound webhook + idempotency + processing status |
-| `jobs` | Phase 11 (Queues) — only if BullMQ's own Redis-side bookkeeping needs a Postgres audit trail; otherwise BullMQ's Redis state is sufficient and this table is skipped |
-| `analytics_daily` | Phase 16 | Pre-aggregated per-org/per-automation daily counters |
-| `audit_logs` | Phase 15/21 | Security-relevant action log |
-| `subscriptions`, `plans`, `usage_records` | Phase 20 (Billing) | Plan assignment + metered usage |
+| `instagram_accounts` | Phase 7-8 | Connected IG account, org-scoped, Zernio account/profile id, connection status |
+| `automations` | Phase 10 | One org + one account + one specific Zernio post/reel id + keyword(s) + public reply template + DM template + active flag. Not a generic trigger/condition/action graph — see `docs/AUTOMATION-ENGINE.md` |
+| `automation_runs` | Phase 12 | One row per trigger match, for basic status/history (MVP item 13) — shape (e.g. whether a separate `automation_run_steps` table is worth it) decided when this phase is built, not speculated now |
+| `webhook_events` | Phase 11 | Raw inbound webhook + idempotency + processing status |
 
-## `webhook_events` (first table with real shape, Phase 10)
+## `webhook_events` (first table with real shape, Phase 11)
 
 ```
 id               uuid, pk
@@ -178,7 +166,8 @@ event_type       text            -- e.g. 'comment.created', 'message.received'
 organization_id  uuid, nullable  -- resolved after we look up the account; null if unresolved
 account_id       uuid, nullable  -- fk -> instagram_accounts, nullable for same reason
 payload          jsonb           -- raw verified payload
-status           text            -- 'received' | 'queued' | 'processed' | 'failed'
+status           text            -- 'received' | 'processed' | 'failed' (no 'queued' state -
+                                 -- processing happens in-process, same request, per ADR 0005)
 received_at      timestamptz
 processed_at      timestamptz, nullable
 error_message     text, nullable

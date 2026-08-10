@@ -1,59 +1,72 @@
 # Architecture
 
-Status: Phase 0 baseline. This is the target architecture for the MVP and near-term
-phases. It will be revisited via ADRs (`docs/ADR/`) if reality forces a change, not edited
-silently.
+Status: Phase 6 baseline, **scope simplified** — see
+`docs/ADR/0005-simplified-mvp-architecture.md`. This project is a small internal/limited-use
+tool (~3-4 users, under 1,000 API calls/month), not a general-purpose SaaS; the architecture
+below reflects that directly rather than carrying infrastructure sized for a scale this
+product doesn't operate at. It will be revisited via ADRs (`docs/ADR/`) if reality forces a
+change, not edited silently.
 
 ## Guiding constraint
 
-Modular monolith, not microservices, from day one. Three deployable units
-(`apps/web`, `apps/api`, `apps/worker`), each internally organized into modules with clear
-boundaries, so that any module *could* be extracted into its own service later without a
-rewrite — but none is extracted until there's a real operational reason to.
+Modular monolith, not microservices, from day one:
+
+```
+Next.js (apps/web) -> NestJS (apps/api) -> PostgreSQL/Prisma (packages/database) -> Zernio
+```
+
+`apps/api` is internally organized into modules with clear boundaries, so that any module
+*could* be extracted into its own service later without a rewrite — but none is extracted
+until there's a real operational reason to, and per ADR 0005 no such reason exists yet.
+**Not introduced unless a concrete requirement appears later**: Redis, BullMQ, a second
+runtime process for queue consumers, object storage (S3/R2), Nginx, Docker, microservices,
+an event bus, a complex analytics pipeline, a CRM, billing, or a general trigger/condition/
+action workflow engine.
 
 ## Stack
 
 | Layer | Choice | Why |
 |---|---|---|
-| Frontend | Next.js (App Router) + TypeScript + Tailwind + shadcn/ui + React Hook Form + Zod + TanStack Query + React Flow | Matches master spec; React Flow specifically for the workflow builder (Phase 17) |
-| Backend | NestJS + TypeScript, REST + WebSocket | Modular DI container maps directly onto the module list below |
-| Database | PostgreSQL + Prisma | Relational data (orgs, contacts, automations) with strong migration story |
-| Queue | Redis + BullMQ | Webhook processing and DM sending must never block the HTTP request/response cycle |
+| Frontend | Next.js (App Router) + TypeScript + Tailwind | Server Components/Actions call `apps/api` directly server-side — no client-side data-fetching library needed yet |
+| Backend | NestJS + TypeScript, REST | Modular DI container maps directly onto the module list below |
+| Database | PostgreSQL + Prisma | Relational data (orgs, accounts, automations) with strong migration story |
 | External integration | Zernio API (Instagram via Meta Graph API under the hood) | See `docs/ZERNIO-INTEGRATION.md` |
 | Auth | Auth.js (`next-auth` v5), `Credentials` provider | Open-source, free, self-hosted — see `docs/ADR/0004-authentication-provider.md` |
-| Object storage | S3-compatible, Cloudflare R2 in production | Media attachments, exports |
-| Infra | Docker Compose (dev), Nginx (self-hosted deploy), Cloudflare (DNS/CDN/WAF) | Per master spec; local dev fallback documented in `docs/DEVELOPMENT-SETUP.md` since Docker isn't installed on the current dev machine |
+| Infra | Whatever the actual deploy target provides | No Docker/Nginx/Cloudflare requirement at this scale — see `docs/DEPLOYMENT.md` and ADR 0005 |
+
+**Not part of the stack** (see ADR 0005 for why): Redis, BullMQ, S3/R2 or any object
+storage, React Flow/a workflow builder, TanStack Query, WebSockets.
 
 ## Repository layout
 
 ```
 apps/
   web/      Next.js frontend
-  api/      NestJS HTTP + WS API
-  worker/   BullMQ consumers
+  api/      NestJS HTTP API
+  worker/   inert placeholder (Phase 2) - no queue, not wired to anything - see ADR 0005
 packages/
   database/            Prisma schema + generated client
-  shared/               cross-cutting types/utilities
+  shared/               cross-cutting types/utilities (e.g. the internal service token)
   validation/           Zod schemas (form + webhook validation)
   zernio/                InstagramProvider + ZernioInstagramProvider
-  automation-engine/     trigger/condition/action execution engine
-infra/
-  docker/    Dockerfiles per app
-  nginx/     reverse proxy config
+  automation-engine/     comment-automation matching (simplified shape, see docs/AUTOMATION-ENGINE.md)
 docs/        all artifacts described in the master prompt
 scripts/     PowerShell dev scripts (project-local tooling only)
-tests/e2e/   Playwright specs
 ```
 
 `packages/automation-engine` and `packages/zernio` are deliberately separate from
-`apps/api` so the execution engine can be unit tested with no NestJS or database
-dependency, and so Zernio is never called directly from anywhere except that one package.
+`apps/api` so automation matching can be unit tested with no NestJS or database
+dependency, and so Zernio is never called directly from anywhere except `packages/zernio`.
+
+`infra/docker/`, `infra/nginx/`, and the root `docker-compose.yml` exist as unused
+placeholders from Phase 0 (written before this project's actual scale was known) — not part
+of the current plan per ADR 0005, kept for now to avoid unrelated churn rather than
+removed as part of a documentation-only change; worth deleting in a future cleanup pass.
 
 ## Application shells (Phase 2)
 
-`apps/web`, `apps/api`, and `apps/worker` are scaffolded as minimal, featureless shells —
-no auth, no database, no Redis, no Zernio, no automation engine. Real versions installed
-(pnpm-resolved, not hand-picked):
+`apps/web`, `apps/api`, and `apps/worker` were scaffolded as minimal, featureless shells.
+Real versions installed (pnpm-resolved, not hand-picked):
 
 | App | Framework | Key versions |
 |---|---|---|
@@ -62,28 +75,16 @@ no auth, no database, no Redis, no Zernio, no automation engine. Real versions i
 | `apps/worker` | plain TypeScript (no framework yet) | `tsx 4.23` for dev-mode watch |
 
 - **`apps/web`**: a responsive shell (mobile-first Tailwind utility classes, a header/main/
-  footer layout, `viewport` metadata) with a dashboard placeholder (`/`) and a status page
-  (`/status`) that does a server-side fetch of `apps/api`'s `GET /api/health` — proving the
-  `NEXT_PUBLIC_API_URL` env wiring works end to end, and degrading gracefully (still `200`,
-  shows a "not reachable" message) when the API isn't running rather than erroring. No
-  `eslint-config-next` — it reuses the repo's single shared `eslint.config.mjs`
-  (`docs/DEVELOPMENT-SETUP.md`/`docs/IMPLEMENTATION-ROADMAP.md` Phase 2 report has the
-  rationale); React-specific lint rules (hooks correctness, etc.) can be added later if
-  needed.
-- **`apps/api`**: global `/api` prefix, `ConfigModule` with a hand-written `validateEnv`
-  (no Zod/Joi dependency added yet — deliberately minimal), a request-id middleware
-  (`X-Request-Id`, generated or echoed from the caller), a global exception filter
-  producing the `{ error: { code, message, requestId } }` shape from `docs/API-SPEC.md`,
-  and `GET /api/health`. `GET /ready` is **not** implemented yet — a readiness check with
-  nothing real to check (no DB/Redis exist yet) would be a hollow endpoint; it lands with
-  Phase 4/11 when there's something to actually report on.
+  footer layout, `viewport` metadata). No `eslint-config-next` — it reuses the repo's single
+  shared `eslint.config.mjs`.
+- **`apps/api`**: global `/api` prefix, `ConfigModule` with a hand-written `validateEnv`, a
+  request-id middleware (`X-Request-Id`), a global exception filter producing the
+  `{ error: { code, message, requestId } }` shape from `docs/API-SPEC.md`, `GET /api/health`
+  and (Phase 4) `GET /api/ready`.
 - **`apps/worker`**: bootstrap only — process startup logging and `SIGINT`/`SIGTERM`
-  handling, kept alive via `process.stdin.resume()`. No Redis/BullMQ connection; queue
-  consumers land in `src/processors/` starting Phase 11 (see that directory's `README.md`).
-
-Original roadmap Phase 3 ("NestJS backend shell") is functionally complete as part of this
-Phase 2 work, per explicit instruction to scaffold web + api + worker together — see
-`docs/IMPLEMENTATION-ROADMAP.md`'s Phase 2 report for the full rationale.
+  handling, kept alive via `process.stdin.resume()`. **Stays inert per ADR 0005** — no
+  queue connection, no processors; kept in the repo only to avoid the churn of deleting a
+  directory that costs nothing to leave alone.
 
 ## Database (Phase 4)
 
@@ -103,49 +104,48 @@ packages/database (Prisma schema, migrations, client singleton)
 PostgreSQL
 ```
 
-`GET /api/ready` (added this phase, alongside the existing `GET /api/health`) runs
-`SELECT 1` through `PrismaService` and returns `503` if it fails — the first endpoint with
-something real to check, per the plan noted in Phase 2's report.
+`GET /api/ready` runs `SELECT 1` through `PrismaService` and returns `503` if it fails.
 
 Local Postgres runs project-locally with no admin rights and no Docker, via the
 `embedded-postgres` npm package wrapping the official Postgres binaries, controlled through
-direct `pg_ctl` calls (`scripts/db.ps1` / `packages/database/dev/local-db.mjs`) rather than
-that package's own in-process start/stop API — see
-`docs/ADR/0003-local-postgresql-strategy.md` for the full reasoning, including a real
-Windows-specific `spawnSync` hang that was found and fixed while building this.
+direct `pg_ctl` calls (`scripts/db.ps1` / `packages/database/dev/local-db.mjs`) — see
+`docs/ADR/0003-local-postgresql-strategy.md`.
 
-Schema (`User`, `Organization`, `OrganizationMember` — the minimum Phase 5/6 need) and every
-convention (ID strategy, naming, cascade behavior, indexing) are documented in
-`docs/DATABASE.md`, not duplicated here.
+Per ADR 0005, Postgres stores `users`, `organizations`, `organization_members`,
+`instagram_accounts`, `automations`, automation run/status rows, and `webhook_events` — and
+nothing else. Instagram posts/reels are **not** duplicated here; they're read live from
+Zernio. Full schema/conventions: `docs/DATABASE.md`.
 
 ## Backend modules (apps/api)
 
-`auth`, `organizations`, `users`, `members`, `instagram`, `zernio`, `webhooks`,
-`automations`, `automation-engine` (thin NestJS wrapper around `packages/automation-engine`),
-`contacts`, `conversations`, `messages`, `analytics`, `usage`, `billing`, `notifications`,
-`health`, `audit`.
+`auth` (a `SessionGuard`, not a login flow — Auth.js itself lives in `apps/web`),
+`organizations` (folds in `users`/`members` for now — no invite-by-email flow yet to justify
+splitting them out), `instagram` (Phase 7-8), `zernio` (thin NestJS wrapper around
+`packages/zernio`), `webhooks` (Phase 11), `automations` (Phase 10-12), `health`.
 
-Not all of these exist by the MVP — see `docs/IMPLEMENTATION-ROADMAP.md` for which phase
-introduces which module. Creating an empty module ahead of the phase that needs it is
-avoided; premature scaffolding is itself a form of uncontrolled change.
+Not all of these exist yet — see `docs/IMPLEMENTATION-ROADMAP.md` for which phase introduces
+which module. Creating an empty module ahead of the phase that needs it is avoided;
+premature scaffolding is itself a form of uncontrolled change. Per ADR 0005, there is no
+`contacts`, `conversations`, `messages`, `analytics`, `usage`, `billing`, `notifications`, or
+`audit` module planned — that scope is retired, not deferred-but-still-coming.
 
 ## Request flow
 
 ```
-Browser → Cloudflare/reverse proxy → Next.js (apps/web)
-                                         │  API calls
-                                         ▼
-                                  NestJS API (apps/api)
-                                         │
-                          ┌──────────────┼───────────────┐
-                          ▼              ▼                ▼
-                    PostgreSQL       Redis/BullMQ     packages/zernio
-                    (source of      (enqueue only,        │
-                     truth)         never source          ▼
-                                     of truth)        Zernio API → Instagram
+Browser → Next.js (apps/web)
+             │  server-side calls, signed internal bearer token (see below)
+             ▼
+      NestJS API (apps/api)
+             │
+    ┌────────┴────────┐
+    ▼                 ▼
+PostgreSQL      packages/zernio
+(source of           │
+ truth)               ▼
+               Zernio API → Instagram
 ```
 
-## Webhook flow
+## Webhook flow (Phase 11, simplified per ADR 0005)
 
 ```
 Instagram → Zernio → Zernio webhook → POST /webhooks/zernio (apps/api, webhooks module)
@@ -155,32 +155,43 @@ Instagram → Zernio → Zernio webhook → POST /webhooks/zernio (apps/api, web
                               2. Validate payload schema (packages/validation)
                               3. Persist raw event to webhook_events (idempotency key = event id)
                               4. If duplicate event id → 200 OK, no further action
-                              5. Enqueue BullMQ job on `webhook-processing` queue
-                              6. Return HTTP 200 immediately
-                                          │
-                                          ▼ (async, apps/worker)
-                              automation-engine: resolve org → resolve IG account →
-                              find active automations → match trigger → evaluate
-                              conditions → create automation_run → execute actions
-                              (public reply / send DM / tag / etc via packages/zernio) →
-                              record automation_run_steps → update analytics_daily
+                              5. Resolve org -> resolve IG account -> find the matching
+                                 automation (specific post/reel + keyword) -> execute its
+                                 actions (public reply + DM via packages/zernio) - in-process,
+                                 same request, no queue (ADR 0005)
+                              6. Record the run's outcome (docs/AUTOMATION-ENGINE.md)
+                              7. Return HTTP 200
 ```
 
-The HTTP handler for `POST /webhooks/zernio` never does DB writes beyond the
-`webhook_events` insert, never calls Zernio, and never runs automation logic — that all
-happens in the worker, off the request path, per the "never process long-running automation
-work inside the webhook HTTP request" rule.
+Whether Zernio's own `comment-automations` API already does the keyword-matching and
+action-execution server-side (in which case this handler mostly just records the outcome it
+reports) or whether this handler must do the matching itself is **not decided** — verify
+against Zernio's real docs during Phase 10/11 implementation (`docs/ZERNIO-INTEGRATION.md`,
+`docs/AUTOMATION-ENGINE.md`) rather than assuming either way now.
 
-## Multi-tenancy
+The handler stays fast regardless: never more than the DB insert plus the small, bounded
+number of Zernio REST calls one automation's actions require — no unbounded loops, no
+fan-out, no queue needed at this call volume (<1,000/month total).
+
+## Multi-tenancy (Phase 6)
 
 ```
-User → Organization → Instagram Account → Automations → Contacts → Conversations → Analytics
+User → Organization → Instagram Account → Automations
 ```
 
 Every tenant-owned table carries `organization_id`. `organization_id` is **never** taken
 from client-supplied input — the service layer resolves it from the authenticated
 session/membership on every request. Tenant isolation is covered by dedicated tests (see
-`docs/TESTING.md`), not just code review.
+`docs/TESTING.md`), not just code review — `apps/api/src/organizations/organizations.service.ts`
+is the first real example: `listMembers` looks up the caller's own membership row for the
+requested org *before* returning anything about it, and returns a plain `404` (not `403`) for
+a real org the caller isn't in, so a non-member can't even confirm the org exists.
+
+Real organization creation lives behind `POST /api/organizations` (`apps/api`'s
+`organizations` module) — `apps/web` has a create-organization onboarding step
+(`apps/web/src/app/onboarding/`) that every new sign-up with zero organizations is redirected
+to (checked in `apps/web/src/app/page.tsx`, not in `proxy.ts`, since it needs a live org
+count, not just "is there a session").
 
 ## Authentication (Phase 5)
 
@@ -191,21 +202,54 @@ adapter tables needed, since there's no OAuth token to persist). Registration is
 server action that validates input with a `packages/validation` Zod schema, hashes the
 password, and creates the `User` row with `authProvider: "credentials"` and
 `authProviderId` set to the (lowercased) email — the first real population of those two
-fields, reserved since Phase 4. `apps/web/src/middleware.ts` redirects unauthenticated
-requests to `/sign-in` for every route except the auth pages themselves, `/status`, and
-Auth.js's own `/api/auth/*` routes.
+fields, reserved since Phase 4. `apps/web/src/proxy.ts` (Next.js 16's current name for what
+was `middleware.ts`) redirects unauthenticated requests to `/sign-in` for every route except
+the auth pages themselves, `/status`, and Auth.js's own `/api/auth/*` routes.
 
-`apps/api` is untouched by this phase: it has no endpoint yet that reads/writes user-owned
-data, so there is nothing to guard with a session check. Verifying an Auth.js session from
-`apps/api` (or a NestJS `auth` module/guard) is deferred to whichever phase adds the first
-real protected API endpoint — see `docs/ADR/0004-authentication-provider.md` for the full
-reasoning, including why Clerk was rejected and why a `Credentials` provider was chosen over
-an OAuth provider.
+## Session verification (Phase 6)
+
+`apps/api` needed to gain real, guarded endpoints in this phase (`organizations`), so it
+needed a way to know who's calling it — the thing Phase 5's report deferred. The design:
+
+```
+apps/web (Server Component / Server Action)
+   │  auth() -> session.user.{id,email}
+   ▼
+signInternalServiceToken({sub, email}, API_INTERNAL_SECRET)   (packages/shared)
+   │  Authorization: Bearer <token>, 60s expiry, minted fresh per call
+   ▼
+apps/api SessionGuard  ->  verifyInternalServiceToken(...)  ->  request.user
+   │
+   ▼
+every tenant-scoped query resolves organizationId from request.user.id server-side
+```
+
+**Deliberately not** apps/api decoding Auth.js's own session cookie directly: that cookie is
+a JWE encoded via `@auth/core`'s own HKDF-derived-key scheme, an internal implementation
+detail of a library still on a `5.0.0-beta.*` tag (see
+`docs/ADR/0004-authentication-provider.md`). Coupling `apps/api` to that would mean it breaks
+silently on a `next-auth` version bump it doesn't control. This internal token is a small,
+explicit, self-owned contract instead: its own secret (`API_INTERNAL_SECRET`, distinct from
+Auth.js's `AUTH_SECRET` — one key, one cryptographic use, never reused across two different
+schemes), its own short expiry (minted fresh per server-side call, never stored/reused), and
+its own claims shape (`packages/shared/src/internal-service-token.ts`) that only `apps/web`
+and `apps/api` need to agree on.
+
+This call only ever happens server-side (`apps/web`'s Server Components/Server Actions), the
+same way the `/status` page already calls `apps/api`'s health check — never from the browser,
+so there is no CORS or cross-origin-cookie question to solve for this.
 
 ## Open decisions (to resolve before the phase that needs them)
 
-- **Local Redis strategy** (Docker vs portable binaries vs cloud dev service) — decide in
-  Phase 11. Postgres's equivalent decision is resolved: `docs/ADR/0003-local-postgresql-strategy.md`.
-- **pnpm workspaces vs Turborepo** — start with plain pnpm workspaces (section 7 of the
-  master spec only requires Turborepo "if it provides clear value"); revisit once build
-  times across `apps/*` actually justify a task-graph build tool.
+- **pnpm workspaces vs Turborepo** — start with plain pnpm workspaces; revisit only if build
+  times across `apps/*` actually justify a task-graph build tool (unlikely at this project's
+  size).
+- **Zernio-side vs local automation matching** (see "Webhook flow" above) — resolved during
+  Phase 10/11 implementation by reading Zernio's real docs, not here.
+- **Zernio's posts/reels list pagination mechanism** (cursor vs offset) — resolved during
+  Phase 9 implementation; preserve whatever Zernio actually uses end to end in our own API
+  rather than assuming cursor or building fake offset pagination on top of it.
+
+Redis/BullMQ, object storage, and a general workflow engine are **not** open decisions —
+they are retired per `docs/ADR/0005-simplified-mvp-architecture.md`, not "to be decided
+later."

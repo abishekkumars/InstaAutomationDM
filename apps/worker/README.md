@@ -1,15 +1,19 @@
 # apps/worker
 
-Bootstrap shell for the future BullMQ worker process(es). Scaffolded in Phase 2: process
-startup/shutdown handling only — **no Redis or BullMQ connection yet** (that's Phase 11).
+Inert placeholder. Scaffolded in Phase 2 as a bootstrap shell for a future BullMQ worker
+process; kept in the repo per
+[docs/ADR/0005-simplified-mvp-architecture.md](../../docs/ADR/0005-simplified-mvp-architecture.md)
+rather than deleted, since this project turned out not to need queue infrastructure at its
+actual scale (~3-4 users, <1,000 API calls/month) — webhook processing happens in-process in
+`apps/api` instead (see `docs/WEBHOOKS.md`). Not part of the deployment topology
+(`docs/DEPLOYMENT.md`); nothing runs this in production.
 
 ## Structure
 
 - `src/main.ts` — bootstrap: logs startup, registers `SIGTERM`/`SIGINT` handlers, keeps the
-  process alive.
-- `src/processors/` — empty; see [`README.md`](src/processors/README.md) for where each
-  future queue consumer (`webhook-processing`, `automation-execution`, `dm-sending`,
-  `follow-up`, `analytics`, `notifications`) will live.
+  process alive. Unchanged since Phase 2.
+- `src/processors/` — empty, and expected to stay that way unless a concrete future
+  requirement makes a background worker actually necessary — see its own `README.md`.
 
 ## Development
 

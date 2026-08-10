@@ -168,7 +168,7 @@ the rest of the app is `DATABASE_URL` (via Prisma's `datasource db { url = env(.
 production deployment points that at any real Postgres (Neon, Supabase, RDS, a self-hosted
 instance, etc.) and runs `prisma migrate deploy` against it; nothing about the schema,
 client, or migration files is aware of, or coupled to, how local dev happens to run
-Postgres. Choosing a production provider is a Phase 22 (production deployment) decision,
+Postgres. Choosing a production provider is a Phase 14 (production deployment) decision,
 not this one.
 
 ## Consequences

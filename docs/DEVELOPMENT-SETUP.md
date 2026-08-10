@@ -88,8 +88,11 @@ none has been executed yet — this is a decision for the user before Phase 4/11
 | **C. Cloud dev databases** | No | A free-tier managed Postgres (e.g. Neon, Supabase) and managed Redis (e.g. Upstash) reachable via `DATABASE_URL`/`REDIS_URL` in `.env`. Lowest setup friction, but **creating an external account requires explicit user approval** before an agent does it. |
 
 Recommendation: start with **Option B** for fully offline, zero-account local dev, and only
-consider C if the user prefers not to manage local binaries. This will be finalized in
-Phase 4 (database) and Phase 11 (Redis/BullMQ) — not decided unilaterally here.
+consider C if the user prefers not to manage local binaries. PostgreSQL was finalized this
+way in Phase 4 (`docs/ADR/0003-local-postgresql-strategy.md`). **Redis is no longer part of
+this project at all** — the scope was later simplified to not need a queue; see
+`docs/ADR/0005-simplified-mvp-architecture.md`. The Redis mentions in the table above are
+kept as historical context for that earlier investigation, not a live plan.
 
 ## Scripts
 
@@ -320,3 +323,49 @@ that doesn't touch `Import-DotEnv` or `apps/api`'s use of `PORT` at all.
 the old name still works but logs a deprecation warning with a codemod pointer) — this
 project uses the new name (`apps/web/src/proxy.ts`) since Phase 5 is new code, not a
 migration.
+
+## Multi-tenancy (Phase 6, 2026-08-11)
+
+Full design: `docs/ARCHITECTURE.md`'s "Session verification (Phase 6)" section. Short
+version: `apps/api` gained its first guarded endpoints (`organizations`), verified via a
+short-lived internal bearer token `apps/web` mints after checking the Auth.js session — not
+by `apps/api` decoding Auth.js's own session cookie.
+
+**Setup**, beyond Phase 4 (Postgres) and Phase 5 (`AUTH_SECRET`):
+
+```powershell
+# Generate your own local API_INTERNAL_SECRET the same way as AUTH_SECRET - a distinct
+# secret, not an external credential:
+$b=New-Object byte[] 32; (New-Object System.Security.Cryptography.RNGCryptoServiceProvider).GetBytes($b); [Convert]::ToBase64String($b)
+```
+
+Put the result in your local `.env` as `API_INTERNAL_SECRET=...`. Both `apps/web` and
+`apps/api` need it (via `Import-DotEnv`, same as every other `.env` value).
+
+**Running `apps/api`'s test suite** (its first — Vitest + Supertest against the real local
+Postgres, same as `packages/database`'s):
+
+```powershell
+.\scripts\db.ps1 start   # if not already running
+.\scripts\pnpm.ps1 --filter @automationdm/api run test
+```
+
+**A real NestJS+Vitest gap found while wiring this up**: the first test run failed every
+endpoint that used constructor-injected services (`Cannot read properties of undefined
+(reading 'create')`) even though the exact same code built and ran correctly under `nest
+build`/`nest start`. Cause: NestJS's dependency injection resolves constructor parameter
+types via TypeScript's `emitDecoratorMetadata` (`design:paramtypes`), but Vitest's default
+transform is esbuild-based and doesn't emit that metadata — every constructor-injected
+provider silently resolved to `undefined`. This is a known NestJS+Vitest interaction, not a
+bug in this repo's code; NestJS's own docs (`docs.nestjs.com/recipes/swc#vitest`) recommend
+the fix used here: `unplugin-swc` + `@swc/core` as a Vite plugin in `apps/api/vitest.config.ts`
+(`plugins: [swc.vite({ module: { type: 'es6' } })]`), which routes Vitest's TS transform
+through SWC instead of esbuild.
+
+**A second real bug found while manually testing this in a browser**: the automated test
+suite's `beforeEach` does a full table reset (same pattern as `packages/database`'s tests) —
+running it against the shared local dev Postgres deleted the manually-created accounts from
+the *previous* phase's browser testing session. Not a bug in the product, but a reminder that
+this dev database is genuinely shared, disposable state (`docs/ADR/0003-local-postgresql-strategy.md`)
+across both automated tests and manual sessions — sign up again rather than expecting an
+old session's account to still exist after running the test suite.

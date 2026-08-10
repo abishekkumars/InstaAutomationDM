@@ -21,23 +21,43 @@ needed renumbering. History (the Phase 0/1/2 reports) is preserved exactly as wr
 - [x] Phase 2 stabilization — project-local Node runtime enforcement + diagnostics (`scripts/pnpm.ps1`, `scripts/doctor.ps1`). See "Phase 2 stabilization report" below.
 - [x] Phase 4 — PostgreSQL + Prisma (`User`/`Organization`/`OrganizationMember` foundation for auth + multi-tenancy). See "Phase 4 report" below.
 - [x] Phase 5 — Authentication (Auth.js decision + real sign-in, see "Phase 5 report" below).
-- [ ] **Phase 6 — Multi-tenancy** (`organizations`, `organization_members`, tenant-isolation tests) — **next phase**
-- [ ] Phase 7 — Instagram account domain model (`instagram_accounts` table, no Zernio calls yet)
-- [ ] Phase 8 — Zernio provider abstraction (`InstagramProvider` interface + `ZernioInstagramProvider` skeleton)
-- [ ] Phase 9 — Zernio account connection (real OAuth flow)
-- [ ] Phase 10 — Webhook ingestion (`POST /webhooks/zernio`, `webhook_events`, idempotency)
-- [ ] Phase 11 — Redis + BullMQ (queue wiring; `apps/worker`'s bootstrap shell already exists from Phase 2 — this phase adds the actual queue connection and processors; local Redis strategy still to be decided, see `docs/ARCHITECTURE.md` open decisions)
-- [ ] Phase 12 — Automation engine (`packages/automation-engine`, generic trigger/condition/action model)
-- [ ] Phase 13 — Comment keyword automation (first real trigger wired end to end)
-- [ ] Phase 14 — Public comment reply + DM actions
-- [ ] Phase 15 — Contact management (`contacts`, `contact_events`, audit logs)
-- [ ] Phase 16 — Analytics (`analytics_daily`)
-- [ ] Phase 17 — Workflow builder UI (React Flow)
-- [ ] Phase 18 — Inbox/conversations (`conversations`, `messages`)
-- [ ] Phase 19 — Follow-up workflows (delays, branching)
-- [ ] Phase 20 — Billing and usage (`subscriptions`, `plans`, `usage_records`)
-- [ ] Phase 21 — Security hardening
-- [ ] Phase 22 — Production deployment
+- [x] Phase 6 — Multi-tenancy (real org creation/membership, apps/api session verification, tenant-isolation tests — see "Phase 6 report" below).
+
+**Scope simplification (2026-08-11):** the product scope was substantially narrowed after
+Phase 6 — see `docs/ADR/0005-simplified-mvp-architecture.md`. This is a small internal tool
+(~3-4 users, <1,000 API calls/month), not a general SaaS. Every phase below this point is
+rewritten to match the new, exact 13-item MVP list from that ADR; nothing past this point
+was implemented under the old numbering (Phase 7 below is **not** the same as any
+previously-drafted "Phase 7" — the old draft never shipped, so this isn't a renumbering of
+completed work, just a rewrite of what hadn't started yet).
+
+- [ ] **Phase 7 — Instagram account domain model + Zernio provider abstraction**
+  (`instagram_accounts` table, org-scoped; `InstagramProvider` interface +
+  `ZernioInstagramProvider` skeleton in `packages/zernio` — no live Zernio calls yet) — **next phase**
+- [ ] Phase 8 — Zernio account connection (real OAuth flow, populates `instagram_accounts`)
+- [ ] Phase 9 — List + view Instagram posts/reels (fetched live from Zernio, not stored in
+  Postgres per ADR 0005; preserve Zernio's real pagination mechanism — verify cursor vs
+  offset against its docs before building, don't assume)
+- [ ] Phase 10 — Comment automation creation (`automations` table: one org + one connected
+  account + one specific Zernio post/reel + keyword(s) + public reply template + DM
+  template; create/save UI on the post/reel detail page; whether matching runs on our side
+  or Zernio's own `comment-automations` API does it end to end is decided here, against
+  Zernio's real docs, not assumed)
+- [ ] Phase 11 — Webhook ingestion + automation trigger (`POST /webhooks/zernio`,
+  `webhook_events` idempotency, in-process execution — no queue, per ADR 0005)
+- [ ] Phase 12 — Automation status/history (run/status records + a simple list/detail UI —
+  the MVP's item 13, not a general analytics pipeline)
+- [ ] Phase 13 — Security hardening (scoped to this app's actual size — tenant isolation,
+  secret hygiene, dependency audit; not enterprise-scale rate limiting/WAF work)
+- [ ] Phase 14 — Production deployment (whatever the actual hosting target needs when this
+  is reached; no Docker/Nginx/Cloudflare requirement per ADR 0005)
+
+**Retired (not deferred — see `docs/ADR/0005-simplified-mvp-architecture.md` for why)**:
+Redis + BullMQ queue wiring, a generic trigger/condition/action automation engine, contact
+management/CRM, an analytics pipeline, a visual workflow builder UI, an inbox/conversations
+UI, follow-up workflows (delays/branching), and billing/usage/plans. None of these are part
+of the current MVP; any of them could come back as their own future ADR if a concrete
+requirement ever appears, but they are not "later phases" on this roadmap anymore.
 
 ## Phase 0 report
 
@@ -550,3 +570,123 @@ this phase wires real org creation/membership into the authenticated session (ev
 tenant-owned query scoped server-side by `organization_id`, never client input — per
 `docs/ARCHITECTURE.md`'s multi-tenancy rule), and is the first phase that needs `apps/api`
 to actually verify who's calling it. Will not start until the user says to proceed.
+
+## Phase 6 report
+
+**What was built**
+- `packages/shared`: scaffolded for real (previously an empty placeholder) —
+  `signInternalServiceToken`/`verifyInternalServiceToken` (HS256, `jsonwebtoken`), the
+  `apps/web` -> `apps/api` server-to-server auth contract. Full design:
+  `docs/ARCHITECTURE.md`'s new "Session verification (Phase 6)" section.
+- `packages/validation`: `createOrganizationSchema` (name + slug, slug format rule per
+  `docs/DATABASE.md`'s long-standing note that this was "an application-layer concern for
+  whichever phase builds org creation").
+- `apps/api`: first guarded endpoints — `src/auth/` (`SessionGuard`, `@CurrentUser()`,
+  verifies the internal bearer token) and `src/organizations/` (`POST /api/organizations`,
+  `GET /api/organizations`, `GET /api/organizations/:id/members`). `listMembers` is the
+  first real tenant-isolation enforcement in this codebase: 404 for any org the caller isn't
+  a member of, identical response whether the org exists or not. First test suite for
+  `apps/api` — Vitest + Supertest against a real `@nestjs/testing` app and the real local
+  Postgres, 9 tests covering auth rejection, creation, duplicate-slug conflict, invalid-slug
+  rejection, listing, and three tenant-isolation cases.
+- `apps/web`: `src/lib/api.ts` (`callApi()` — signs the internal token from the current
+  Auth.js session, calls `apps/api`, server-side only); `src/app/onboarding/` (create-
+  organization form + server action); `src/app/page.tsx` rewritten to load the caller's
+  organizations from `apps/api` and either redirect to `/onboarding` (zero orgs) or show the
+  first org's name/slug/role + member list, degrading gracefully if `apps/api` is
+  unreachable (same philosophy as `/status`).
+- New env var: `API_INTERNAL_SECRET` (`.env.example`, local `.env`) — deliberately separate
+  from `AUTH_SECRET`; see the ADR/architecture reasoning on not reusing one key for two
+  different cryptographic uses.
+- Docs: `docs/ARCHITECTURE.md` ("Session verification (Phase 6)" section, multi-tenancy
+  section rewritten, Backend modules note, and a stale `middleware.ts` reference fixed to
+  `proxy.ts` while in the file); `docs/API-SPEC.md` (3 new endpoints documented);
+  `docs/SECURITY.md` (tenant isolation + AuthN/AuthZ sections extended); `docs/TESTING.md`
+  (first real tenant-isolation test example + the `unplugin-swc` note); `docs/DEVELOPMENT-SETUP.md`
+  (new Phase 6 section: setup, running `apps/api`'s tests, both bugs found below);
+  `apps/api/README.md` and `apps/web/README.md` rewritten; `packages/shared/README.md` and
+  `packages/validation/README.md` extended; this file.
+
+**A real regression found and fixed while adding the Express `user` type augmentation**:
+adding an `import` to `apps/api/src/common/types/express.d.ts` (to import the
+`AuthenticatedUser` interface) silently turned the file from a global ambient script into a
+module — TypeScript stopped merging its `declare namespace Express` into the real global
+`Express` namespace `@types/express` declares, breaking not just the new `request.user`
+property but the *existing* `request.requestId` one too (`nest build` failed with
+`Property 'requestId' does not exist on type 'Request'`). Fixed by wrapping the augmentation
+in `declare global { namespace Express { ... } }`, the standard pattern once a `.d.ts` file
+has any top-level `import`.
+
+**A real, well-known NestJS+Vitest gap found and fixed while building `apps/api`'s first
+test suite**: every constructor-injected provider resolved to `undefined` at runtime
+(`Cannot read properties of undefined (reading 'create')`) even though `nest build`/
+`nest start` worked fine. Cause: Nest's DI resolves constructor parameter types via
+TypeScript's `emitDecoratorMetadata`, which Vitest's default esbuild-based transform doesn't
+produce. Fixed with NestJS's own documented recipe: `unplugin-swc` + `@swc/core` as a Vite
+plugin in `apps/api/vitest.config.ts`.
+
+**Commands executed and results**
+| Command | Result |
+|---|---|
+| `pnpm install` (×2 passes — `jsonwebtoken`, `supertest`/`@nestjs/testing`/`@swc/core`/`unplugin-swc`, workspace links) | Both exit 0. |
+| `pnpm --filter @automationdm/shared run build` / `@automationdm/validation run build` | Both `tsc`, exit 0. |
+| `pnpm --filter @automationdm/api run build` (1st attempt) | **Failed** — the `express.d.ts` regression above. |
+| Same, after the fix | `nest build`, exit 0. |
+| `pnpm --filter @automationdm/api run test` (1st attempt) | **7/9 failed** — the Vitest/SWC DI gap above. |
+| Same, after adding `unplugin-swc` | **9/9 passed**, including all three tenant-isolation cases. |
+| `pnpm --filter @automationdm/web run typecheck` / `run build` | Both passed; route list now includes `/onboarding`. |
+| Manual browser test: sign up a fresh user (`carol@example.com`) | Immediately redirected to `/onboarding` (zero orgs) — not a placeholder dashboard. |
+| Submit the create-organization form | `201` from `apps/api`, redirected to `/`, dashboard shows "Carol's Widgets", "/carols-widgets — you are owner", member list with Carol as owner. |
+| Sign out, sign up a second fresh user (`dave@example.com`) | Also redirected to `/onboarding` — confirmed Dave does **not** see Carol's organization, matching the automated tenant-isolation tests. |
+| `.\scripts\lint.ps1` (ESLint + typecheck across all 9 workspace projects + Prettier) | ESLint 0 errors, typecheck 9/9 `Done`, Prettier all pass. Exit 0. |
+| `.\scripts\test.ps1` | `packages/database`: 11/11 (unchanged); `apps/api`: 9/9 (new). |
+| Full rebuild of all packages/apps after all fixes | All exit 0 again. |
+| `node --version` / `npm --version`, fresh shells, throughout | `v16.13.0` / `8.1.0` at `C:\Program Files\nodejs` — **unchanged**. |
+
+**Files created**
+`packages/shared/src/{index.ts,internal-service-token.ts}`;
+`packages/validation/src/organization.ts`;
+`apps/api/src/auth/{authenticated-user.interface.ts,session.guard.ts,current-user.decorator.ts,auth.module.ts}`,
+`apps/api/src/organizations/{organizations.service.ts,organizations.controller.ts,organizations.module.ts,__tests__/organizations.e2e.test.ts}`,
+`apps/api/{vitest.config.ts,vitest.setup.ts}`;
+`apps/web/src/lib/api.ts`, `apps/web/src/app/onboarding/{page.tsx,create-organization-form.tsx,actions.ts}`.
+
+**Files modified**
+`packages/shared/{package.json,tsconfig.json,README.md}`;
+`packages/validation/{src/index.ts,README.md}`;
+`apps/api/{package.json,src/app.module.ts,src/common/types/express.d.ts,README.md}`;
+`apps/web/{package.json,src/app/page.tsx,README.md}`; `.env.example`;
+`docs/{ARCHITECTURE.md,API-SPEC.md,SECURITY.md,TESTING.md,DEVELOPMENT-SETUP.md}`; this file.
+
+**Files intentionally not committed**
+`.env` (gained a real local `API_INTERNAL_SECRET`, gitignored — confirmed via
+`git check-ignore -v`, unchanged handling from every prior phase's secrets).
+
+**Known limitations / risks**
+- Dashboard shows only the caller's *first* organization (by `createdAt`) — no org-switcher
+  UI. Not required by this phase's roadmap line; a real multi-org UX is deferred until a
+  phase that actually needs it.
+- No invite-by-email flow — `users`/`members` stay folded into `organizations` until that
+  exists. Adding a member today would require direct DB access (there's no endpoint for it
+  yet), which is fine since nothing in this phase needed one.
+- No role-based *authorization* beyond "is a member" — `OWNER`/`ADMIN`/`MEMBER` exist as
+  vocabulary (Phase 4) and are returned by the API, but nothing yet restricts an action to a
+  specific role, since no endpoint operates on an *existing* org's data yet (only creates
+  new ones and lists membership).
+- The internal service token's 60-second expiry and lack of revocation list is appropriate
+  for "minted fresh per server-side call, never stored" but has not been load-tested or
+  clock-skew-tested across machines; noted, not a blocker for local dev.
+- `apps/api`'s new test suite shares the same disposable local dev Postgres as manual
+  browser testing and `packages/database`'s tests — running it wipes `users`/
+  `organizations`/`organization_members` (by design, see the ADR), which is why the manual
+  browser walkthrough above used fresh accounts rather than Phase 5's.
+- Local Redis strategy remains the only fully open decision in `docs/ARCHITECTURE.md`.
+
+**Next phase**
+
+The product scope was simplified immediately after this phase — see
+`docs/ADR/0005-simplified-mvp-architecture.md` and the "Scope simplification" note above the
+checklist. Phase 7 is now: Instagram account domain model + Zernio provider abstraction
+(`instagram_accounts` table, org-scoped, no live Zernio calls yet; `InstagramProvider`
+interface + `ZernioInstagramProvider` skeleton in `packages/zernio`). Will not start until
+the user says to proceed.

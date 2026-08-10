@@ -2,8 +2,9 @@
 
 Status: Phase 0 research pass, based on the current public docs at https://docs.zernio.com/
 (retrieved 2026-08-10). This is **not** invented — every claim below traces to that source.
-It must be re-verified against the live docs immediately before Phase 5/9/10 implementation,
-since third-party API docs change.
+It must be re-verified against the live docs immediately before Phase 8/9/10/11
+implementation (account connection, posts listing, automation creation, webhooks — see
+`docs/IMPLEMENTATION-ROADMAP.md`), since third-party API docs change.
 
 Zernio is a unified social-media API (16 platforms). We only use its Instagram surface:
 account connection, comment automations (comment-to-DM), and the unified inbox/messages
@@ -48,7 +49,7 @@ Two OAuth paths for Instagram:
 - Facebook Login — `instagram_*` scopes + Facebook Page management.
 
 Constraint: only Business or Creator Instagram accounts can be connected; **personal
-accounts cannot post/DM via the API.** The account-connection UI (Phase 9) must communicate
+accounts cannot post/DM via the API.** The account-connection UI (Phase 8) must communicate
 this to the user before they attempt to connect a personal account.
 
 ## Comment-to-DM automation API
@@ -64,13 +65,28 @@ this to the user before they attempt to connect a personal account.
   - Response: `automation` object with `id`, config echo, `stats`
     (`totalTriggered`/`totalSent`/`totalFailed`), `createdAt`.
 - `GET`-list endpoint also exists (list comment automations) — full request/response shape
-  to be documented in Phase 13 when we actually integrate it, rather than transcribed twice.
+  to be documented in Phase 10 when we actually integrate it, rather than transcribed twice.
 
-This maps directly onto our own `automations` + `automation_triggers` +
-`automation_conditions` + `automation_actions` tables (`docs/DATABASE.md`) — we do not need
-to invent our own trigger/condition vocabulary beyond what Zernio can execute, though our
-schema is intentionally a little more general (see `docs/AUTOMATION-ENGINE.md`) so future
-triggers (e.g. plain DM keyword) fit without a redesign.
+This maps directly onto our own, deliberately simple `automations` table
+(`docs/DATABASE.md`) — one org + one account + one post/reel + keyword(s) + reply template +
+DM template. Whether we actually need to re-implement keyword matching ourselves, or whether
+registering one of these with Zernio via this endpoint means Zernio executes the whole
+match → reply → DM flow itself, is an open question resolved during Phase 10/11
+implementation — see `docs/AUTOMATION-ENGINE.md`'s "Open question" section. Do not assume
+either way before reading this endpoint's real, current behavior directly.
+
+## Listing posts/reels (needed for MVP items 4-5, not yet researched)
+
+The pages reviewed during this Phase 0 pass covered account connection, comment-automations,
+messages, and webhooks — **not** an endpoint for listing an account's existing posts/reels,
+which `docs/PRODUCT-REQUIREMENTS.md`'s MVP now requires (list + click into a specific post/
+reel to attach an automation to it). Before Phase 9 implements this:
+
+- Find Zernio's actual media/posts listing endpoint for Instagram in the current
+  `docs.zernio.com` docs (not assumed here).
+- Determine its real pagination mechanism. If it's cursor-based (common for this kind of
+  API), **preserve cursor-based pagination end to end** in `apps/api`'s own endpoint and
+  `apps/web`'s UI — do not flatten it into a fake offset/page-number scheme on our side.
 
 ## Direct messages
 
@@ -80,8 +96,9 @@ triggers (e.g. plain DM keyword) fit without a redesign.
   of the product vision).
 - Carousels: up to 10 elements.
 - Emoji reactions to messages.
-- `HUMAN_AGENT` message tag bypasses Meta's 24-hour standard messaging window — relevant for
-  follow-up workflows (Phase 19) that fire outside 24h of the last contact message.
+- `HUMAN_AGENT` message tag bypasses Meta's 24-hour standard messaging window. Not currently
+  relevant — this project has no follow-up/delayed-workflow feature (retired per
+  `docs/ADR/0005-simplified-mvp-architecture.md`) — noted only in case that scope returns.
 
 ## Webhooks
 
@@ -95,7 +112,7 @@ triggers (e.g. plain DM keyword) fit without a redesign.
   the `webhook_events` unique-constraint idempotency strategy in `docs/DATABASE.md` /
   `docs/WEBHOOKS.md`.
 - Debugging: `GET /v1/webhooks/logs` (30-day retention), `POST /v1/webhooks/test`. Useful for
-  Phase 10 integration testing against Zernio's sandbox rather than only mocks.
+  Phase 11 integration testing against Zernio's sandbox rather than only mocks.
 
 ## Known limitations that shape our product scope
 
@@ -107,22 +124,25 @@ Confirmed directly from `docs.zernio.com/platforms/instagram`:
   not a Zernio gap. The `trigger: "story_reply"` field exists on the comment-automations
   endpoint per the docs snippet we saw, but the platform page explicitly says story replies
   are unavailable for Instagram — this contradiction must be resolved by hands-on testing in
-  Zernio's sandbox during Phase 9/13, not assumed either way. Documented as an open question,
-  not silently resolved.
+  Zernio's sandbox during Phase 10/11, not assumed either way. Documented as an open
+  question, not silently resolved. Moot for the MVP either way — the current scope is
+  comment triggers only, not story replies.
 - No Reels music/filters/stickers/live via API — not relevant to this product.
 - DM history access requires prior consent; follow-relationship visibility is limited to
-  users who have previously messaged the account — relevant to `contacts`/`conversations`
-  design (Phase 15/18): we cannot backfill a full DM history on first connect.
+  users who have previously messaged the account. Not currently relevant — this project has
+  no contacts/inbox feature (retired per `docs/ADR/0005-simplified-mvp-architecture.md`) —
+  noted only in case that scope is ever revisited.
 
 ## Rate limits
 
 Not specified in the pages retrieved during this Phase 0 pass. Must be checked against
-`docs.zernio.com` (and/or the response headers of real calls) before Phase 12 implements
-retry/backoff for the Zernio adapter — do not hardcode an assumed limit.
+`docs.zernio.com` (and/or the response headers of real calls) before any phase implements
+retry/backoff for the Zernio adapter — do not hardcode an assumed limit. Low priority at
+this project's actual call volume (<1,000/month).
 
 ## What's deliberately deferred
 
-Full request/response schemas for every endpoint we'll use (inbox/messages list, account
-list, webhook test endpoint) are documented endpoint-by-endpoint as each is actually
-integrated (Phase 9/10/13/18), rather than transcribed wholesale now against a doc site
-that may change before we get there.
+Full request/response schemas for every endpoint we'll use (posts/media list, account
+connection, comment-automations, webhook test endpoint) are documented endpoint-by-endpoint
+as each is actually integrated (Phase 8-11), rather than transcribed wholesale now against a
+doc site that may change before we get there.

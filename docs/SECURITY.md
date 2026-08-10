@@ -1,7 +1,9 @@
 # Security
 
-Status: Phase 0 baseline. Expanded and re-verified in Phase 21 (Security hardening), but
-these rules apply from the very first line of code, not just at the end.
+Status: Phase 6, scope simplified per
+`docs/ADR/0005-simplified-mvp-architecture.md`. Expanded and re-verified in Phase 13
+(Security hardening, scaled to this app's actual size — ~3-4 users), but these rules apply
+from the very first line of code, not just at the end.
 
 ## Secrets
 
@@ -21,7 +23,11 @@ these rules apply from the very first line of code, not just at the end.
 
 See `docs/DATABASE.md` and `docs/ARCHITECTURE.md`. `organization_id` is always derived from
 the authenticated session's membership, never trusted from client input (path param, body,
-or query string). Covered by explicit cross-tenant tests, not just review.
+or query string). Covered by explicit cross-tenant tests, not just review — first proven in
+`apps/api/src/organizations/__tests__/organizations.e2e.test.ts` (Phase 6): a real,
+authenticated, non-member user requesting another organization's member list gets a plain
+`404`, and the test asserts the response body contains none of that organization's data, not
+just that the status code is right.
 
 ## AuthN/AuthZ
 
@@ -34,9 +40,21 @@ or query string). Covered by explicit cross-tenant tests, not just review.
   phase could proceed) — full reasoning in `docs/ADR/0004-authentication-provider.md`. This
   is specifically about *this project's own* user accounts — unrelated to, and does not
   change, the Instagram-password rule below.
-- AuthZ: role-based within an organization (owner/admin/member — exact roles finalized
-  Phase 6), enforced at the NestJS service layer via guards, not just hidden in the UI.
-  `apps/api` has no protected endpoints yet, so guard implementation is deferred to Phase 6.
+- **`apps/api` session verification (Phase 6)**: `apps/api` never sees Auth.js's own session
+  cookie. Instead, `apps/web` mints a short-lived (60s), purpose-built bearer token
+  (`packages/shared/src/internal-service-token.ts`, HS256) immediately after checking the
+  caller's session, signed with `API_INTERNAL_SECRET` — a **separate** secret from
+  `AUTH_SECRET` (never reuse one key across two different cryptographic uses/protocols).
+  `apps/api`'s `SessionGuard` verifies it and populates `request.user`; every service method
+  re-derives `organizationId` from that user's real `OrganizationMember` rows, never from a
+  path/body parameter. Full design + why not just decode the Auth.js cookie directly:
+  `docs/ARCHITECTURE.md`'s "Session verification (Phase 6)" section.
+- AuthZ: role-based within an organization (owner/admin/member — vocabulary exists since
+  Phase 4's `OrganizationRole` enum). `SessionGuard` + per-request membership lookups are the
+  Phase 6 foundation; role-based permission checks beyond "is a member" (e.g. only an `OWNER`
+  can do X) land with whichever future phase first needs that distinction — nothing needs it
+  yet, since `organizations`' only mutating endpoint (`POST /api/organizations`) doesn't
+  operate on an existing org.
 
 ## Webhooks
 
@@ -49,11 +67,14 @@ or query string). Covered by explicit cross-tenant tests, not just review.
 - All external input (API request bodies, webhook payloads) validated with Zod schemas
   from `packages/validation` before touching business logic.
 - API rate limiting at the NestJS layer (per-org and per-IP) — exact limits set once we
-  have real Zernio rate-limit numbers (Phase 12) and real usage patterns.
+  have real Zernio rate-limit numbers (Phase 8-11, whichever first makes real Zernio calls)
+  and real usage patterns. Low priority at this project's actual call volume (<1,000/month).
 
 ## Transport/session security
 
-- HTTPS everywhere in any deployed environment (Cloudflare in front in production).
+- HTTPS everywhere in any deployed environment — whatever TLS termination the actual host
+  provides (no specific reverse proxy/CDN required, see `docs/DEPLOYMENT.md` and
+  `docs/ADR/0005-simplified-mvp-architecture.md`).
 - Secure, `httpOnly`, `SameSite` cookies for session state.
 - CSRF protection on any state-changing endpoint reachable from a browser session cookie.
 - CORS restricted to known frontend origins (no wildcard) once `apps/web`'s deployed origin
@@ -63,9 +84,12 @@ or query string). Covered by explicit cross-tenant tests, not just review.
 
 ## Audit logging
 
-`audit_logs` table (Phase 15/21) records security-relevant actions (account connect/
-disconnect, automation create/delete, member invite/role change, billing changes) with
-actor, org, timestamp, action, and target — never secret values.
+No dedicated `audit_logs` table — retired per
+`docs/ADR/0005-simplified-mvp-architecture.md` along with the rest of the CRM/billing scope
+it was originally paired with. At this project's scale (~3-4 users), structured server logs
+(already correlated by `requestId`, see "Error responses" below) are the audit trail for
+now; revisit with a real table only if a concrete compliance/traceability requirement
+appears.
 
 ## Error responses
 
