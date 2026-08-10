@@ -35,10 +35,11 @@ completed work, just a rewrite of what hadn't started yet).
   (`instagram_accounts` table, org-scoped; `InstagramProvider` interface +
   `ZernioInstagramProvider` skeleton in `packages/zernio` — no live Zernio calls yet). See
   "Phase 7 report" below.
-- [ ] **Phase 8 — Zernio account connection** (real OAuth flow, populates `instagram_accounts`) — **next phase**
-- [ ] Phase 9 — List + view Instagram posts/reels (fetched live from Zernio, not stored in
-  Postgres per ADR 0005; preserve Zernio's real pagination mechanism — verify cursor vs
-  offset against its docs before building, don't assume)
+- [x] Phase 8 — Zernio account connection (real OAuth flow, populates `instagram_accounts`).
+  See "Phase 8 report" below.
+- [ ] **Phase 9 — List + view Instagram posts/reels** (fetched live from Zernio, not stored
+  in Postgres per ADR 0005; preserve Zernio's real pagination mechanism — verify cursor vs
+  offset against its docs before building, don't assume) — **next phase**
 - [ ] Phase 10 — Comment automation creation (`automations` table: one org + one connected
   account + one specific Zernio post/reel + keyword(s) + public reply template + DM
   template; create/save UI on the post/reel detail page; whether matching runs on our side
@@ -761,3 +762,166 @@ Zernio's live docs first, per `CLAUDE.md`), a NestJS `instagram` module with con
 callback endpoints, `ZernioInstagramProvider.connectAccount`'s real implementation, and the
 first `InstagramAccount` rows ever created outside a test. Will not start until the user
 says to proceed.
+
+## Phase 8 report
+
+**Re-verification against Zernio's live docs (required by `CLAUDE.md` before this phase
+started)**: Phase 7's `InstagramProvider.connectAccount(code, redirectUri)` shape — a
+generic OAuth-authorization-code exchange — turned out not to match Zernio's real API at
+all. Fetched Zernio's live OpenAPI spec (`docs.zernio.com/api/openapi`) and its
+`/guides/connecting-accounts` and `/multi-tenant` guides directly rather than trusting the
+Phase 0 research pass's general description. Real findings: Zernio has its own tenant-
+boundary concept ("profiles" — one per end customer, exactly this project's
+Organization-per-tenant model), it hosts the entire OAuth round trip with Instagram/Meta
+itself, and it never hands us an authorization code to exchange — by the time it redirects
+back to us, the connection already happened server-side on Zernio's end. `InstagramProvider`
+was redesigned around three methods that actually match this (`ensureProfile`,
+`getConnectUrl`, `findConnectedAccount`) instead of patching the old shape. See
+`docs/ZERNIO-INTEGRATION.md`'s "Zernio profiles" and "Account connection" sections for the
+full, source-cited detail.
+
+**What was built**
+- `packages/database`: `Organization.zernioProfileId` (nullable, globally unique), one
+  migration (`20260811021921_add_zernio_profile_id_to_organizations`).
+- `packages/validation`: `instagramCallbackSchema` (`profileId`, `accountId`).
+- `packages/zernio`: `InstagramProvider` redesigned (see above);
+  `ZernioInstagramProvider.ensureProfile`/`getConnectUrl`/`findConnectedAccount` all make
+  real HTTP calls to `https://zernio.com/api/v1` (`POST /profiles`, `GET /connect/instagram`,
+  `GET /accounts`), with a duplicate-profile-name 409 recovered via the error body's
+  `details.existingProfileId` rather than left as a hard failure.
+- `apps/api`: new `instagram` module — `InstagramService`/`InstagramController` under
+  `organizations/:organizationId/instagram` (`POST .../connect`, `POST .../callback`,
+  `GET .../accounts`), all behind `SessionGuard`, same 404-if-not-a-member tenant-isolation
+  pattern as `organizations`. `handleCallback` never trusts the OAuth redirect's own query
+  params: the `profileId` must match the organization's own `zernioProfileId`, and the
+  `accountId` is independently re-confirmed with a live `findConnectedAccount` Zernio call
+  before anything is written; a `zernioAccountId` already connected to a *different*
+  organization is rejected with `409` (enforced both by an explicit check and, as a race-
+  safety net, by catching the underlying `P2002` from the database's own unique constraint).
+  `INSTAGRAM_PROVIDER` is a DI token so tests can bind a fake instead of the real
+  `ZernioInstagramProvider`. New `src/config/app-url.ts` (`getAppUrl()`) so the OAuth
+  `redirect_url` is built from apps/api's own `APP_URL` env var, never a client-supplied
+  value.
+- `apps/api`: 9 new Vitest + Supertest e2e tests
+  (`src/instagram/__tests__/instagram.e2e.test.ts`) against an in-memory
+  `FakeInstagramProvider` (never live Zernio, per `docs/TESTING.md`) — connect-url issuance +
+  profile-id persistence/reuse, non-member 404, successful callback + DB write, callback
+  profile-id mismatch, callback account-id Zernio doesn't confirm, cross-organization account
+  conflict, list accounts + non-member 404. 18/18 total with the existing `organizations`
+  suite (up from 9).
+- `apps/web`: `src/app/instagram/actions.ts` (`connectInstagramAction` — calls the connect
+  endpoint, redirects the browser to the real external `authUrl`) and
+  `src/app/instagram/callback/page.tsx` (where Zernio redirects the browser back to; still
+  behind the normal authenticated-session requirement, forwards the result to the callback
+  endpoint, redirects to `/` with a `?instagram=connected|error` banner).
+  `src/app/page.tsx` extended: shows a "Connect Instagram" button when the organization has
+  no connected account, or the connected `@username`/status list when it does; also dropped
+  `Contacts`/`Analytics` from its placeholder-sections array (pre-existing drift from before
+  ADR 0005 retired that scope — fixed while already touching this file, per `CLAUDE.md`'s
+  "fix the doc/code as part of your change" rule, not a new decision this phase).
+- New env var: `APP_URL` (`.env.example`, local `.env`) — apps/api's own view of where
+  apps/web is reachable, so the OAuth redirect URL is server-controlled rather than trusted
+  from the caller.
+- Docs: `docs/ZERNIO-INTEGRATION.md` (Account connection section rewritten with the real,
+  verified flow; new "Zernio profiles" section), `docs/DATABASE.md` (`zernioProfileId` field,
+  migrations list, `InstagramAccount` status note), `docs/ARCHITECTURE.md` (new "Instagram
+  connect flow" section, Backend modules note, repo layout, status line), `docs/API-SPEC.md`
+  (3 new endpoints), `docs/SECURITY.md` (the OAuth-redirect trust-boundary consideration),
+  `docs/TESTING.md` (status line fixed from a stale "Phase 0 baseline," fake-provider
+  pattern documented), `docs/DEVELOPMENT-SETUP.md` (setup + two bugs found, below),
+  `apps/api/README.md`, `apps/web/README.md`, `packages/zernio/README.md`, root `README.md`
+  (status line was still stuck on Phase 6 — pre-existing drift from before Phase 7, fixed
+  here); this file.
+
+**A real test-isolation bug found and fixed while adding this phase's own test file**: with
+two `apps/api` e2e test files instead of one, Vitest's default file-level parallelism let
+both files' full-table-reset `beforeEach` hooks race against the same real local Postgres,
+causing spurious FK/unique-constraint failures in *both* files, including the pre-existing
+`organizations` suite. Fixed by setting `fileParallelism: false` in
+`apps/api/vitest.config.ts` — the correct fix for a shared-database integration suite, not a
+workaround; full detail in `docs/DEVELOPMENT-SETUP.md`.
+
+**A real bug found in the test file itself while first running it**: reassigning a fresh
+`FakeInstagramProvider` instance in `beforeEach` silently stopped resetting the actual
+provider the NestJS testing module had already bound at `beforeAll` time (Nest resolves a
+provider once at module-compile time) — tests that depended on a clean fake state failed
+against a stale, never-reset one. Fixed by adding a `reset()` method and calling it on the
+same bound instance instead of replacing the variable.
+
+**A real, live credential problem found during manual browser verification (not a code
+bug)**: signed up a fresh test user, created an organization, and clicked "Connect
+Instagram" against the real Zernio API (using the `ZERNIO_API_KEY` provided in this
+project's local `.env`). The call reached Zernio for real (confirmed via `apps/api`'s
+server log: `POST /profiles -> 401 Unauthorized`) and failed with `401 Unauthorized` -
+independently reproduced with a bare `curl` call carrying the exact same key against both
+`POST /v1/profiles` and a plain `GET /v1/accounts`, so this is not something our request
+signing/headers got wrong. **The configured `ZERNIO_API_KEY` is being rejected by Zernio's
+live API for every call.** The failure path itself worked exactly as designed — a graceful
+`?instagram=error` banner on the dashboard, the full error logged server-side against a
+`requestId`, no crash — but a live, end-to-end OAuth connect (actually reaching Instagram's
+consent screen and connecting a real account) could not be verified this phase as a result.
+**Needs the user to check/regenerate the API key in their Zernio dashboard** before Phase 8
+can be considered live-verified rather than just test-verified.
+
+**Commands executed and results**
+| Command | Result |
+|---|---|
+| `prisma migrate diff --from-url ... --to-schema-datamodel ...` then a hand-written migration file + `prisma migrate deploy` | `prisma migrate dev` refused to run non-interactively once there was a unique-constraint warning to confirm; used the diff+deploy path instead (documented in-line in the migration, not a deviation from "always go through a generated migration file" — the file is still Prisma-diff-generated, just applied via `deploy` instead of `dev`). Applied cleanly; `prisma migrate status` confirms "up to date." |
+| `pnpm --filter @automationdm/zernio run build` / `pnpm exec eslint packages/zernio` | Both clean after adding `@types/node` as a devDependency (needed for global `fetch`/`URLSearchParams` types — `packages/zernio` had no devDependencies before this phase). |
+| `pnpm --filter @automationdm/api run build` | `nest build`, exit 0. |
+| `pnpm --filter @automationdm/api run test` (1st attempt, 2 e2e files) | **10 failed / 8 passed** — the Vitest file-parallelism cross-file interference above. |
+| Same, after `fileParallelism: false` | **4 failed / 14 passed** — the `FakeInstagramProvider` reset bug above. |
+| Same, after the `reset()` fix | **18/18 passed.** |
+| `.\scripts\lint.ps1` (ESLint + typecheck across all 10 workspace projects + Prettier) | ESLint 0 errors, typecheck 10/10 `Done`, Prettier flagged 3 newly-written files, fixed via `pnpm run format`, re-verified clean. |
+| `.\scripts\test.ps1` | `packages/database`: 14/14 (unchanged); `apps/api`: 18/18 (9 existing + 9 new). |
+| Full rebuild of every package/app | All exit 0. |
+| Manual browser test: sign up, create an org, click "Connect Instagram" | Reached the real Zernio API for real, but failed with `401 Unauthorized` from Zernio itself — see the credential problem above. Everything up to and including the live Zernio call, and the graceful failure path back to the user, was verified; the actual OAuth consent screen and a real connected account were not. |
+| `node --version` / `npm --version`, fresh shell, throughout | `v16.13.0` / `8.1.0` at `C:\Program Files\nodejs` — **unchanged**. |
+
+**Files created**
+`packages/database/prisma/migrations/20260811021921_add_zernio_profile_id_to_organizations/migration.sql`;
+`packages/validation/src/instagram.ts`;
+`apps/api/src/instagram/{instagram-provider.token.ts,instagram.service.ts,instagram.controller.ts,instagram.module.ts,__tests__/instagram.e2e.test.ts}`;
+`apps/api/src/config/app-url.ts`;
+`apps/web/src/app/instagram/{actions.ts,callback/page.tsx}`.
+
+**Files modified**
+`packages/database/prisma/schema.prisma`;
+`packages/zernio/{package.json,src/instagram-provider.ts,src/zernio-instagram-provider.ts,README.md}`;
+`apps/api/{package.json,src/app.module.ts,vitest.config.ts,README.md}`;
+`apps/web/src/app/page.tsx`; `.env.example`;
+`docs/{ZERNIO-INTEGRATION.md,DATABASE.md,ARCHITECTURE.md,API-SPEC.md,SECURITY.md,TESTING.md,DEVELOPMENT-SETUP.md}`;
+root `README.md`; this file.
+
+**Files intentionally not committed**
+`.env` (gained `APP_URL` and the user-provided `ZERNIO_API_KEY`, gitignored — confirmed via
+`git check-ignore -v`, unchanged handling from every prior phase's secrets).
+
+**Known limitations / risks**
+- **The configured `ZERNIO_API_KEY` does not work against the live Zernio API** (see above) —
+  the single biggest open item from this phase, and outside this codebase's control to fix.
+- No live-verified end-to-end OAuth connect (real consent screen, real connected account) —
+  blocked on the item above, not on anything in this phase's code.
+- `loginMethod=facebook_login` (Facebook Page selection) is not implemented — only the
+  default `instagram_login` flow, which has no secondary-selection step and covers this
+  project's actual scope (users connecting their own Instagram Business/Creator account
+  directly). Deferred until a concrete requirement appears, per this project's usual
+  practice of not building ahead of need.
+- `apps/web`'s connect UI does not yet warn the user that only Business/Creator Instagram
+  accounts can be connected before they attempt to connect a personal one — Zernio's own
+  OAuth flow will presumably reject or misbehave for a personal account, but this project
+  hasn't observed that failure mode directly (blocked on the same API key issue). Surfacing
+  a proactive warning is a small follow-up, not deferred to a future phase's scope.
+- No rate-limit/retry handling in `ZernioInstagramProvider` — unchanged from Phase 7's
+  status, still low priority at this project's actual call volume (<1,000/month), and
+  Zernio's real rate limits are still undocumented in the pages reviewed so far.
+
+**Next phase**
+
+Phase 9 — List + view Instagram posts/reels: find Zernio's real media/posts listing
+endpoint and its actual pagination mechanism (cursor vs offset — verify, don't assume) via
+its live docs, then build the `apps/api` endpoint + `apps/web` list/detail UI on top of
+whatever that turns out to be, per `docs/ADR/0005-simplified-mvp-architecture.md` (posts/
+reels are never duplicated into Postgres). Will not start until the user says to proceed —
+and, per this phase's central finding, a working `ZERNIO_API_KEY` should be confirmed first,
+since Phase 9 also needs to reach the real Zernio API.

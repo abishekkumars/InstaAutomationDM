@@ -1,6 +1,6 @@
 # Architecture
 
-Status: Phase 7 baseline, **scope simplified** — see
+Status: Phase 8 baseline, **scope simplified** — see
 `docs/ADR/0005-simplified-mvp-architecture.md`. This project is a small internal/limited-use
 tool (~3-4 users, under 1,000 API calls/month), not a general-purpose SaaS; the architecture
 below reflects that directly rather than carrying infrastructure sized for a scale this
@@ -48,7 +48,7 @@ packages/
   database/            Prisma schema + generated client
   shared/               cross-cutting types/utilities (e.g. the internal service token)
   validation/           Zod schemas (form + webhook validation)
-  zernio/                InstagramProvider + ZernioInstagramProvider (skeleton, Phase 7 - no live calls yet)
+  zernio/                InstagramProvider + ZernioInstagramProvider (real, Phase 8 - account connection)
   automation-engine/     comment-automation matching (simplified shape, see docs/AUTOMATION-ENGINE.md)
 docs/        all artifacts described in the master prompt
 scripts/     PowerShell dev scripts (project-local tooling only)
@@ -86,7 +86,7 @@ Real versions installed (pnpm-resolved, not hand-picked):
   queue connection, no processors; kept in the repo only to avoid the churn of deleting a
   directory that costs nothing to leave alone.
 
-## Database (Phase 4, extended Phase 7)
+## Database (Phase 4, extended Phase 7/8)
 
 `packages/database` owns the Prisma schema, migrations, generated client, and a singleton
 `PrismaClient` (`src/client.ts`) — nothing outside this package imports `@prisma/client`
@@ -120,9 +120,11 @@ they're read live from Zernio. Full schema/conventions: `docs/DATABASE.md`.
 
 `auth` (a `SessionGuard`, not a login flow — Auth.js itself lives in `apps/web`),
 `organizations` (folds in `users`/`members` for now — no invite-by-email flow yet to justify
-splitting them out), `instagram` (Phase 8 — Phase 7 only added the table + the
-`packages/zernio` skeleton, no `apps/api` module yet), `zernio` (thin NestJS wrapper around
-`packages/zernio`), `webhooks` (Phase 11), `automations` (Phase 10-12), `health`.
+splitting them out), `instagram` (Phase 8 — real: OAuth connect/callback endpoints + a
+`packages/zernio` DI binding, mounted under `organizations/:organizationId/instagram` rather
+than as a separate top-level `zernio` wrapper module, since it has nothing to do yet beyond
+what `instagram.module.ts` already provides), `webhooks` (Phase 11), `automations`
+(Phase 10-12), `health`.
 
 Not all of these exist yet — see `docs/IMPLEMENTATION-ROADMAP.md` for which phase introduces
 which module. Creating an empty module ahead of the phase that needs it is avoided;
@@ -193,6 +195,39 @@ Real organization creation lives behind `POST /api/organizations` (`apps/api`'s
 (`apps/web/src/app/onboarding/`) that every new sign-up with zero organizations is redirected
 to (checked in `apps/web/src/app/page.tsx`, not in `proxy.ts`, since it needs a live org
 count, not just "is there a session").
+
+## Instagram connect flow (Phase 8)
+
+```
+apps/web (Connect Instagram button, server action)
+   │  POST /api/organizations/:id/instagram/connect
+   ▼
+apps/api InstagramService
+   │  ensureProfile (once per org, persists Organization.zernioProfileId)
+   │  getConnectUrl(zernioProfileId, redirect_url=APP_URL/instagram/callback?organizationId=:id)
+   ▼
+Zernio (hosts the entire OAuth round trip with Instagram/Meta)
+   │  browser redirect back to redirect_url with
+   │  connected=instagram&profileId=X&accountId=Y&username=Z appended
+   ▼
+apps/web /instagram/callback (still behind the normal authenticated-session requirement)
+   │  POST /api/organizations/:id/instagram/callback { profileId, accountId }
+   ▼
+apps/api InstagramService.handleCallback
+   │  1. re-check caller's membership in :id (never trust the URL alone)
+   │  2. profileId must match Organization.zernioProfileId
+   │  3. findConnectedAccount(profileId) - a LIVE Zernio call, not the redirect's own
+   │     query params - must independently confirm the same accountId
+   │  4. upsert InstagramAccount, reject (409) if that accountId already belongs to a
+   │     different organization
+   ▼
+PostgreSQL (instagram_accounts)
+```
+
+See `docs/ZERNIO-INTEGRATION.md`'s "Account connection" section for why step 3 exists (never
+trust a value that arrived via the end user's own browser, even one Zernio itself produced)
+and why there's no OAuth authorization code for us to exchange - Zernio hosts that whole
+round trip itself.
 
 ## Authentication (Phase 5)
 

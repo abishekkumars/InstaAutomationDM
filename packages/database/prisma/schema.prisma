@@ -70,6 +70,13 @@ model Organization {
   /// schema only guarantees the constraint that matters at the data layer.
   slug String @unique
 
+  /// Zernio's own tenant-boundary id ("profile" in Zernio's terms - see
+  /// docs/ZERNIO-INTEGRATION.md's "Account connection" section). Nullable: created lazily on
+  /// this organization's first Instagram-connect attempt (Phase 8), not at organization
+  /// creation time. Globally unique: Zernio profiles are 1:1 with our organizations, one
+  /// profile is never shared across two orgs.
+  zernioProfileId String? @unique @map("zernio_profile_id")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 

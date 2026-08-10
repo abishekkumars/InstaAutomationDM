@@ -1,6 +1,6 @@
 # Database Design
 
-Status: Phase 7, scope simplified per
+Status: Phase 8, scope simplified per
 `docs/ADR/0005-simplified-mvp-architecture.md`. `User`, `Organization`, `OrganizationMember`,
 `InstagramAccount` exist as real, migrated Prisma models
 (`packages/database/prisma/schema.prisma`). Every other table below is the (now much
@@ -61,9 +61,9 @@ at the service layer and proven with explicit cross-tenant-access tests (see
   chosen per relationship.
 - **Unique constraints**: every unique constraint documents *why* in the schema comment
   next to it (see `schema.prisma`) — `User.email`, `Organization.slug`,
-  `OrganizationMember`'s composite `(organizationId, userId)`,
-  `InstagramAccount.zernioAccountId` (global, not per-org — see below for why that
-  distinction matters here specifically).
+  `Organization.zernioProfileId`, `OrganizationMember`'s composite
+  `(organizationId, userId)`, `InstagramAccount.zernioAccountId` (global, not per-org — see
+  below for why that distinction matters here specifically).
 - **Indexes**: every `@@index` names the query pattern it exists for, in a comment right
   above it in `schema.prisma` — no index is added "just in case." `organization_members`
   has two: one on `organizationId` (list an org's members) and one on `userId` (list a
@@ -122,7 +122,14 @@ Deliberately minimal, and stays that way — no billing/plan fields are planned 
   future routing (e.g. `/org/:slug`). Format validation (lowercase, allowed characters,
   reserved words) is an application-layer concern for whichever phase builds org creation
   (Phase 6) — the schema only guarantees the constraint that matters at the data layer:
-  uniqueness.
+  uniqueness. Also used as the name of this organization's Zernio profile (Phase 8, see
+  `zernioProfileId` below) since it's already globally unique.
+- `zernioProfileId` — nullable + globally unique `String` (Phase 8). Zernio's own tenant-
+  boundary id ("profile" in Zernio's terms — see `docs/ZERNIO-INTEGRATION.md`'s "Zernio
+  profiles" section). Nullable because it's created lazily on this organization's first
+  Instagram-connect attempt (`POST /v1/profiles`), not at organization-creation time.
+  Globally unique because one Zernio profile is 1:1 with one of our organizations, never
+  shared.
 
 ## `OrganizationMember`
 
@@ -145,12 +152,13 @@ The join table between `User` and `Organization`, plus a role.
   orgs a user belongs to," both extremely common query patterns from the moment Phase 6
   lands (every dashboard load, every session's membership check).
 
-## `InstagramAccount` (Phase 7)
+## `InstagramAccount` (table added Phase 7, populated for real Phase 8)
 
-An Instagram Business/Creator account connected via Zernio. This phase only adds the table
-and its constraints — no live Zernio calls happen anywhere yet (`packages/zernio`'s
-`ZernioInstagramProvider` is a skeleton; every method throws "not implemented"). Real rows
-start getting created in Phase 8's OAuth connect flow.
+An Instagram Business/Creator account connected via Zernio. Phase 7 added the table and its
+constraints only; Phase 8 added the real OAuth connect flow
+(`apps/api/src/instagram/instagram.service.ts`) that creates and updates these rows -
+`apps/web`'s "Connect Instagram" button through to the confirmed-by-a-live-Zernio-call
+callback handler, per `docs/ZERNIO-INTEGRATION.md`'s "Account connection" section.
 
 - `id` — `cuid()`.
 - `organizationId` — FK, `onDelete: Cascade` (see Conventions above) — deleting an org
@@ -230,6 +238,8 @@ Schema changes always go through a generated migration file committed to the rep
   `docs/ADR/0004-authentication-provider.md`.
 - `20260810202052_add_instagram_accounts` (Phase 7) creates `instagram_accounts` and the
   `InstagramAccountStatus` enum.
+- `20260811021921_add_zernio_profile_id_to_organizations` (Phase 8) adds the nullable, unique
+  `organizations.zernio_profile_id` column.
 
 ## Prisma client
 

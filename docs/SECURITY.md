@@ -1,6 +1,6 @@
 # Security
 
-Status: Phase 6, scope simplified per
+Status: Phase 8, scope simplified per
 `docs/ADR/0005-simplified-mvp-architecture.md`. Expanded and re-verified in Phase 13
 (Security hardening, scaled to this app's actual size — ~3-4 users), but these rules apply
 from the very first line of code, not just at the end.
@@ -27,7 +27,16 @@ or query string). Covered by explicit cross-tenant tests, not just review — fi
 `apps/api/src/organizations/__tests__/organizations.e2e.test.ts` (Phase 6): a real,
 authenticated, non-member user requesting another organization's member list gets a plain
 `404`, and the test asserts the response body contains none of that organization's data, not
-just that the status code is right.
+just that the status code is right. `apps/api/src/instagram/__tests__/instagram.e2e.test.ts`
+(Phase 8) extends the same pattern to the Instagram connect/callback/list endpoints.
+
+**A second, Phase-8-specific trust boundary**: the Instagram OAuth callback carries
+`profileId`/`accountId` as query params on a URL the *end user's own browser* follows — even
+though Zernio produced those values, they arrive to us via a channel we don't fully control.
+`InstagramService.handleCallback` treats them as claims to verify, not facts to trust: the
+`profileId` must match the calling organization's own `Organization.zernioProfileId`, and
+the `accountId` is independently re-confirmed with a live `GET /v1/accounts` call to Zernio
+before anything is written. See `docs/ARCHITECTURE.md`'s "Instagram connect flow" section.
 
 ## AuthN/AuthZ
 

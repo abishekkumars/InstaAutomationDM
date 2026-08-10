@@ -1,10 +1,12 @@
 # Zernio Integration
 
-Status: Phase 0 research pass, based on the current public docs at https://docs.zernio.com/
-(retrieved 2026-08-10). This is **not** invented — every claim below traces to that source.
-It must be re-verified against the live docs immediately before Phase 8/9/10/11
-implementation (account connection, posts listing, automation creation, webhooks — see
-`docs/IMPLEMENTATION-ROADMAP.md`), since third-party API docs change.
+Status: Phase 8 — account connection is real, verified directly against Zernio's live
+OpenAPI spec (`docs.zernio.com/api/openapi`, retrieved 2026-08-11) and its `/guides/
+connecting-accounts` and `/multi-tenant` guides, not assumed from the Phase 0 research pass.
+Everything else below (posts listing, comment automations, webhooks) is still the Phase 0
+pass and **must** be re-verified against the live docs immediately before the phase that
+implements it (Phase 9/10/11 — see `docs/IMPLEMENTATION-ROADMAP.md`), since third-party API
+docs change.
 
 Zernio is a unified social-media API (16 platforms). We only use its Instagram surface:
 account connection, comment automations (comment-to-DM), and the unified inbox/messages
@@ -34,11 +36,10 @@ Meta Graph API / Instagram
 shapes. This means if Zernio's API changes, or we ever add a second provider, only
 `ZernioInstagramProvider` changes.
 
-**Status (Phase 7)**: scaffolded for real, but only as a skeleton — `connectAccount` is the
-one method defined so far (matches Phase 8's scope), and `ZernioInstagramProvider`'s
-implementation of it just throws "not implemented." No real HTTP call has been made yet.
-Methods for posts listing (Phase 9) and comment automations (Phase 10) are added when those
-phases need them, not speculatively now.
+**Status (Phase 8)**: `ensureProfile`, `getConnectUrl`, and `findConnectedAccount` are real —
+every call in this section has been made against the live API during this phase's
+implementation and verification. Methods for posts listing (Phase 9) and comment automations
+(Phase 10) are added when those phases need them, not speculatively now.
 
 ## Authentication
 
@@ -47,15 +48,53 @@ phases need them, not speculatively now.
   convention. **Never sent to the browser; only used server-side inside `packages/zernio`.**
 - Base URL: `https://zernio.com/api/v1`.
 
+## Zernio profiles - the tenant boundary
+
+Zernio's own multi-tenancy model (`/multi-tenant` guide): "if you're building social
+features into your own product, your customers each bring their own social accounts.
+Zernio's tenant boundary for this is the **profile**: one profile per customer." This maps
+directly onto one Zernio profile per our own `Organization` — `Organization.zernioProfileId`
+(`docs/DATABASE.md`) stores it, created lazily via `POST /v1/profiles` (`{ name }` →
+`{ profile: { _id } }`) on that organization's first Instagram-connect attempt, never at
+organization-creation time. `InstagramProvider.ensureProfile` uses the organization's own
+`slug` as the profile name (already globally unique in our system) to avoid Zernio's
+per-workspace unique-name collisions; a genuine 409 on create is recovered via the error
+body's `details.existingProfileId` rather than left as a hard failure.
+
 ## Account connection
 
-Two OAuth paths for Instagram:
-- Direct Instagram Login — `instagram_business_*` scopes.
-- Facebook Login — `instagram_*` scopes + Facebook Page management.
+Verified directly against the `GET /v1/connect/{platform}` operation in Zernio's live
+OpenAPI spec, not the Phase 0 pass's general "two OAuth paths" description:
 
-Constraint: only Business or Creator Instagram accounts can be connected; **personal
-accounts cannot post/DM via the API.** The account-connection UI (Phase 8) must communicate
-this to the user before they attempt to connect a personal account.
+- `GET /v1/connect/instagram?profileId=<ours>&redirect_url=<ours>` (no `headless`, no
+  `loginMethod` override - the default `instagram_login` flow, which has **no secondary
+  selection step**: the user authorizes their Instagram professional account directly, no
+  Facebook Page required). Response: `{ authUrl, state }` — `InstagramProvider.getConnectUrl`
+  returns just `authUrl`; `state` is "handled automatically" by Zernio and not something we
+  need to independently verify (see below).
+- Redirect the browser to `authUrl`. Zernio hosts the entire OAuth round trip with
+  Instagram/Meta itself — we never see an authorization code to exchange.
+- Once the user grants access, Zernio redirects the browser to our `redirect_url` with
+  `connected=instagram&profileId=<ours>&accountId=<theirs>&username=<theirs>` appended (an
+  existing query string on `redirect_url` is preserved, which is how
+  `apps/api/src/instagram/instagram.service.ts`'s `createConnectUrl` smuggles our own
+  `organizationId` through the round trip alongside Zernio's own `profileId`).
+- **We do not trust that redirect's query params on their own** — `apps/api`'s callback
+  handler independently re-confirms the connection with a live `GET /v1/accounts?
+  profileId=<ours>&platform=instagram` call (`InstagramProvider.findConnectedAccount`)
+  before writing anything to our database. This is standard defense-in-depth for a value
+  that arrived via the end user's own browser, not a Zernio requirement.
+- The `loginMethod=facebook_login` variant (Facebook Login, Facebook Page selection,
+  `/v1/connect/instagram/select-account`) exists in the spec but is **not implemented** —
+  the default `instagram_login` flow covers this project's MVP scope without a secondary
+  selection step, and adding the Facebook-Login path is deferred until a concrete
+  requirement appears (this project's 3-4 users connecting their own Instagram Business/
+  Creator accounts directly, per `docs/PRODUCT-REQUIREMENTS.md`).
+- Constraint (unchanged from the Phase 0 pass, still applies): only Business or Creator
+  Instagram accounts can be connected; **personal accounts cannot post/DM via the API.**
+  `apps/web`'s connect UI does not yet surface this to the user before they attempt to
+  connect a personal account — noted as a known limitation in
+  `docs/IMPLEMENTATION-ROADMAP.md`'s Phase 8 report, not silently dropped.
 
 ## Comment-to-DM automation API
 
@@ -147,7 +186,8 @@ this project's actual call volume (<1,000/month).
 
 ## What's deliberately deferred
 
-Full request/response schemas for every endpoint we'll use (posts/media list, account
-connection, comment-automations, webhook test endpoint) are documented endpoint-by-endpoint
-as each is actually integrated (Phase 8-11), rather than transcribed wholesale now against a
-doc site that may change before we get there.
+Account connection is documented for real as of Phase 8 (above). Full request/response
+schemas for the remaining endpoints we'll use (posts/media list, comment-automations,
+webhook test endpoint) are documented endpoint-by-endpoint as each is actually integrated
+(Phase 9-11), rather than transcribed wholesale now against a doc site that may change
+before we get there.

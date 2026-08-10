@@ -1,10 +1,10 @@
 # API Specification
 
-Status: Phase 6 — `apps/api` has `GET /api/health` (liveness), `GET /api/ready` (readiness,
-checks the database), the error/request-id foundation every endpoint sits on, and its first
-guarded business endpoints (`organizations`). Further business endpoints land with the phase
-that needs them: instagram-accounts in Phase 7/9, webhooks in Phase 10, automations in Phase
-12/13, etc.
+Status: Phase 8 — `apps/api` has `GET /api/health` (liveness), `GET /api/ready` (readiness,
+checks the database), the error/request-id foundation every endpoint sits on, its
+`organizations` endpoints (Phase 6), and its first Zernio-backed endpoints (`instagram`,
+Phase 8: connect/callback/list). Further business endpoints land with the phase that needs
+them: posts/reels listing in Phase 9, automations in Phase 10/12, webhooks in Phase 11, etc.
 
 ## Convention
 
@@ -133,6 +133,58 @@ the same response either way, so a non-member can't distinguish the two and ther
 an organization's existence):
 ```json
 { "error": { "code": "NotFoundException", "message": "Organization not found.", "requestId": "..." } }
+```
+
+### `POST /api/organizations/:organizationId/instagram/connect`
+
+Starts the Instagram OAuth connect flow for this organization (Phase 8). Requires a bearer
+token; 404s if the caller isn't a member of `:organizationId` (same tenant-isolation pattern
+as `GET /api/organizations/:id/members`). Creates the organization's Zernio profile on first
+call (persists `Organization.zernioProfileId`); reuses it on every later call. See
+`docs/ZERNIO-INTEGRATION.md`'s "Account connection" section.
+
+Response (`201`):
+```json
+{ "authUrl": "https://www.facebook.com/v21.0/dialog/oauth?client_id=..." }
+```
+`apps/web`'s server action redirects the browser to `authUrl` — this is a real redirect to
+an external origin, not a route within this app.
+
+Errors: `404` (not a member), `500` (Zernio API error — e.g. an invalid/rejected
+`ZERNIO_API_KEY`; see `docs/IMPLEMENTATION-ROADMAP.md`'s Phase 8 report for a known instance
+of this).
+
+### `POST /api/organizations/:organizationId/instagram/callback`
+
+Completes the connect flow after Zernio redirects the browser back. Requires a bearer token;
+same 404-if-not-a-member check as above. **Never trusts the request body alone** — the
+`profileId` must match this organization's `Organization.zernioProfileId`, and the
+`accountId` must be independently confirmed via a live `GET /v1/accounts` call to Zernio
+before anything is written (see `docs/ARCHITECTURE.md`'s "Instagram connect flow" section).
+
+Request:
+```json
+{ "profileId": "66a1f0c2a4b9d3e8f1a2b3c4", "accountId": "17841400649984407" }
+```
+
+Response (`201`):
+```json
+{ "id": "clx...", "zernioAccountId": "17841400649984407", "username": "acme_ig", "status": "CONNECTED" }
+```
+
+Errors: `400` (`profileId` doesn't match this organization, or Zernio doesn't confirm the
+claimed `accountId`), `404` (not a member), `409` (this Zernio account is already connected
+to a *different* organization — `InstagramAccount.zernioAccountId` is globally unique, see
+`docs/DATABASE.md`).
+
+### `GET /api/organizations/:organizationId/instagram/accounts`
+
+Lists this organization's connected Instagram accounts (Phase 8). Requires a bearer token;
+same 404-if-not-a-member check as above.
+
+Response (`200`):
+```json
+[{ "id": "clx...", "zernioAccountId": "17841400649984407", "username": "acme_ig", "status": "CONNECTED" }]
 ```
 
 Further endpoints are documented here as each is actually implemented, with full request/

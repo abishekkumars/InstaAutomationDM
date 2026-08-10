@@ -1,7 +1,7 @@
 # Testing Strategy
 
-Status: Phase 0 baseline. Real test suites are added alongside each phase's implementation,
-not written speculatively ahead of the code they test.
+Status: Phase 8. Real test suites are added alongside each phase's implementation, not
+written speculatively ahead of the code they test.
 
 ## Tooling
 
@@ -72,6 +72,14 @@ client is injectable/mockable; unit and integration tests always inject a fake. 
 verification against Zernio's own sandbox (`POST /v1/webhooks/test`, test-mode accounts if
 Zernio offers them) is a separate, manual step before shipping a phase — not part of the
 automated suite.
+
+**First real example (Phase 8)**: `apps/api/src/instagram/__tests__/instagram.e2e.test.ts`
+binds a NestJS testing module's `INSTAGRAM_PROVIDER` token to an in-memory
+`FakeInstagramProvider` (`.overrideProvider(INSTAGRAM_PROVIDER).useValue(fakeProvider)`)
+instead of the real `ZernioInstagramProvider` — lets tests deterministically control what
+"Zernio" reports back for `findConnectedAccount`, including deliberately wrong answers (to
+prove the callback handler doesn't just trust the redirect's own query params), with zero
+real network calls or real credentials needed to run the suite.
 
 ## CI
 

@@ -8,5 +8,8 @@
     "build": "tsc -p tsconfig.json",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0"
   }
 }

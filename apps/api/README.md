@@ -1,8 +1,9 @@
 # apps/api
 
 NestJS backend (REST). Scaffolded in Phase 2 as a minimal shell; Phase 4 added a real
-database connection; Phase 6 added its first authenticated, tenant-scoped endpoints. Still
-no Redis, no Zernio, no automation engine.
+database connection; Phase 6 added its first authenticated, tenant-scoped endpoints; Phase 8
+added its first Zernio-backed endpoints (Instagram account connection). Still no Redis, no
+automation engine.
 
 ## Structure
 
@@ -25,21 +26,31 @@ no Redis, no Zernio, no automation engine.
   `GET /api/organizations/:id/members`, all behind `SessionGuard`. `listMembers` is this
   repo's first real tenant-isolation enforcement: it 404s for any organization the caller
   isn't a member of, real or not.
+- `src/instagram/` (Phase 8) — `POST .../connect`, `POST .../callback`, `GET .../accounts`
+  under `organizations/:organizationId/instagram`, all behind `SessionGuard`, same 404-if-
+  not-a-member pattern as `organizations`. `INSTAGRAM_PROVIDER` is a DI token bound to a real
+  `ZernioInstagramProvider` (`@automationdm/zernio`) here — tests override it with an
+  in-memory fake, never a live Zernio call (see `docs/TESTING.md`).
+- `src/config/app-url.ts` (Phase 8) — `getAppUrl()`, apps/api's own view of where `apps/web`
+  is reachable, used to build the Zernio OAuth `redirect_url` server-side rather than
+  trusting a client-supplied one.
 - `src/common/middleware/request-id.middleware.ts` — reads/generates `X-Request-Id`,
   attaches it to the request for logging and to every error response.
 - `src/common/filters/all-exceptions.filter.ts` — catches all exceptions, responds with
   `{ error: { code, message, requestId } }` (see `docs/API-SPEC.md`/`docs/SECURITY.md`),
   logs full detail server-side only.
 
-Planned modules, introduced per `docs/IMPLEMENTATION-ROADMAP.md`: instagram, zernio,
-webhooks, automations, automation-engine, contacts, conversations, messages, analytics,
-usage, billing, notifications, audit. (`users`/`members` are folded into `organizations` for
-now — see `docs/ARCHITECTURE.md`.)
+Planned modules, introduced per `docs/IMPLEMENTATION-ROADMAP.md`: webhooks, automations,
+automation-engine. Per `docs/ADR/0005-simplified-mvp-architecture.md`, there is no
+`contacts`, `conversations`, `messages`, `analytics`, `usage`, `billing`, `notifications`, or
+`audit` module planned. (`users`/`members` are folded into `organizations` for now — see
+`docs/ARCHITECTURE.md`.)
 
 Requires the local database running first: `.\scripts\db.ps1 start` (see
 [docs/ADR/0003-local-postgresql-strategy.md](../../docs/ADR/0003-local-postgresql-strategy.md)),
-and `API_INTERNAL_SECRET` set in `.env` (see `docs/DEVELOPMENT-SETUP.md`'s Phase 6 section)
-for anything behind `SessionGuard`.
+`API_INTERNAL_SECRET` set in `.env` (see `docs/DEVELOPMENT-SETUP.md`'s Phase 6 section) for
+anything behind `SessionGuard`, and a valid `ZERNIO_API_KEY` in `.env` for the `instagram`
+module's real endpoints (its automated tests use a fake provider and don't need this).
 
 ## Development
 

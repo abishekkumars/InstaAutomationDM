@@ -369,3 +369,43 @@ the *previous* phase's browser testing session. Not a bug in the product, but a 
 this dev database is genuinely shared, disposable state (`docs/ADR/0003-local-postgresql-strategy.md`)
 across both automated tests and manual sessions — sign up again rather than expecting an
 old session's account to still exist after running the test suite.
+
+## Instagram account connection (Phase 8, 2026-08-11)
+
+Full design: `docs/ARCHITECTURE.md`'s "Instagram connect flow" section;
+`docs/ZERNIO-INTEGRATION.md`'s "Account connection" section for the real, verified Zernio
+API calls involved.
+
+**Setup**, beyond Phase 4/5/6's requirements:
+
+```
+ZERNIO_API_KEY=sk_...   # from your Zernio dashboard - a real external credential
+APP_URL=http://localhost:3000
+```
+
+`ZERNIO_API_KEY` is only needed for the connect flow to actually reach Zernio - the rest of
+the app, and the automated test suite (which uses an in-memory fake `InstagramProvider`, per
+`docs/TESTING.md`), don't need it.
+
+**A real regression found and fixed during this phase's own Vitest run**: adding a second
+`apps/api` e2e test file (`src/instagram/__tests__/instagram.e2e.test.ts`, alongside the
+existing `organizations.e2e.test.ts`) caused spurious failures in *both* files —
+foreign-key and unique-constraint violations that had nothing to do with either file's own
+logic. Cause: Vitest's default file-level parallelism runs multiple test files concurrently
+by default, and both files' `beforeEach` does a full table reset against the *same* real
+local Postgres — one file's mid-test reset could wipe rows the other file had just created.
+Fixed by setting `fileParallelism: false` in `apps/api/vitest.config.ts`, which serializes
+test-file execution — the correct fix for a shared-database integration suite, confirmed by
+the fact this only ever manifested once there was a second file doing the same kind of reset.
+
+**A real credential problem found during this phase's own manual browser verification**: the
+`ZERNIO_API_KEY` configured in this project's local `.env` was rejected by Zernio's live API
+with `401 Unauthorized` on every call, including a plain `GET /v1/accounts` with no request
+body - confirmed independently of this project's code via a bare `curl` call with the same
+key. This is not a bug in `packages/zernio`/`apps/api`; the connect flow's own error handling
+worked exactly as designed (the failure surfaced to the user as a graceful `?instagram=error`
+banner, not a crash, and the full error - including the real Zernio HTTP status - was logged
+server-side against a `requestId`). A live, end-to-end OAuth connect (actually redirecting to
+Instagram's consent screen and connecting a real account) could not be verified this phase as
+a result - see `docs/IMPLEMENTATION-ROADMAP.md`'s Phase 8 report for the full account of what
+was and wasn't verified live.

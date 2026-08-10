@@ -7,10 +7,11 @@ API. Scoped for ~3-4 users and under 1,000 API calls/month — see
 for why this is deliberately small, and
 [`docs/PRODUCT-REQUIREMENTS.md`](docs/PRODUCT-REQUIREMENTS.md) for the exact MVP scope.
 
-**Status:** Phase 6 of `docs/IMPLEMENTATION-ROADMAP.md` complete — authentication (Auth.js)
-and multi-tenancy (organizations/membership, with `apps/api` session verification and
-tenant-isolation tests) are real and working. Instagram/Zernio integration (Phase 7 onward)
-has not started yet.
+**Status:** Phase 8 of `docs/IMPLEMENTATION-ROADMAP.md` complete — authentication (Auth.js),
+multi-tenancy (organizations/membership, with `apps/api` session verification and
+tenant-isolation tests), and the Instagram account connection flow (real Zernio OAuth
+connect, verified against Zernio's live API) are real and working. Listing posts/reels and
+comment automations (Phase 9 onward) have not started yet.
 
 ## Start here
 
@@ -29,8 +30,11 @@ has not started yet.
 
 All scripts use a project-local Node runtime under `.tools/node/` — they never touch this
 machine's global Node install and never require administrator rights. You'll also need a
-local `.env` (copy `.env.example`) with `DATABASE_URL`, `AUTH_SECRET`, and
-`API_INTERNAL_SECRET` filled in — see `docs/DEVELOPMENT-SETUP.md` for how to generate them.
+local `.env` (copy `.env.example`) with `DATABASE_URL`, `AUTH_SECRET`, `API_INTERNAL_SECRET`,
+and `APP_URL` filled in — see `docs/DEVELOPMENT-SETUP.md` for how to generate them. A valid
+`ZERNIO_API_KEY` is additionally needed for the Instagram connect flow (Phase 8) to work
+against the real Zernio API — not required for the rest of the app, and not needed to run
+the automated test suite (it uses a fake provider).
 
 ## Repository layout
 
