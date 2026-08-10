@@ -398,14 +398,16 @@ Fixed by setting `fileParallelism: false` in `apps/api/vitest.config.ts`, which 
 test-file execution — the correct fix for a shared-database integration suite, confirmed by
 the fact this only ever manifested once there was a second file doing the same kind of reset.
 
-**A real credential problem found during this phase's own manual browser verification**: the
-`ZERNIO_API_KEY` configured in this project's local `.env` was rejected by Zernio's live API
-with `401 Unauthorized` on every call, including a plain `GET /v1/accounts` with no request
-body - confirmed independently of this project's code via a bare `curl` call with the same
-key. This is not a bug in `packages/zernio`/`apps/api`; the connect flow's own error handling
-worked exactly as designed (the failure surfaced to the user as a graceful `?instagram=error`
-banner, not a crash, and the full error - including the real Zernio HTTP status - was logged
-server-side against a `requestId`). A live, end-to-end OAuth connect (actually redirecting to
-Instagram's consent screen and connecting a real account) could not be verified this phase as
-a result - see `docs/IMPLEMENTATION-ROADMAP.md`'s Phase 8 report for the full account of what
-was and wasn't verified live.
+**A real credential problem found during this phase's own manual browser verification, then
+resolved**: the `ZERNIO_API_KEY` initially configured in this project's local `.env` was
+rejected by Zernio's live API with `401 Unauthorized` on every call, including a plain
+`GET /v1/accounts` with no request body - confirmed independently of this project's code via
+a bare `curl` call with the same key. Not a bug in `packages/zernio`/`apps/api`; the connect
+flow's own error handling worked exactly as designed (a graceful `?instagram=error` banner,
+full error logged server-side against a `requestId`, no crash). The replacement key the user
+generated was reported **without** the `sk_` prefix Zernio's docs specify - confirmed
+required via a direct `curl` comparison (bare key → `401`, `sk_`-prefixed → `200`) before
+fixing `.env`. After the fix, a full live verification (real Zernio profile creation, a real
+redirect to `instagram.com`'s login screen, and the callback path proven against a real,
+already-connected account) succeeded - see `docs/IMPLEMENTATION-ROADMAP.md`'s Phase 8 report
+for the full account.

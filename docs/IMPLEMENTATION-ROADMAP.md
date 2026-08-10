@@ -848,20 +848,46 @@ provider once at module-compile time) — tests that depended on a clean fake st
 against a stale, never-reset one. Fixed by adding a `reset()` method and calling it on the
 same bound instance instead of replacing the variable.
 
-**A real, live credential problem found during manual browser verification (not a code
-bug)**: signed up a fresh test user, created an organization, and clicked "Connect
-Instagram" against the real Zernio API (using the `ZERNIO_API_KEY` provided in this
-project's local `.env`). The call reached Zernio for real (confirmed via `apps/api`'s
-server log: `POST /profiles -> 401 Unauthorized`) and failed with `401 Unauthorized` -
-independently reproduced with a bare `curl` call carrying the exact same key against both
-`POST /v1/profiles` and a plain `GET /v1/accounts`, so this is not something our request
-signing/headers got wrong. **The configured `ZERNIO_API_KEY` is being rejected by Zernio's
-live API for every call.** The failure path itself worked exactly as designed — a graceful
-`?instagram=error` banner on the dashboard, the full error logged server-side against a
-`requestId`, no crash — but a live, end-to-end OAuth connect (actually reaching Instagram's
-consent screen and connecting a real account) could not be verified this phase as a result.
-**Needs the user to check/regenerate the API key in their Zernio dashboard** before Phase 8
-can be considered live-verified rather than just test-verified.
+**A real, live credential problem found during manual browser verification, then resolved**:
+the `ZERNIO_API_KEY` initially in this project's local `.env` was rejected by Zernio's live
+API with `401 Unauthorized` on every call — independently reproduced with a bare `curl` call
+carrying the exact same key against both `POST /v1/profiles` and a plain `GET /v1/accounts`,
+confirming it wasn't a request-signing bug on our side. The failure path itself worked
+exactly as designed regardless — a graceful `?instagram=error` banner on the dashboard, the
+full error logged server-side against a `requestId`, no crash. The user generated a new key
+and reported it back **without the documented `sk_` prefix**; a `curl` comparison of both
+forms against the live API confirmed the prefix is required (`sk_...` → `200`, bare key →
+`401`) — `.env` corrected accordingly.
+
+**Full live end-to-end verification, after the key fix**: signed up a fresh test user,
+created a new organization, and clicked "Connect Instagram" again.
+1. `POST .../instagram/connect` reached the real Zernio API and created a real, new Zernio
+   profile for the organization (confirmed via a direct database query — a fresh
+   `Organization.zernioProfileId` distinct from any test fixture).
+2. The browser was actually redirected all the way to `https://instagram.com`'s real login
+   screen — confirming `getConnectUrl`'s `authUrl` is real and the redirect is real. (Stopped
+   here, correctly: completing this requires a real Instagram account's own credentials,
+   which weren't entered — not something this agent has or should obtain.)
+3. To verify the callback path itself against real Zernio data without needing a live Meta
+   login, the test organization's `zernioProfileId` was temporarily pointed (via a direct,
+   local-only database update) at a Zernio profile in the same account that already had a
+   real Instagram account connected from earlier testing (`@explore.with_ruthiiii`). Manually
+   navigating to `/instagram/callback` with that profile's real `profileId`/`accountId` (the
+   same values a genuine Meta login would have produced) exercised the real production code
+   path end to end: `apps/web`'s callback page → the real internal bearer token → `apps/api`'s
+   `handleCallback` → a live `GET /v1/accounts` call to Zernio that confirmed the account →
+   a real `InstagramAccount` row written to Postgres → the dashboard correctly rendering
+   "@explore.with_ruthiiii — connected". Confirmed directly in the database, not just the UI.
+4. **Negative case, also against the live API**: retried the callback with a fabricated
+   `accountId` for the same real `profileId`. Correctly rejected with the `?instagram=error`
+   banner, and the already-connected account was left untouched — proving
+   `findConnectedAccount`'s live-confirmation check actually rejects a forged claim rather
+   than trusting the request body, using the real Zernio API, not just the fake in the
+   automated suite.
+
+Phase 8 is now live-verified, not just test-verified — the only step not literally exercised
+is a human completing Meta's own OAuth consent screen, which is outside this agent's
+authority to do (see the safety rules around never entering credentials on a user's behalf).
 
 **Commands executed and results**
 | Command | Result |
@@ -875,7 +901,9 @@ can be considered live-verified rather than just test-verified.
 | `.\scripts\lint.ps1` (ESLint + typecheck across all 10 workspace projects + Prettier) | ESLint 0 errors, typecheck 10/10 `Done`, Prettier flagged 3 newly-written files, fixed via `pnpm run format`, re-verified clean. |
 | `.\scripts\test.ps1` | `packages/database`: 14/14 (unchanged); `apps/api`: 18/18 (9 existing + 9 new). |
 | Full rebuild of every package/app | All exit 0. |
-| Manual browser test: sign up, create an org, click "Connect Instagram" | Reached the real Zernio API for real, but failed with `401 Unauthorized` from Zernio itself — see the credential problem above. Everything up to and including the live Zernio call, and the graceful failure path back to the user, was verified; the actual OAuth consent screen and a real connected account were not. |
+| Manual browser test (1st attempt, before the key fix) | Reached the real Zernio API for real, but failed with `401 Unauthorized` — see the credential problem above. |
+| Manual browser test (after the key fix): sign up, create an org, click "Connect Instagram" | Real Zernio profile created, real redirect to `instagram.com`'s login screen. |
+| Manual verification of the callback path against real, already-connected Zernio data (see above) | Real `InstagramAccount` row written and correctly displayed; a forged `accountId` for the same real `profileId` correctly rejected. |
 | `node --version` / `npm --version`, fresh shell, throughout | `v16.13.0` / `8.1.0` at `C:\Program Files\nodejs` — **unchanged**. |
 
 **Files created**
@@ -898,10 +926,11 @@ root `README.md`; this file.
 `git check-ignore -v`, unchanged handling from every prior phase's secrets).
 
 **Known limitations / risks**
-- **The configured `ZERNIO_API_KEY` does not work against the live Zernio API** (see above) —
-  the single biggest open item from this phase, and outside this codebase's control to fix.
-- No live-verified end-to-end OAuth connect (real consent screen, real connected account) —
-  blocked on the item above, not on anything in this phase's code.
+- The full OAuth consent screen (a human logging into a real Instagram account through
+  Meta's own UI) was not exercised by this agent, correctly — that requires real Instagram
+  credentials, which weren't provided and shouldn't be entered on the user's behalf. Every
+  other step of the flow, including the callback's live-Zernio-confirmation logic, was
+  verified against the real API using an already-connected real account.
 - `loginMethod=facebook_login` (Facebook Page selection) is not implemented — only the
   default `instagram_login` flow, which has no secondary-selection step and covers this
   project's actual scope (users connecting their own Instagram Business/Creator account
@@ -922,6 +951,4 @@ Phase 9 — List + view Instagram posts/reels: find Zernio's real media/posts li
 endpoint and its actual pagination mechanism (cursor vs offset — verify, don't assume) via
 its live docs, then build the `apps/api` endpoint + `apps/web` list/detail UI on top of
 whatever that turns out to be, per `docs/ADR/0005-simplified-mvp-architecture.md` (posts/
-reels are never duplicated into Postgres). Will not start until the user says to proceed —
-and, per this phase's central finding, a working `ZERNIO_API_KEY` should be confirmed first,
-since Phase 9 also needs to reach the real Zernio API.
+reels are never duplicated into Postgres). Will not start until the user says to proceed.
