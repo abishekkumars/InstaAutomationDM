@@ -1,6 +1,6 @@
 # Architecture
 
-Status: Phase 6 baseline, **scope simplified** — see
+Status: Phase 7 baseline, **scope simplified** — see
 `docs/ADR/0005-simplified-mvp-architecture.md`. This project is a small internal/limited-use
 tool (~3-4 users, under 1,000 API calls/month), not a general-purpose SaaS; the architecture
 below reflects that directly rather than carrying infrastructure sized for a scale this
@@ -48,7 +48,7 @@ packages/
   database/            Prisma schema + generated client
   shared/               cross-cutting types/utilities (e.g. the internal service token)
   validation/           Zod schemas (form + webhook validation)
-  zernio/                InstagramProvider + ZernioInstagramProvider
+  zernio/                InstagramProvider + ZernioInstagramProvider (skeleton, Phase 7 - no live calls yet)
   automation-engine/     comment-automation matching (simplified shape, see docs/AUTOMATION-ENGINE.md)
 docs/        all artifacts described in the master prompt
 scripts/     PowerShell dev scripts (project-local tooling only)
@@ -86,7 +86,7 @@ Real versions installed (pnpm-resolved, not hand-picked):
   queue connection, no processors; kept in the repo only to avoid the churn of deleting a
   directory that costs nothing to leave alone.
 
-## Database (Phase 4)
+## Database (Phase 4, extended Phase 7)
 
 `packages/database` owns the Prisma schema, migrations, generated client, and a singleton
 `PrismaClient` (`src/client.ts`) — nothing outside this package imports `@prisma/client`
@@ -112,15 +112,16 @@ direct `pg_ctl` calls (`scripts/db.ps1` / `packages/database/dev/local-db.mjs`) 
 `docs/ADR/0003-local-postgresql-strategy.md`.
 
 Per ADR 0005, Postgres stores `users`, `organizations`, `organization_members`,
-`instagram_accounts`, `automations`, automation run/status rows, and `webhook_events` — and
-nothing else. Instagram posts/reels are **not** duplicated here; they're read live from
-Zernio. Full schema/conventions: `docs/DATABASE.md`.
+`instagram_accounts` (real as of Phase 7), `automations`, automation run/status rows, and
+`webhook_events` — and nothing else. Instagram posts/reels are **not** duplicated here;
+they're read live from Zernio. Full schema/conventions: `docs/DATABASE.md`.
 
 ## Backend modules (apps/api)
 
 `auth` (a `SessionGuard`, not a login flow — Auth.js itself lives in `apps/web`),
 `organizations` (folds in `users`/`members` for now — no invite-by-email flow yet to justify
-splitting them out), `instagram` (Phase 7-8), `zernio` (thin NestJS wrapper around
+splitting them out), `instagram` (Phase 8 — Phase 7 only added the table + the
+`packages/zernio` skeleton, no `apps/api` module yet), `zernio` (thin NestJS wrapper around
 `packages/zernio`), `webhooks` (Phase 11), `automations` (Phase 10-12), `health`.
 
 Not all of these exist yet — see `docs/IMPLEMENTATION-ROADMAP.md` for which phase introduces

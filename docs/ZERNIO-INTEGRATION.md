@@ -15,25 +15,30 @@ API, via webhooks + REST.
 Nothing outside `packages/zernio` calls Zernio directly.
 
 ```
-apps/api, apps/worker
-        │
-        ▼
+apps/api
+    │
+    ▼
 InstagramProvider (interface, packages/zernio)
-        │
-        ▼
+    │
+    ▼
 ZernioInstagramProvider (implementation, packages/zernio)
-        │
-        ▼
+    │
+    ▼
 Zernio API (https://zernio.com/api/v1)
-        │
-        ▼
+    │
+    ▼
 Meta Graph API / Instagram
 ```
 
-`InstagramProvider` exposes domain-shaped methods (`connectAccount`, `createCommentAutomation`,
-`sendDirectMessage`, `sendPublicReply`, ...) — never raw Zernio request/response shapes. This
-means if Zernio's API changes, or we ever add a second provider, only
+`InstagramProvider` exposes domain-shaped methods — never raw Zernio request/response
+shapes. This means if Zernio's API changes, or we ever add a second provider, only
 `ZernioInstagramProvider` changes.
+
+**Status (Phase 7)**: scaffolded for real, but only as a skeleton — `connectAccount` is the
+one method defined so far (matches Phase 8's scope), and `ZernioInstagramProvider`'s
+implementation of it just throws "not implemented." No real HTTP call has been made yet.
+Methods for posts listing (Phase 9) and comment automations (Phase 10) are added when those
+phases need them, not speculatively now.
 
 ## Authentication
 

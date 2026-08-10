@@ -7,9 +7,10 @@
 //   Prisma/TypeScript.
 // - Every `@@index` exists for a specific, named query pattern — see docs/DATABASE.md.
 //
-// Phase 4 (PostgreSQL + Prisma) scope only: User, Organization, OrganizationMember. No
-// Instagram/automation/contact/billing tables yet — those arrive with the phases that need
-// them (docs/IMPLEMENTATION-ROADMAP.md).
+// User, Organization, OrganizationMember (Phase 4/6), InstagramAccount (Phase 7). Automation
+// tables land with Phase 10 — see docs/ADR/0005-simplified-mvp-architecture.md for why this
+// list is much shorter than the master prompt's original scope (no contacts/conversations/
+// analytics/billing tables are planned).
 
 generator client {
   provider = "prisma-client-js"
@@ -73,6 +74,7 @@ model Organization {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   memberships OrganizationMember[]
+  instagramAccounts InstagramAccount[]
 
   @@map("organizations")
 }
@@ -114,4 +116,44 @@ model OrganizationMember {
   /// "List organizations a user belongs to" — every session/membership check.
   @@index([userId])
   @@map("organization_members")
+}
+
+/// CONNECTED: usable normally. DISCONNECTED: the user/Zernio revoked access (still keep the
+/// row — its history, and any automations pointing at it, aren't deleted just because the
+/// connection lapsed). ERROR: Zernio reported a problem (e.g. token expired unexpectedly)
+/// that needs the user's attention to fix by reconnecting.
+enum InstagramAccountStatus {
+  CONNECTED
+  DISCONNECTED
+  ERROR
+}
+
+/// An Instagram Business/Creator account connected via Zernio (Phase 8 does the real OAuth
+/// connect flow; this phase only adds the table). See docs/ZERNIO-INTEGRATION.md for why
+/// only Business/Creator accounts are connectable at all.
+model InstagramAccount {
+  id String @id @default(cuid())
+
+  organizationId String @map("organization_id")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  /// Zernio's own account/profile identifier. Globally unique (not just unique per org) -
+  /// this is deliberate, not an oversight: an inbound Zernio webhook identifies the account
+  /// only by this id, and docs/WEBHOOKS.md's org-resolution step ("look up the account,
+  /// resolve its organization_id") must be unambiguous. If the same id could exist under two
+  /// different organizations, that lookup would have no correct answer.
+  zernioAccountId String @unique @map("zernio_account_id")
+
+  /// Instagram handle, if Zernio provides one at connect time. Nullable for the same reason
+  /// as User.name - not guaranteed to be available immediately from every connect path.
+  username String? @map("username")
+
+  status InstagramAccountStatus @default(CONNECTED)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// "List an organization's connected accounts" - every account-picker UI load.
+  @@index([organizationId])
+  @@map("instagram_accounts")
 }

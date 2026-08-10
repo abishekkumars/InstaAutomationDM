@@ -4,9 +4,10 @@ import { Prisma, prisma } from '../index';
 // Full reset before each test rather than per-test cleanup: this is a throwaway local dev
 // database (see docs/ADR/0003-local-postgresql-strategy.md), and a small, fixed schema at
 // this phase, so a blanket reset is simpler and more reliable than tracking exactly which
-// rows each test created. Deletion order respects foreign keys (members before their
-// organization/user).
+// rows each test created. Deletion order respects foreign keys (members/accounts before
+// their organization/user).
 beforeEach(async () => {
+  await prisma.instagramAccount.deleteMany();
   await prisma.organizationMember.deleteMany();
   await prisma.organization.deleteMany();
   await prisma.user.deleteMany();
@@ -134,6 +135,53 @@ describe('OrganizationMember', () => {
     await prisma.organization.delete({ where: { id: org.id } });
 
     const remaining = await prisma.organizationMember.findMany({ where: { userId: user.id } });
+    expect(remaining).toHaveLength(0);
+  });
+});
+
+describe('InstagramAccount', () => {
+  async function createOrg() {
+    return prisma.organization.create({ data: { name: 'Acme Inc', slug: 'acme' } });
+  }
+
+  it('creates an account with a default status of CONNECTED', async () => {
+    const org = await createOrg();
+
+    const account = await prisma.instagramAccount.create({
+      data: { organizationId: org.id, zernioAccountId: 'zernio-acct-1', username: 'acme_ig' },
+    });
+
+    expect(account.status).toBe('CONNECTED');
+    expect(account.username).toBe('acme_ig');
+  });
+
+  it('rejects a second account with the same Zernio account id, even under a different organization', async () => {
+    const org = await createOrg();
+    const otherOrg = await prisma.organization.create({
+      data: { name: 'Other Co', slug: 'other-co' },
+    });
+    await prisma.instagramAccount.create({
+      data: { organizationId: org.id, zernioAccountId: 'zernio-acct-1' },
+    });
+
+    await expect(
+      prisma.instagramAccount.create({
+        data: { organizationId: otherOrg.id, zernioAccountId: 'zernio-acct-1' },
+      }),
+    ).rejects.toMatchObject({ code: 'P2002' });
+  });
+
+  it('cascades delete: removing an organization removes its Instagram accounts', async () => {
+    const org = await createOrg();
+    await prisma.instagramAccount.create({
+      data: { organizationId: org.id, zernioAccountId: 'zernio-acct-1' },
+    });
+
+    await prisma.organization.delete({ where: { id: org.id } });
+
+    const remaining = await prisma.instagramAccount.findMany({
+      where: { zernioAccountId: 'zernio-acct-1' },
+    });
     expect(remaining).toHaveLength(0);
   });
 });

@@ -1,10 +1,11 @@
 # Database Design
 
-Status: Phase 6, **scope simplified** — see
-`docs/ADR/0005-simplified-mvp-architecture.md`. `User`, `Organization`, `OrganizationMember`
-exist as real, migrated Prisma models (`packages/database/prisma/schema.prisma`). Every
-other table below is the (now much smaller) conceptual map for the remaining MVP phases —
-introduced only when the phase that needs it arrives, per this project's usual practice.
+Status: Phase 7, scope simplified per
+`docs/ADR/0005-simplified-mvp-architecture.md`. `User`, `Organization`, `OrganizationMember`,
+`InstagramAccount` exist as real, migrated Prisma models
+(`packages/database/prisma/schema.prisma`). Every other table below is the (now much
+smaller) conceptual map for the remaining MVP phases — introduced only when the phase that
+needs it arrives, per this project's usual practice.
 
 ## Engine
 
@@ -21,10 +22,10 @@ User ──< OrganizationMember >── Organization ──< InstagramAccount �
                                       └──< WebhookEvent
 ```
 
-Only `User ──< OrganizationMember >── Organization` (the left-hand side) exists today.
+`User ──< OrganizationMember >── Organization ──< InstagramAccount` exists today (Phase 7).
 Instagram posts/reels are **not** modeled here at all — per ADR 0005 they're read live from
-Zernio, never duplicated into Postgres; `Automation` references a Zernio post/reel by its
-Zernio-issued id (a plain string column), not a local foreign key.
+Zernio, never duplicated into Postgres; `Automation` (Phase 10) references a Zernio post/reel
+by its Zernio-issued id (a plain string column), not a local foreign key.
 
 ## Tenant isolation rule
 
@@ -60,12 +61,14 @@ at the service layer and proven with explicit cross-tenant-access tests (see
   chosen per relationship.
 - **Unique constraints**: every unique constraint documents *why* in the schema comment
   next to it (see `schema.prisma`) — `User.email`, `Organization.slug`,
-  `OrganizationMember`'s composite `(organizationId, userId)`.
+  `OrganizationMember`'s composite `(organizationId, userId)`,
+  `InstagramAccount.zernioAccountId` (global, not per-org — see below for why that
+  distinction matters here specifically).
 - **Indexes**: every `@@index` names the query pattern it exists for, in a comment right
   above it in `schema.prisma` — no index is added "just in case." `organization_members`
   has two: one on `organizationId` (list an org's members) and one on `userId` (list a
-  user's orgs) — both are going to be hit on effectively every authenticated request once
-  Phase 6 lands.
+  user's orgs); `instagram_accounts` has one on `organizationId` (list an org's connected
+  accounts) — all hit on effectively every authenticated request from Phase 6/7 on.
 - **Nullable fields**: nullable only when there's a real reason a value can legitimately be
   absent (see `User.name`/`authProviderId`/`authProvider`/`passwordHash` below) — not as a
   default.
@@ -142,6 +145,34 @@ The join table between `User` and `Organization`, plus a role.
   orgs a user belongs to," both extremely common query patterns from the moment Phase 6
   lands (every dashboard load, every session's membership check).
 
+## `InstagramAccount` (Phase 7)
+
+An Instagram Business/Creator account connected via Zernio. This phase only adds the table
+and its constraints — no live Zernio calls happen anywhere yet (`packages/zernio`'s
+`ZernioInstagramProvider` is a skeleton; every method throws "not implemented"). Real rows
+start getting created in Phase 8's OAuth connect flow.
+
+- `id` — `cuid()`.
+- `organizationId` — FK, `onDelete: Cascade` (see Conventions above) — deleting an org
+  deletes its connected accounts; there's no independent meaning for a connected account
+  once its org is gone.
+- `zernioAccountId` — **globally unique** `String`, not just unique per organization. This
+  is deliberate: an inbound Zernio webhook (Phase 11) identifies the account only by this
+  id, and `docs/WEBHOOKS.md`'s org-resolution step ("look up the account, resolve its
+  `organization_id`") must have exactly one answer. If the same Zernio account could be
+  connected under two different organizations, that lookup would be ambiguous — so the
+  schema forbids it outright rather than relying on application code to enforce it.
+  Verified with a test that connects the same `zernioAccountId` under two *different* orgs
+  and asserts the second attempt throws `P2002`
+  (`packages/database/src/__tests__/database.test.ts`).
+- `username` — nullable, same reasoning as `User.name`: not every connect path is guaranteed
+  to hand us a display handle immediately.
+- `status` — `InstagramAccountStatus` enum (`CONNECTED`, `DISCONNECTED`, `ERROR`), defaults
+  to `CONNECTED`. Disconnecting doesn't delete the row — a past connection's history (and
+  any automation still pointing at it) should survive a revoke/reconnect cycle.
+- `@@index([organizationId])` — "list an organization's connected accounts," every
+  account-picker UI load from Phase 8 on.
+
 ## Conceptual tables (not yet built — introduced per-phase)
 
 Per ADR 0005, this is the **complete** remaining list — not a subset of a larger planned
@@ -151,7 +182,6 @@ that scope is retired, not deferred.
 
 | Table | Introduced in | Purpose |
 |---|---|---|
-| `instagram_accounts` | Phase 7-8 | Connected IG account, org-scoped, Zernio account/profile id, connection status |
 | `automations` | Phase 10 | One org + one account + one specific Zernio post/reel id + keyword(s) + public reply template + DM template + active flag. Not a generic trigger/condition/action graph — see `docs/AUTOMATION-ENGINE.md` |
 | `automation_runs` | Phase 12 | One row per trigger match, for basic status/history (MVP item 13) — shape (e.g. whether a separate `automation_run_steps` table is worth it) decided when this phase is built, not speculated now |
 | `webhook_events` | Phase 11 | Raw inbound webhook + idempotency + processing status |
@@ -190,7 +220,7 @@ Schema changes always go through a generated migration file committed to the rep
 - **CI/production-style apply**: `pnpm --filter @automationdm/database run migrate:reset` for a
   full reset in dev, or `migrate:deploy` (no schema-diffing, just applies already-committed
   migration files — the correct command for CI and any real deployment) — used by
-  `.github/workflows/ci.yml`'s `database-tests` job.
+  `.github/workflows/ci.yml`'s `backend-tests` job.
 - The first migration, `20260810172436_init`, creates `users`, `organizations`,
   `organization_members`, and the `OrganizationRole` enum — reviewed by hand (see
   `packages/database/prisma/migrations/20260810172436_init/migration.sql`) before being
@@ -198,6 +228,8 @@ Schema changes always go through a generated migration file committed to the rep
 - `20260810182347_add_password_hash` (Phase 5) adds the single nullable `users.password_hash`
   column for the Auth.js `Credentials` provider — see
   `docs/ADR/0004-authentication-provider.md`.
+- `20260810202052_add_instagram_accounts` (Phase 7) creates `instagram_accounts` and the
+  `InstagramAccountStatus` enum.
 
 ## Prisma client
 

@@ -31,10 +31,11 @@ was implemented under the old numbering (Phase 7 below is **not** the same as an
 previously-drafted "Phase 7" — the old draft never shipped, so this isn't a renumbering of
 completed work, just a rewrite of what hadn't started yet).
 
-- [ ] **Phase 7 — Instagram account domain model + Zernio provider abstraction**
+- [x] Phase 7 — Instagram account domain model + Zernio provider abstraction
   (`instagram_accounts` table, org-scoped; `InstagramProvider` interface +
-  `ZernioInstagramProvider` skeleton in `packages/zernio` — no live Zernio calls yet) — **next phase**
-- [ ] Phase 8 — Zernio account connection (real OAuth flow, populates `instagram_accounts`)
+  `ZernioInstagramProvider` skeleton in `packages/zernio` — no live Zernio calls yet). See
+  "Phase 7 report" below.
+- [ ] **Phase 8 — Zernio account connection** (real OAuth flow, populates `instagram_accounts`) — **next phase**
 - [ ] Phase 9 — List + view Instagram posts/reels (fetched live from Zernio, not stored in
   Postgres per ADR 0005; preserve Zernio's real pagination mechanism — verify cursor vs
   offset against its docs before building, don't assume)
@@ -690,3 +691,73 @@ checklist. Phase 7 is now: Instagram account domain model + Zernio provider abst
 (`instagram_accounts` table, org-scoped, no live Zernio calls yet; `InstagramProvider`
 interface + `ZernioInstagramProvider` skeleton in `packages/zernio`). Will not start until
 the user says to proceed.
+
+## Phase 7 report
+
+**What was built**
+- `packages/database`: `InstagramAccount` model + `InstagramAccountStatus` enum
+  (`CONNECTED`/`DISCONNECTED`/`ERROR`), one migration
+  (`20260810202052_add_instagram_accounts`). `zernioAccountId` is **globally** unique (not
+  per-org) — deliberate, so `docs/WEBHOOKS.md`'s future org-resolution-by-account-id lookup
+  is always unambiguous. 3 new Vitest tests (create with default status, reject a duplicate
+  `zernioAccountId` under a *different* org, cascade delete) — 14/14 total, up from 11.
+- `packages/zernio`: scaffolded for real (previously an empty placeholder) —
+  `InstagramProvider` interface (`connectAccount` only, matching Phase 8's scope — no
+  speculative methods for phases that haven't arrived) and a `ZernioInstagramProvider`
+  skeleton whose implementation throws "not implemented yet." No live Zernio call exists
+  anywhere in the codebase yet, exactly as this phase's scope requires. Builds to `dist/`
+  via `tsc`, same pattern as `packages/database`/`shared`/`validation`.
+- Docs: `docs/DATABASE.md` (`InstagramAccount` section with full per-field reasoning,
+  matching the `User`/`Organization`/`OrganizationMember` style; conventions section
+  extended; migrations list updated); `docs/ARCHITECTURE.md` (Database section, Backend
+  modules note, repo layout); `docs/ZERNIO-INTEGRATION.md` (abstraction-boundary diagram
+  corrected to drop `apps/worker` — it's inert per ADR 0005 — and a "Status (Phase 7)" note
+  added); `packages/zernio/README.md` rewritten; this file.
+
+**No `apps/api` changes this phase** — per `docs/ARCHITECTURE.md`'s "creating an empty
+module ahead of the phase that needs it is avoided" rule, no `instagram` NestJS module was
+added, since there's no real endpoint to put in it yet (Phase 8's OAuth connect flow is what
+needs one). `apps/api`'s build was re-verified anyway, since its Prisma client type surface
+changed with the new model.
+
+**Commands executed and results**
+| Command | Result |
+|---|---|
+| `prisma migrate dev --name add_instagram_accounts` | Applied migration, regenerated Prisma Client 6.19.3. Reviewed the generated SQL by hand (one `CREATE TYPE`, one `CREATE TABLE`, one unique index, one plain index, one FK) before proceeding. |
+| `pnpm --filter @automationdm/database run build` / `run test` | `tsc` exit 0; **14/14 vitest tests pass** (11 existing + 3 new). |
+| `pnpm --filter @automationdm/zernio run build` | `tsc`, exit 0 (first real build — previously an empty placeholder). |
+| `pnpm exec eslint packages/zernio` (1st run) | **1 error** — `_input` reported as an unused parameter in the `connectAccount` stub (the sole parameter, with nothing "used" after it to exempt it under the project's default `after-used` lint mode). |
+| Fixed by implementing the stub with zero parameters (TypeScript allows a class method to implement an interface method with fewer parameters — any caller passing the full argument list stays compatible) | — |
+| `pnpm exec eslint packages/zernio` (2nd run) | 0 errors. |
+| `.\scripts\lint.ps1` (ESLint + typecheck across all 10 workspace projects + Prettier) | ESLint 0 errors, typecheck 10/10 `Done`, Prettier all pass. Exit 0. |
+| `.\scripts\test.ps1` | `packages/database`: 14/14; `apps/api`: 9/9 (unchanged, confirms the new model didn't regress Phase 6's tenant-isolation tests). |
+| Full rebuild of every package/app (`database`, `shared`, `validation`, `zernio`, `api`, `worker`, `web`) | All exit 0. |
+| `node --version` / `npm --version`, fresh shell | `v16.13.0` / `8.1.0` at `C:\Program Files\nodejs` — **unchanged**. |
+
+**Files created**
+`packages/database/prisma/migrations/20260810202052_add_instagram_accounts/migration.sql`;
+`packages/zernio/src/{index.ts,instagram-provider.ts,zernio-instagram-provider.ts}`.
+
+**Files modified**
+`packages/database/{prisma/schema.prisma,src/__tests__/database.test.ts}`;
+`packages/zernio/{package.json,tsconfig.json,README.md}`;
+`docs/{DATABASE.md,ARCHITECTURE.md,ZERNIO-INTEGRATION.md}`; this file.
+
+**Known limitations / risks**
+- `InstagramProvider.connectAccount`'s exact parameters (`code`, `redirectUri`) are a
+  generic OAuth-authorization-code shape, not yet verified against Zernio's actual connect
+  flow — intentional (the interface is domain-shaped, not Zernio-shaped, per
+  `docs/ZERNIO-INTEGRATION.md`'s own design), but the real implementation in Phase 8 must
+  still confirm this shape actually fits what Zernio's OAuth flow returns, per `CLAUDE.md`'s
+  "never invent Zernio API behavior" rule.
+- No `apps/api` endpoint exists yet to create/list `InstagramAccount` rows — nothing is
+  reachable from `apps/web` yet. Expected; Phase 8 adds the first one (the OAuth connect
+  flow itself).
+
+**Next phase**
+
+Phase 8 — Zernio account connection: real OAuth flow (re-verify the exact flow against
+Zernio's live docs first, per `CLAUDE.md`), a NestJS `instagram` module with connect/
+callback endpoints, `ZernioInstagramProvider.connectAccount`'s real implementation, and the
+first `InstagramAccount` rows ever created outside a test. Will not start until the user
+says to proceed.
