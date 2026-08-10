@@ -1,0 +1,48 @@
+# Project-local tooling (downloaded binaries, never committed)
+.tools/
+
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Env files (never commit secrets)
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+.env.test
+
+# Build output
+.next/
+dist/
+build/
+out/
+coverage/
+
+# Local Postgres/Redis fallback data (if the portable-binary option from
+# docs/DEVELOPMENT-SETUP.md is used)
+.tools/postgres-data/
+*.rdb
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor/OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# Prisma
+packages/database/generated/
+
+# Playwright
+playwright-report/
+test-results/
+
+# Turbo (if ever adopted)
+.turbo/

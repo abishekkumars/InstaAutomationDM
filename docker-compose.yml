@@ -1,0 +1,45 @@
+# Local development infrastructure: PostgreSQL + Redis.
+#
+# NOTE (Phase 0, 2026-08-10): Docker is not currently installed on the primary dev machine
+# for this project (see docs/DEVELOPMENT-SETUP.md). This file is authored now as the
+# preferred long-term local-dev path for whichever machine has Docker available, but it is
+# NOT expected to run yet on the current machine. See docs/DEVELOPMENT-SETUP.md and
+# docs/ADR/0002-project-local-node-and-no-docker-fallback.md for the fallback options
+# (portable binaries / cloud dev database) while Docker is unavailable.
+#
+# Usage once Docker is available: docker compose up -d
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: automationdm
+      POSTGRES_PASSWORD: automationdm
+      POSTGRES_DB: automationdm
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U automationdm"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-data:
+  redis-data:
