@@ -12,6 +12,7 @@
     "dev": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/dev.ps1",
     "test": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/test.ps1",
     "lint": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/lint.ps1",
+    "doctor": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/doctor.ps1",
     "eslint": "eslint .",
     "typecheck": "pnpm --recursive --if-present run typecheck",
     "format": "prettier --write .",

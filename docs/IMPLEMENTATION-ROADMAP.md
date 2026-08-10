@@ -3,11 +3,23 @@
 Update this file's checkboxes at the end of every phase. Each phase should end with the
 artifact checklist in the master prompt (section 27) completed before moving on.
 
+**Numbering note:** there is no separate "Phase 3" checklist entry below, and that is not
+an error. The roadmap originally planned Phase 2 (Next.js shell) and Phase 3 (NestJS
+shell) as two separate units of work. The user's actual Phase 2 instruction explicitly
+bundled both of those plus `apps/worker`'s bootstrap shell into one pass, executed and
+reported as "Phase 2" (see its report below). Rather than leave a checkbox for a "Phase 3"
+that never ran as its own phase, that scope is folded into the Phase 2 line and the
+standalone entry is removed. Every phase number from 4 onward is **unchanged** — they
+match the phase references already used throughout `docs/DATABASE.md`,
+`docs/ZERNIO-INTEGRATION.md`, `docs/SECURITY.md`, `docs/ARCHITECTURE.md`, and
+`docs/ADR/0002-project-local-node-and-no-docker-fallback.md` — so nothing past Phase 2
+needed renumbering. History (the Phase 0/1/2 reports) is preserved exactly as written.
+
 - [x] Phase 0 — Environment + architecture. See "Phase 0 report" below.
 - [x] Phase 1 — Repository/monorepo foundation (pnpm workspace, root tsconfig/eslint/prettier, CI skeleton). See "Phase 1 report" below.
-- [x] Phase 2 — Application shells: Next.js (`apps/web`) + NestJS (`apps/api`) + worker bootstrap (`apps/worker`). See "Phase 2 report" below.
-- [x] Phase 3 — NestJS backend shell (+ `/health`; `/ready` deferred). **Merged into Phase 2** at explicit user instruction to scaffold web + api + worker together — see "Phase 2 report".
-- [ ] Phase 4 — PostgreSQL + Prisma (first migration: `users` groundwork only as auth needs it)
+- [x] Phase 2 — Application shells: Next.js (`apps/web`) + NestJS (`apps/api`) + worker bootstrap (`apps/worker`). Absorbs what was originally planned as a separate "Phase 3 — NestJS backend shell" (see the numbering note above and the Phase 2 report below).
+- [x] Phase 2 stabilization — project-local Node runtime enforcement + diagnostics (`scripts/pnpm.ps1`, `scripts/doctor.ps1`). See "Phase 2 stabilization report" below.
+- [ ] **Phase 4 — PostgreSQL + Prisma** (first migration: `users` groundwork only as auth needs it) — **next phase**
 - [ ] Phase 5 — Authentication (Clerk vs Auth.js decision + implementation)
 - [ ] Phase 6 — Multi-tenancy (`organizations`, `organization_members`, tenant-isolation tests)
 - [ ] Phase 7 — Instagram account domain model (`instagram_accounts` table, no Zernio calls yet)
@@ -243,6 +255,70 @@ placeholders, superseded by real entrypoints).
 - `GET /api/ready` deferred — see `docs/API-SPEC.md`.
 - Local Postgres/Redis strategy still unresolved (unchanged from Phase 0/1) — Phase 4/11.
 - Auth provider (Clerk vs Auth.js) still unresolved — Phase 5.
+
+## Phase 2 stabilization report
+
+Requested before starting Phase 4, to fix a real developer-experience risk surfaced during
+Phase 2 verification (see that report's "PATH gotcha" above) before building on top of it.
+No PostgreSQL, Prisma, Redis, auth, or Zernio work — pure tooling/documentation hardening.
+
+**What changed**
+- `scripts/_env.ps1`'s `Assert-ProjectLocalNode` no longer just prepends `.tools/node` to
+  `$env:PATH` and trusts it — it now re-resolves `node` with `Get-Command`, confirms the
+  resolved executable's directory is exactly `.tools/node` (not merely present somewhere on
+  PATH), confirms the version is `>= 20`, and exits with a clear error otherwise. Every
+  existing `scripts/*.ps1` picks this up automatically since they all dot-source this file.
+- New `scripts/pnpm.ps1` — canonical wrapper for any ad hoc pnpm command
+  (`.\scripts\pnpm.ps1 --filter @automationdm/api run build`, etc.), so there is a safe
+  option for cases the four fixed-purpose scripts don't cover, instead of falling back to
+  invoking `pnpm`/`corepack` directly.
+- New `scripts/doctor.ps1` — environment diagnostics: project root, whether
+  `.tools/node/` exists, what `node` resolves to before vs. after the PATH fix-up, npm/pnpm
+  versions, and an explicit "Using project-local: True/False", exiting non-zero with a
+  clear message if the wrong runtime would be used. Added as `pnpm run doctor` too.
+- `docs/DEVELOPMENT-SETUP.md`: new "Enforcing the project-local Node runtime" section
+  documenting all of the above, plus the verified answer on whether bare `pnpm` is safe
+  (see below).
+- `CLAUDE.md` / `AGENTS.md`: point at `scripts/pnpm.ps1` / `scripts/doctor.ps1` as the
+  canonical way to run anything not already covered by `setup`/`dev`/`lint`/`test`, and add
+  the plain-ASCII-in-`.ps1`-files rule (see bug found, below).
+- This file: removed the standalone "Phase 3" checklist line (see the numbering note at
+  the top of this document) and added this report.
+
+**Bug found and fixed while building the fix**: the first draft of `scripts/_env.ps1`
+used an em dash inside a `Write-Error` string. Windows PowerShell 5.1 reads `.ps1` files
+without a UTF-8 BOM using the legacy system codepage, which corrupted that multi-byte
+character and broke the string's closing quote, surfacing as a confusing
+`TerminatorExpectedAtEndOfString` parse error several lines below the actual cause. Fixed
+by making every `scripts/*.ps1` file plain ASCII, and documented so it isn't repeated —
+`.md` files are unaffected (not parsed by PowerShell).
+
+**Is bare `pnpm` safe or unsafe?** Tested directly: a fresh shell running `pnpm --version`
+gets "the term 'pnpm' is not recognized" — there is currently no bare `pnpm` on `PATH` at
+all, because the global Node 16's bundled corepack was never `enable`d against that global
+install (we deliberately never did that), so it exposes no global `pnpm` shim; the only
+`pnpm` that exists anywhere on this machine lives inside `.tools/node/`. That is a **safe
+failure today, but an incidental one, not an enforced one** — it depends entirely on nobody
+ever running `corepack enable` globally or `npm install -g pnpm` on this machine. **Bare
+`pnpm` (and equally, a direct call to `.tools\node\corepack.cmd pnpm` or
+`.tools\node\pnpm.cmd` without first going through `scripts/_env.ps1`) must be treated as
+unsafe regardless of what it happens to do right now** — always use `scripts/pnpm.ps1` or
+one of the fixed-purpose scripts instead.
+
+**Verification**
+| Check | Result |
+|---|---|
+| `scripts/doctor.ps1` in a fresh shell | Reports global Node `v16.13.0` before the fix-up, project-local `v24.19.0` after, `Using project-local: True`. Exit 0. |
+| `scripts/doctor.ps1` with `.tools/node` temporarily renamed away (simulated missing runtime) | Fails immediately with "No project-local Node runtime at ... Run .\scripts\setup.ps1 first.", exit 1. Runtime restored immediately after. |
+| `scripts/pnpm.ps1 --version` | `9.15.0` (the pinned project-local pnpm), exit 0 |
+| `apps/api` build (`.\scripts\pnpm.ps1 --filter @automationdm/api run build`, i.e. `nest build`) | Exit 0 |
+| `apps/worker` build (`... run build`, i.e. `tsc`) | Exit 0 |
+| `apps/web` build (`... run build`, i.e. `next build`) | Exit 0, same route summary as Phase 2 (`/` and `/_not-found` static, `/status` dynamic) |
+| `.\scripts\lint.ps1` (ESLint + typecheck + Prettier check) | All pass, exit 0 |
+| `node --version` / `npm --version` in a fresh shell, before and after all of the above | `v16.13.0` / unchanged at `C:\Program Files\nodejs` throughout |
+
+No application functionality was added or changed — same three shells as the end of
+Phase 2, just built/linted through the hardened entry points instead of ad hoc commands.
 
 **Next phase**
 

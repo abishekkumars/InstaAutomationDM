@@ -136,6 +136,75 @@ touching anything outside this folder.
 
 Full command log and file list: `docs/IMPLEMENTATION-ROADMAP.md`, "Phase 1 report".
 
+## Enforcing the project-local Node runtime (Phase 2 stabilization, 2026-08-10)
+
+The Phase 2 update below documented a real bug: a *correct* project-local `pnpm`
+invocation could still spawn its build tools under the global Node 16 if the calling
+shell's `PATH` hadn't been fixed up first. This section is the fix. It supersedes "always
+remember to set `$env:PATH`" with tooling that checks instead of trusting.
+
+**Canonical entry points — use these, not raw `pnpm`/`corepack`/`node`:**
+
+| Command | Purpose |
+|---|---|
+| `.\scripts\setup.ps1` | First-time (or repeat) setup: downloads/verifies `.tools/node/`, enables corepack, `pnpm install`. |
+| `.\scripts\dev.ps1` | Runs web + api + worker dev processes. |
+| `.\scripts\lint.ps1` | ESLint + typecheck + Prettier check. |
+| `.\scripts\test.ps1` | Workspace test suite (no-op until a package defines one). |
+| `.\scripts\pnpm.ps1 <anything>` | **New.** Canonical wrapper for any ad hoc pnpm command not covered by the above — `.\scripts\pnpm.ps1 --filter @automationdm/api run build`, `.\scripts\pnpm.ps1 why some-package`, `.\scripts\pnpm.ps1 install`, etc. Never invoke `pnpm`, `.tools\node\corepack.cmd pnpm`, or `.tools\node\pnpm.cmd` directly — always through this wrapper. |
+| `.\scripts\doctor.ps1` (or `pnpm run doctor` once already inside a correct session) | **New.** Environment diagnostics — see below. |
+
+**How enforcement works:** every `scripts/*.ps1` dot-sources `scripts/_env.ps1` and calls
+`Assert-ProjectLocalNode`, which now does more than prepend `.tools/node` to `$env:PATH` —
+it re-resolves `node` afterward with `Get-Command`, confirms the resolved executable's
+directory is exactly `.tools/node` (not merely that PATH *contains* it — a stray earlier
+entry could still shadow it), confirms the resolved version is `>= 20`, and `exit 1`s with
+a clear message if any of that fails. Trusting a PATH assignment is what caused the
+original bug; checking what actually resolved is the fix.
+
+**Is bare `pnpm` safe?** Verified on this machine: **no bare `pnpm` exists on `PATH` at
+all** — a fresh shell running `pnpm --version` gets "the term 'pnpm' is not recognized"
+(global corepack, bundled with the global Node 16, was never `enable`d against that global
+install, so it exposes no global `pnpm` shim; ours lives only inside `.tools/node/`). That
+is a *safe failure* today, but it is incidental, not enforced — if anyone ever runs
+`corepack enable` globally, or `npm install -g pnpm`, on this machine, bare `pnpm` would
+silently start resolving to that instead. **Treat bare `pnpm` as unsafe regardless of what
+it currently does** — the rule is "always go through `scripts/*.ps1` or
+`scripts/pnpm.ps1`," not "bare `pnpm` happens to error right now."
+
+**Environment diagnostics (`scripts/doctor.ps1`):** reports, in order — project root,
+whether `.tools/node/` exists at all, what `node` resolves to *before* any fix-up (to show
+the risk directly), then Node version / executable path / npm version / pnpm version /
+"Using project-local: True|False" *after* the fix-up. Exits non-zero with a clear message
+if the wrong runtime is in play. Example output:
+
+```
+Before PATH fix-up:
+  node resolves to:     C:\Program Files\nodejs\node.exe
+  node version:         v16.13.0
+
+After PATH fix-up (what scripts/*.ps1 and scripts/pnpm.ps1 actually use):
+  Node version:          v24.19.0
+  Node executable:       D:\Personal\Projects\AutomationDM\.tools\node\node.exe
+  npm version:           11.17.0
+  pnpm version:          9.15.0
+  Using project-local:   True
+
+OK: project-local Node v24.19.0 is correctly resolved...
+```
+
+**A second bug found while building this fix, worth keeping in mind for every future
+`.ps1` file in this repo:** the first draft of `scripts/_env.ps1` used an em dash (`-`
+typed as the Unicode character, not a hyphen) inside a string literal. Windows PowerShell
+5.1 reads `.ps1` files without a UTF-8 BOM using the legacy system codepage; the multi-byte
+UTF-8 sequence for that character was misread and corrupted the string's closing quote,
+producing a `TerminatorExpectedAtEndOfString` parse error several lines further down the
+file (PowerShell's parser reports these downstream of the actual corruption, which makes
+them confusing to debug). **Keep every `scripts/*.ps1` file plain ASCII** — plain hyphens
+instead of em/en dashes, straight quotes instead of curly ones, `->` instead of arrows.
+Markdown/`.md` files are unaffected (not parsed by PowerShell) and can keep using them
+normally.
+
 ## Phase 2 update (2026-08-10): application dev commands, and a PATH gotcha
 
 Each app now has real `dev`/`build`/`start` scripts (via `pnpm --filter <name> run <script>`,

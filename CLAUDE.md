@@ -25,7 +25,12 @@ Architecture: `docs/ARCHITECTURE.md`. Current phase status: `docs/IMPLEMENTATION
 7. Run tests, lint, and typecheck (`scripts/test.ps1`, `scripts/lint.ps1`) via the
    project-local tooling — never assume global `node`/`npm` on this machine (see
    `docs/DEVELOPMENT-SETUP.md`; the global install here is Node 16 and must not be used or
-   modified).
+   modified). For anything not covered by an existing `scripts/*.ps1`, use
+   `scripts/pnpm.ps1 <args>` — never invoke `pnpm`, `corepack`, or `node` directly; a
+   direct invocation can silently run under the wrong Node even when the command itself
+   "succeeds" (see `docs/DEVELOPMENT-SETUP.md`, "Enforcing the project-local Node
+   runtime"). Run `scripts/doctor.ps1` whenever you need to confirm which Node a shell is
+   actually using.
 8. Fix failures. Never report a feature as working without having actually run it.
 9. Update the relevant docs (including `docs/IMPLEMENTATION-ROADMAP.md` checkboxes) as part
    of the same change, not as a follow-up someone else has to remember to do.
@@ -71,6 +76,12 @@ without asking.
 - This machine: Windows, no admin rights, global Node 16, no Docker. Project tooling is
   entirely self-contained under `.tools/` and `scripts/*.ps1` — see
   `docs/DEVELOPMENT-SETUP.md`.
+- Never run `pnpm`/`corepack`/`node` directly. Use `scripts/setup.ps1`, `scripts/dev.ps1`,
+  `scripts/lint.ps1`, `scripts/test.ps1`, or `scripts/pnpm.ps1 <args>` for anything else.
+  `scripts/doctor.ps1` reports exactly what Node a shell resolves to if in doubt.
+- Keep every `scripts/*.ps1` file plain ASCII (no em dashes, curly quotes, arrows) — Windows
+  PowerShell 5.1 misreads multi-byte characters in BOM-less `.ps1` files and produces
+  confusing parse errors. `.md` files are unaffected.
 - Local Postgres/Redis strategy is **not yet decided** (Docker vs portable binaries vs cloud
   dev DB) — see `docs/ADR/0002-project-local-node-and-no-docker-fallback.md`. Don't assume
   Docker Compose "just works" here until that's resolved.

@@ -11,8 +11,9 @@ file is a short pointer plus anything that isn't Claude-specific.
 - Current phase: `docs/IMPLEMENTATION-ROADMAP.md`.
 - This machine has no admin rights, a global Node 16 install that must not be touched, and
   no Docker. All project tooling is project-local — run `scripts/setup.ps1` once, then
-  `scripts/dev.ps1` / `scripts/test.ps1` / `scripts/lint.ps1`. Full detail:
-  `docs/DEVELOPMENT-SETUP.md`.
+  `scripts/dev.ps1` / `scripts/test.ps1` / `scripts/lint.ps1`. For anything else, use
+  `scripts/pnpm.ps1 <args>` rather than invoking `pnpm` directly, and `scripts/doctor.ps1`
+  to check which Node a shell is actually using. Full detail: `docs/DEVELOPMENT-SETUP.md`.
 
 ## Rules that apply regardless of which agent/tool you are
 
