@@ -37,6 +37,9 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 
+# AI coding tool local/session state (not a project artifact)
+.claude/
+
 # Prisma
 packages/database/generated/
 

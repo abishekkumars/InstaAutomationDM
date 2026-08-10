@@ -1,0 +1,12 @@
+.tools/
+node_modules/
+.next/
+dist/
+coverage/
+playwright-report/
+test-results/
+pnpm-lock.yaml
+
+# Hand-written prose with tables/links; not yet run through Prettier formatting.
+# Revisit if/when we want Markdown formatting enforced in CI.
+*.md

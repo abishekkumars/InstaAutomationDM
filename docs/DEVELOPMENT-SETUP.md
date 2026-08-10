@@ -116,3 +116,22 @@ Node install:
 
 This is the only command that should be needed to get a working local toolchain, without
 touching anything outside this folder.
+
+## Phase 1 update (2026-08-10): confirmed working end to end
+
+`scripts/setup.ps1` was actually run on this machine and verified:
+
+- Resolved and downloaded Node **v24.19.0** (the current 24.x LTS patch at the time) to
+  `.tools/node/`.
+- Enabled corepack from within that runtime and installed pnpm **9.15.0** (the version
+  pinned by root `package.json`'s `packageManager` field — a newer pnpm exists upstream,
+  but we pin deliberately rather than floating, and corepack respects the pin).
+- Installed all 9 workspace projects' dependencies (110 packages resolved) via
+  `pnpm install`.
+- `scripts/lint.ps1` (ESLint + `tsc --noEmit` per package + Prettier check) and
+  `scripts/test.ps1` (currently a no-op — no package defines a `test` script yet) both run
+  cleanly, exit 0.
+- Confirmed after all of the above: `node --version` / `npm --version` on this machine's
+  normal `PATH` are still `v16.13.0` / `8.1.0` at `C:\Program Files\nodejs` — unchanged.
+
+Full command log and file list: `docs/IMPLEMENTATION-ROADMAP.md`, "Phase 1 report".
