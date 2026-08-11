@@ -5,7 +5,11 @@ import type {
   FindConnectedAccountInput,
   GetConnectUrlInput,
   GetConnectUrlResult,
+  GetPostInput,
+  InstagramPost,
   InstagramProvider,
+  ListPostsInput,
+  ListPostsResult,
 } from './instagram-provider';
 
 // Base URL + auth scheme, and every endpoint shape below, verified directly against Zernio's
@@ -84,6 +88,40 @@ export class ZernioInstagramProvider implements InstagramProvider {
     return { zernioAccountId: account._id, username: account.username ?? null };
   }
 
+  async listPosts(input: ListPostsInput): Promise<ListPostsResult> {
+    const query = new URLSearchParams({
+      profileId: input.zernioProfileId,
+      accountId: input.zernioAccountId,
+      platform: 'instagram',
+      // "external" = posts synced from Instagram itself (existing content), as opposed to
+      // "zernio" = posts authored through Zernio's own publishing tool, which this project
+      // has no feature for - see docs/ZERNIO-INTEGRATION.md's "Listing posts/reels" section.
+      source: 'external',
+      page: String(input.page),
+      limit: String(input.limit),
+    });
+    const response = await this.request<RawPostsListResponse>('GET', `/posts?${query.toString()}`);
+    return {
+      posts: response.posts.map(toInstagramPost),
+      pagination: response.pagination,
+    };
+  }
+
+  async getPost(input: GetPostInput): Promise<InstagramPost | null> {
+    // GET /v1/posts/{postId} does not work for source: external (synced) posts - verified
+    // live during Phase 9 (404s even for an id taken directly from a real listPosts
+    // response, with or without profileId/source query params). Search a max-size listPosts
+    // call instead; 500 (Zernio's own max limit) comfortably covers the ~12-month synced
+    // history this project's account sizes actually produce.
+    const { posts } = await this.listPosts({
+      zernioProfileId: input.zernioProfileId,
+      zernioAccountId: input.zernioAccountId,
+      page: 1,
+      limit: 500,
+    });
+    return posts.find((post) => post.zernioPostId === input.zernioPostId) ?? null;
+  }
+
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     if (!this.apiKey) {
       // Lazy check (not thrown at DI-construction time) so apps/api's health/readiness
@@ -109,4 +147,55 @@ export class ZernioInstagramProvider implements InstagramProvider {
 
     return (await response.json()) as T;
   }
+}
+
+// Raw shape of GET /v1/posts (Zernio's OpenAPI `Post`/`PlatformTarget`/`MediaItem` schemas),
+// verified against the live spec during Phase 9 - see docs/ZERNIO-INTEGRATION.md's "Listing
+// posts/reels" section. Only the fields this provider actually maps are declared; everything
+// else Zernio returns is ignored.
+interface RawMediaItem {
+  type?: 'image' | 'video' | 'gif' | 'document';
+  url?: string;
+  thumbnail?: string;
+  instagramThumbnail?: string;
+}
+
+interface RawPlatformTarget {
+  platform?: string;
+  // Per the OpenAPI spec, `oneOf: [string, SocialAccount]` - either the bare account id, or
+  // an expanded account object with its own `_id`.
+  accountId?: string | { _id?: string };
+  platformPostId?: string;
+  platformPostUrl?: string;
+  publishedAt?: string;
+}
+
+interface RawPost {
+  _id: string;
+  content?: string;
+  mediaItems?: RawMediaItem[];
+  platforms?: RawPlatformTarget[];
+  publishedAt?: string;
+}
+
+interface RawPostsListResponse {
+  posts: RawPost[];
+  pagination: { page: number; limit: number; total: number; pages: number };
+}
+
+function toInstagramPost(post: RawPost): InstagramPost {
+  const platformTarget =
+    post.platforms?.find((p) => p.platform === 'instagram') ?? post.platforms?.[0];
+  const media = post.mediaItems?.[0];
+  const accountId = platformTarget?.accountId;
+  return {
+    zernioPostId: post._id,
+    zernioAccountId: (typeof accountId === 'string' ? accountId : accountId?._id) ?? null,
+    platformPostId: platformTarget?.platformPostId ?? null,
+    permalink: platformTarget?.platformPostUrl ?? null,
+    caption: post.content ?? '',
+    mediaType: media?.type ?? null,
+    thumbnailUrl: media?.instagramThumbnail ?? media?.thumbnail ?? media?.url ?? null,
+    publishedAt: platformTarget?.publishedAt ?? post.publishedAt ?? null,
+  };
 }

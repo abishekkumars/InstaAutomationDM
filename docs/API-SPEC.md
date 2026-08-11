@@ -1,10 +1,11 @@
 # API Specification
 
-Status: Phase 8 — `apps/api` has `GET /api/health` (liveness), `GET /api/ready` (readiness,
+Status: Phase 9 — `apps/api` has `GET /api/health` (liveness), `GET /api/ready` (readiness,
 checks the database), the error/request-id foundation every endpoint sits on, its
-`organizations` endpoints (Phase 6), and its first Zernio-backed endpoints (`instagram`,
-Phase 8: connect/callback/list). Further business endpoints land with the phase that needs
-them: posts/reels listing in Phase 9, automations in Phase 10/12, webhooks in Phase 11, etc.
+`organizations` endpoints (Phase 6), and its Zernio-backed `instagram` endpoints
+(connect/callback/accounts in Phase 8; posts/reels listing in Phase 9). Further business
+endpoints land with the phase that needs them: automations in Phase 10/12, webhooks in
+Phase 11, etc.
 
 ## Convention
 
@@ -186,6 +187,51 @@ Response (`200`):
 ```json
 [{ "id": "clx...", "zernioAccountId": "17841400649984407", "username": "acme_ig", "status": "CONNECTED" }]
 ```
+
+### `GET /api/organizations/:organizationId/instagram/accounts/:accountId/posts`
+
+Lists an account's existing Instagram posts/reels (Phase 9) — proxies Zernio's own
+`GET /v1/posts?source=external`, never persisted locally (`docs/ADR/0005`). Requires a
+bearer token; 404s if the caller isn't a member of `:organizationId`, or if `:accountId`
+doesn't belong to it (same 404-not-403 tenant-isolation pattern as every other resource in
+this module).
+
+Query params: `page` (integer, ≥1, default `1`), `limit` (integer, 1-500, default `10` —
+matches Zernio's own bounds; a value above 500 is rejected with `400`, not clamped).
+
+Response (`200`):
+```json
+{
+  "posts": [
+    {
+      "zernioPostId": "6a7988dfd0fe733d1ab80576",
+      "platformPostId": "17843210987654321",
+      "permalink": "https://www.instagram.com/p/Cxxxxxxxxxx/",
+      "caption": "...",
+      "mediaType": "video",
+      "thumbnailUrl": "https://...",
+      "publishedAt": "2026-08-09T15:32:51.000Z"
+    }
+  ],
+  "pagination": { "page": 1, "limit": 10, "total": 46, "pages": 5 }
+}
+```
+
+Errors: `400` (invalid `page`/`limit`), `404` (not a member, or `:accountId` not found under
+this organization).
+
+### `GET /api/organizations/:organizationId/instagram/accounts/:accountId/posts/:postId`
+
+Fetches a single post/reel. Requires a bearer token; same 404 checks as the list endpoint
+above, plus a `404` if `:postId` doesn't belong to `:accountId` — see
+`docs/ZERNIO-INTEGRATION.md`'s "Listing posts/reels" section for why this can't be a plain
+`GET /v1/posts/{postId}` passthrough (that endpoint doesn't support the synced posts this
+project lists).
+
+Response (`200`): same shape as one item of the list endpoint's `posts` array above.
+
+Errors: `404` (not a member, `:accountId` not found under this organization, or `:postId` not
+found under `:accountId`).
 
 Further endpoints are documented here as each is actually implemented, with full request/
 response shape, auth requirement, and example — not speculatively written ahead of the

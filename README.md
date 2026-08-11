@@ -7,11 +7,11 @@ API. Scoped for ~3-4 users and under 1,000 API calls/month — see
 for why this is deliberately small, and
 [`docs/PRODUCT-REQUIREMENTS.md`](docs/PRODUCT-REQUIREMENTS.md) for the exact MVP scope.
 
-**Status:** Phase 8 of `docs/IMPLEMENTATION-ROADMAP.md` complete — authentication (Auth.js),
+**Status:** Phase 9 of `docs/IMPLEMENTATION-ROADMAP.md` complete — authentication (Auth.js),
 multi-tenancy (organizations/membership, with `apps/api` session verification and
-tenant-isolation tests), and the Instagram account connection flow (real Zernio OAuth
-connect, verified against Zernio's live API) are real and working. Listing posts/reels and
-comment automations (Phase 9 onward) have not started yet.
+tenant-isolation tests), the Instagram account connection flow, and listing an account's
+existing posts/reels (all verified against Zernio's live API) are real and working. Comment
+automations (Phase 10 onward) have not started yet.
 
 ## Start here
 

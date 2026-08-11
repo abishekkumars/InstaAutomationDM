@@ -1,11 +1,11 @@
 # Zernio Integration
 
-Status: Phase 8 — account connection is real, verified directly against Zernio's live
-OpenAPI spec (`docs.zernio.com/api/openapi`, retrieved 2026-08-11) and its `/guides/
-connecting-accounts` and `/multi-tenant` guides, not assumed from the Phase 0 research pass.
-Everything else below (posts listing, comment automations, webhooks) is still the Phase 0
+Status: Phase 9 — account connection (Phase 8) and listing posts/reels (Phase 9) are both
+real, verified directly against Zernio's live OpenAPI spec (`docs.zernio.com/api/openapi`,
+retrieved 2026-08-11 and re-fetched 2026-08-11 for this phase), not assumed from the Phase 0
+research pass. Everything else below (comment automations, webhooks) is still the Phase 0
 pass and **must** be re-verified against the live docs immediately before the phase that
-implements it (Phase 9/10/11 — see `docs/IMPLEMENTATION-ROADMAP.md`), since third-party API
+implements it (Phase 10/11 — see `docs/IMPLEMENTATION-ROADMAP.md`), since third-party API
 docs change.
 
 Zernio is a unified social-media API (16 platforms). We only use its Instagram surface:
@@ -36,10 +36,10 @@ Meta Graph API / Instagram
 shapes. This means if Zernio's API changes, or we ever add a second provider, only
 `ZernioInstagramProvider` changes.
 
-**Status (Phase 8)**: `ensureProfile`, `getConnectUrl`, and `findConnectedAccount` are real —
-every call in this section has been made against the live API during this phase's
-implementation and verification. Methods for posts listing (Phase 9) and comment automations
-(Phase 10) are added when those phases need them, not speculatively now.
+**Status (Phase 9)**: `ensureProfile`, `getConnectUrl`, `findConnectedAccount` (Phase 8), and
+`listPosts`/`getPost` (Phase 9) are all real — every call in this section has been made
+against the live API during the phase that added it. Methods for comment automations
+(Phase 10) are added when that phase needs them, not speculatively now.
 
 ## Authentication
 
@@ -119,18 +119,55 @@ match → reply → DM flow itself, is an open question resolved during Phase 10
 implementation — see `docs/AUTOMATION-ENGINE.md`'s "Open question" section. Do not assume
 either way before reading this endpoint's real, current behavior directly.
 
-## Listing posts/reels (needed for MVP items 4-5, not yet researched)
+## Listing posts/reels
 
-The pages reviewed during this Phase 0 pass covered account connection, comment-automations,
-messages, and webhooks — **not** an endpoint for listing an account's existing posts/reels,
-which `docs/PRODUCT-REQUIREMENTS.md`'s MVP now requires (list + click into a specific post/
-reel to attach an automation to it). Before Phase 9 implements this:
+Verified directly against `GET /v1/posts` and `GET /v1/posts/{postId}` in Zernio's live
+OpenAPI spec during Phase 9 — the Phase 0 pass never found this endpoint at all (it covered
+account connection, comment-automations, messages, and webhooks, not media listing).
 
-- Find Zernio's actual media/posts listing endpoint for Instagram in the current
-  `docs.zernio.com` docs (not assumed here).
-- Determine its real pagination mechanism. If it's cursor-based (common for this kind of
-  API), **preserve cursor-based pagination end to end** in `apps/api`'s own endpoint and
-  `apps/web`'s UI — do not flatten it into a fake offset/page-number scheme on our side.
+- `GET /v1/posts` is Zernio's cross-platform **publishing** endpoint, not an
+  Instagram-specific one. Its `source` query param picks the collection: `zernio` (default)
+  is content authored *through* Zernio's own scheduling/publishing tool (a feature this
+  project has none of); `source=external` is existing content that was published on the
+  platform itself and Zernio has synced in — this is what "list an account's existing
+  posts/reels" (`docs/PRODUCT-REQUIREMENTS.md`'s MVP items 4-5) actually means, and what
+  `InstagramProvider.listPosts` always requests. Zernio keeps up to ~12 months of synced
+  history per account. Other relevant filters: `accountId`, `platform=instagram`.
+- **Pagination is page/limit-based, not cursor-based** (`page` 1-based, `limit` default 10,
+  max 500 — values above the max return `400` rather than being silently clamped). The
+  Phase 0 pass's placeholder guessed this might be cursor-based and said to preserve
+  whichever scheme turned out to be real end to end; it's page/limit, so `apps/api`'s own
+  `GET .../instagram/accounts/:accountId/posts` and `apps/web`'s UI use plain
+  `page`/`limit` query params, not an invented offset scheme layered on top of something
+  different.
+- Response shape: `{ posts: Post[], pagination: { page, limit, total, pages } }`. Each `Post`
+  carries `content` (caption), `mediaItems` (`type`, `url`, `thumbnail`/`instagramThumbnail`),
+  and `platforms` (one entry per platform the post is associated with — for a synced
+  Instagram post, one entry with `platform: "instagram"`, `accountId`, `platformPostId` (the
+  native Instagram media id), `platformPostUrl` (the public permalink), `publishedAt`).
+  `InstagramProvider.listPosts`/`getPost` map this into a small domain type
+  (`zernioPostId`, `zernioAccountId`, `platformPostId`, `permalink`, `caption`, `mediaType`,
+  `thumbnailUrl`, `publishedAt`) rather than leaking Zernio's own shape.
+- **`GET /v1/posts/{postId}` does not work for `source: external` posts** — confirmed live,
+  not assumed: it returns `{"error":"Post not found",...}` for a `postId` taken directly from
+  a real `listPosts` response, with or without `profileId`/`source` query params added. Every
+  synced post this project needs a "detail view" for is `source: external`, so
+  `ZernioInstagramProvider.getPost` does **not** call this endpoint at all — it instead calls
+  `listPosts` with `limit: 500` (Zernio's own max, comfortably covering the ~12-month synced
+  window for this project's account sizes — verified against a real account with 46 total
+  synced posts) and searches the result for the matching `_id`. This is a real, load-bearing
+  workaround for a genuine gap in Zernio's API, not a stylistic choice.
+- A Reel is just a video-`mediaType` post on Instagram's own data model — Zernio exposes no
+  separate "is this a reel" flag, so this project doesn't invent one either; the UI labels a
+  post by its `mediaType` (`image`/`video`/`gif`/`document`).
+- **Tenant-isolation note**: `listPosts`'s `accountId` filter means Zernio itself scopes list
+  results to the requested account, but `getPost`'s fallback search only ever runs against
+  that same accountId-scoped `listPosts` call (never a global, unscoped lookup), and
+  `apps/api`'s `InstagramService.getPost` still independently re-checks the returned post's
+  `zernioAccountId` against the account the caller asked about before returning it — the same
+  defense-in-depth discipline as the callback handler's live re-confirmation in Phase 8, kept
+  as a second check even though the first (accountId-scoped `listPosts`) already prevents it
+  structurally.
 
 ## Direct messages
 
@@ -186,8 +223,8 @@ this project's actual call volume (<1,000/month).
 
 ## What's deliberately deferred
 
-Account connection is documented for real as of Phase 8 (above). Full request/response
-schemas for the remaining endpoints we'll use (posts/media list, comment-automations,
-webhook test endpoint) are documented endpoint-by-endpoint as each is actually integrated
-(Phase 9-11), rather than transcribed wholesale now against a doc site that may change
-before we get there.
+Account connection (Phase 8) and listing posts/reels (Phase 9) are documented for real
+above. Full request/response schemas for the remaining endpoints we'll use
+(comment-automations, webhook test endpoint) are documented endpoint-by-endpoint as each is
+actually integrated (Phase 10-11), rather than transcribed wholesale now against a doc site
+that may change before we get there.

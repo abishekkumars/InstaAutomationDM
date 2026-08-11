@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import type { OrganizationRole } from '@automationdm/database';
 import { ApiError, callApi } from '@/lib/api';
@@ -130,8 +131,13 @@ export default async function HomePage({
           ) : (
             <ul className="mt-2 space-y-1 text-sm text-slate-600">
               {result.instagramAccounts.map((account) => (
-                <li key={account.id}>
-                  @{account.username ?? account.zernioAccountId} — {account.status.toLowerCase()}
+                <li key={account.id} className="flex items-center justify-between">
+                  <span>
+                    @{account.username ?? account.zernioAccountId} — {account.status.toLowerCase()}
+                  </span>
+                  <Link href={`/instagram/posts?accountId=${account.id}`} className="underline">
+                    View posts
+                  </Link>
                 </li>
               ))}
             </ul>

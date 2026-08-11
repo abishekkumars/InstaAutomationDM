@@ -10,7 +10,11 @@ import type {
   FindConnectedAccountInput,
   GetConnectUrlInput,
   GetConnectUrlResult,
+  GetPostInput,
+  InstagramPost,
   InstagramProvider,
+  ListPostsInput,
+  ListPostsResult,
 } from '@automationdm/zernio';
 import { AppModule } from '../../app.module';
 import { INSTAGRAM_PROVIDER } from '../instagram-provider.token';
@@ -57,11 +61,55 @@ class FakeInstagramProvider implements InstagramProvider {
     this.connectedByProfile.set(zernioProfileId, account);
   }
 
+  private postsByAccount = new Map<string, InstagramPost[]>();
+
+  async listPosts(input: ListPostsInput): Promise<ListPostsResult> {
+    const all = this.postsByAccount.get(input.zernioAccountId) ?? [];
+    const start = (input.page - 1) * input.limit;
+    return {
+      posts: all.slice(start, start + input.limit),
+      pagination: {
+        page: input.page,
+        limit: input.limit,
+        total: all.length,
+        pages: Math.max(1, Math.ceil(all.length / input.limit)),
+      },
+    };
+  }
+
+  async getPost(input: GetPostInput): Promise<InstagramPost | null> {
+    for (const posts of this.postsByAccount.values()) {
+      const found = posts.find((p) => p.zernioPostId === input.zernioPostId);
+      if (found) {
+        return found;
+      }
+    }
+    return null;
+  }
+
+  setPosts(zernioAccountId: string, posts: InstagramPost[]): void {
+    this.postsByAccount.set(zernioAccountId, posts);
+  }
+
   reset(): void {
     this.ensureProfileCallCount = 0;
     this.profileCounter = 0;
     this.connectedByProfile.clear();
+    this.postsByAccount.clear();
   }
+}
+
+function fakePost(overrides: Partial<InstagramPost> & { zernioPostId: string }): InstagramPost {
+  return {
+    platformPostId: null,
+    permalink: null,
+    caption: '',
+    mediaType: null,
+    thumbnailUrl: null,
+    publishedAt: null,
+    zernioAccountId: null,
+    ...overrides,
+  };
 }
 
 let app: INestApplication;
@@ -105,6 +153,30 @@ async function createOrgWithOwner(email: string) {
     },
   });
   return { user, organization };
+}
+
+// Connects and confirms an Instagram account for an organization, end to end through the
+// real connect+callback routes - reused by the posts-listing tests below, which need an
+// already-connected InstagramAccount row to operate on.
+async function connectAndConfirmAccount(
+  app: INestApplication,
+  user: { id: string; email: string },
+  organization: { id: string },
+  zernioAccountId: string,
+  username: string,
+) {
+  const connectResponse = await request(app.getHttpServer())
+    .post(`/api/organizations/${organization.id}/instagram/connect`)
+    .set('Authorization', bearerFor(user.id, user.email))
+    .expect(201);
+  const profileId = new URL(connectResponse.body.authUrl).searchParams.get('profileId') as string;
+  fakeProvider.setConnectedAccount(profileId, { zernioAccountId, username });
+  const callbackResponse = await request(app.getHttpServer())
+    .post(`/api/organizations/${organization.id}/instagram/callback`)
+    .set('Authorization', bearerFor(user.id, user.email))
+    .send({ profileId, accountId: zernioAccountId })
+    .expect(201);
+  return { accountId: callbackResponse.body.id as string, profileId };
 }
 
 describe('POST /api/organizations/:id/instagram/connect', () => {
@@ -291,6 +363,146 @@ describe('GET /api/organizations/:id/instagram/accounts', () => {
     await request(app.getHttpServer())
       .get(`/api/organizations/${organization.id}/instagram/accounts`)
       .set('Authorization', bearerFor(bob.id, bob.email))
+      .expect(404);
+  });
+});
+
+describe('GET /api/organizations/:id/instagram/accounts/:accountId/posts', () => {
+  it('lists posts for a connected account and passes pagination through', async () => {
+    const { user, organization } = await createOrgWithOwner('alice@example.com');
+    const { accountId } = await connectAndConfirmAccount(
+      app,
+      user,
+      organization,
+      'ig-acct-1',
+      'acme_ig',
+    );
+    fakeProvider.setPosts('ig-acct-1', [
+      fakePost({ zernioPostId: 'post-1', zernioAccountId: 'ig-acct-1', caption: 'First' }),
+      fakePost({ zernioPostId: 'post-2', zernioAccountId: 'ig-acct-1', caption: 'Second' }),
+    ]);
+
+    const response = await request(app.getHttpServer())
+      .get(`/api/organizations/${organization.id}/instagram/accounts/${accountId}/posts`)
+      .query({ page: 1, limit: 1 })
+      .set('Authorization', bearerFor(user.id, user.email))
+      .expect(200);
+
+    expect(response.body.posts).toHaveLength(1);
+    expect(response.body.posts[0]).toMatchObject({ zernioPostId: 'post-1', caption: 'First' });
+    expect(response.body.pagination).toMatchObject({ page: 1, limit: 1, total: 2, pages: 2 });
+  });
+
+  it('rejects a limit above the maximum instead of silently clamping it', async () => {
+    const { user, organization } = await createOrgWithOwner('alice@example.com');
+    const { accountId } = await connectAndConfirmAccount(
+      app,
+      user,
+      organization,
+      'ig-acct-1',
+      'acme_ig',
+    );
+
+    await request(app.getHttpServer())
+      .get(`/api/organizations/${organization.id}/instagram/accounts/${accountId}/posts`)
+      .query({ limit: 501 })
+      .set('Authorization', bearerFor(user.id, user.email))
+      .expect(400);
+  });
+
+  it('404s for an accountId that belongs to a different organization', async () => {
+    const { user: alice, organization: aliceOrg } = await createOrgWithOwner('alice@example.com');
+    const { accountId: aliceAccountId } = await connectAndConfirmAccount(
+      app,
+      alice,
+      aliceOrg,
+      'ig-acct-alice',
+      'alice_ig',
+    );
+
+    const { user: bob, organization: bobOrg } = await createOrgWithOwner('bob@example.com');
+    await connectAndConfirmAccount(app, bob, bobOrg, 'ig-acct-bob', 'bob_ig');
+
+    await request(app.getHttpServer())
+      .get(`/api/organizations/${bobOrg.id}/instagram/accounts/${aliceAccountId}/posts`)
+      .set('Authorization', bearerFor(bob.id, bob.email))
+      .expect(404);
+  });
+});
+
+describe('GET /api/organizations/:id/instagram/accounts/:accountId/posts/:postId', () => {
+  it('returns a single post', async () => {
+    const { user, organization } = await createOrgWithOwner('alice@example.com');
+    const { accountId } = await connectAndConfirmAccount(
+      app,
+      user,
+      organization,
+      'ig-acct-1',
+      'acme_ig',
+    );
+    fakeProvider.setPosts('ig-acct-1', [
+      fakePost({
+        zernioPostId: 'post-1',
+        zernioAccountId: 'ig-acct-1',
+        caption: 'Hello world',
+        permalink: 'https://instagram.com/p/abc123',
+      }),
+    ]);
+
+    const response = await request(app.getHttpServer())
+      .get(`/api/organizations/${organization.id}/instagram/accounts/${accountId}/posts/post-1`)
+      .set('Authorization', bearerFor(user.id, user.email))
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      zernioPostId: 'post-1',
+      caption: 'Hello world',
+      permalink: 'https://instagram.com/p/abc123',
+    });
+  });
+
+  it('404s for a post that belongs to a different account, even if the id is guessed correctly', async () => {
+    // Zernio's own GET /v1/posts/{postId} has no accountId filter - it's scoped only by our
+    // single, org-wide API key. Without apps/api's own ownership check, this would let any
+    // organization read any other organization's post by guessing its zernioPostId.
+    const { user: alice, organization: aliceOrg } = await createOrgWithOwner('alice@example.com');
+    await connectAndConfirmAccount(app, alice, aliceOrg, 'ig-acct-alice', 'alice_ig');
+    fakeProvider.setPosts('ig-acct-alice', [
+      fakePost({
+        zernioPostId: 'post-secret',
+        zernioAccountId: 'ig-acct-alice',
+        caption: 'Private',
+      }),
+    ]);
+
+    const { user: bob, organization: bobOrg } = await createOrgWithOwner('bob@example.com');
+    const { accountId: bobAccountId } = await connectAndConfirmAccount(
+      app,
+      bob,
+      bobOrg,
+      'ig-acct-bob',
+      'bob_ig',
+    );
+
+    await request(app.getHttpServer())
+      .get(`/api/organizations/${bobOrg.id}/instagram/accounts/${bobAccountId}/posts/post-secret`)
+      .set('Authorization', bearerFor(bob.id, bob.email))
+      .expect(404);
+  });
+
+  it('404s for a post id that does not exist', async () => {
+    const { user, organization } = await createOrgWithOwner('alice@example.com');
+    const { accountId } = await connectAndConfirmAccount(
+      app,
+      user,
+      organization,
+      'ig-acct-1',
+      'acme_ig',
+    );
+
+    await request(app.getHttpServer())
+      .get(`/api/organizations/${organization.id}/instagram/accounts/${accountId}/posts/nope`)
+      .set('Authorization', bearerFor(user.id, user.email))
       .expect(404);
   });
 });

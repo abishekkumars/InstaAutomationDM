@@ -2,8 +2,8 @@
 
 NestJS backend (REST). Scaffolded in Phase 2 as a minimal shell; Phase 4 added a real
 database connection; Phase 6 added its first authenticated, tenant-scoped endpoints; Phase 8
-added its first Zernio-backed endpoints (Instagram account connection). Still no Redis, no
-automation engine.
+added its first Zernio-backed endpoints (Instagram account connection); Phase 9 added
+posts/reels listing. Still no Redis, no automation engine.
 
 ## Structure
 
@@ -26,9 +26,11 @@ automation engine.
   `GET /api/organizations/:id/members`, all behind `SessionGuard`. `listMembers` is this
   repo's first real tenant-isolation enforcement: it 404s for any organization the caller
   isn't a member of, real or not.
-- `src/instagram/` (Phase 8) — `POST .../connect`, `POST .../callback`, `GET .../accounts`
+- `src/instagram/` (Phase 8: `POST .../connect`, `POST .../callback`, `GET .../accounts`;
+  Phase 9: `GET .../accounts/:accountId/posts`, `GET .../accounts/:accountId/posts/:postId`)
   under `organizations/:organizationId/instagram`, all behind `SessionGuard`, same 404-if-
-  not-a-member pattern as `organizations`. `INSTAGRAM_PROVIDER` is a DI token bound to a real
+  not-a-member pattern as `organizations` (the posts endpoints also 404 if `:accountId`
+  doesn't belong to the organization). `INSTAGRAM_PROVIDER` is a DI token bound to a real
   `ZernioInstagramProvider` (`@automationdm/zernio`) here — tests override it with an
   in-memory fake, never a live Zernio call (see `docs/TESTING.md`).
 - `src/config/app-url.ts` (Phase 8) — `getAppUrl()`, apps/api's own view of where `apps/web`

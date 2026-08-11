@@ -1,6 +1,6 @@
 # Architecture
 
-Status: Phase 8 baseline, **scope simplified** — see
+Status: Phase 9 baseline, **scope simplified** — see
 `docs/ADR/0005-simplified-mvp-architecture.md`. This project is a small internal/limited-use
 tool (~3-4 users, under 1,000 API calls/month), not a general-purpose SaaS; the architecture
 below reflects that directly rather than carrying infrastructure sized for a scale this
@@ -123,8 +123,9 @@ they're read live from Zernio. Full schema/conventions: `docs/DATABASE.md`.
 splitting them out), `instagram` (Phase 8 — real: OAuth connect/callback endpoints + a
 `packages/zernio` DI binding, mounted under `organizations/:organizationId/instagram` rather
 than as a separate top-level `zernio` wrapper module, since it has nothing to do yet beyond
-what `instagram.module.ts` already provides), `webhooks` (Phase 11), `automations`
-(Phase 10-12), `health`.
+what `instagram.module.ts` already provides; Phase 9 added posts/reels listing to the same
+module rather than a separate `posts` module, since it's still entirely about one connected
+Instagram account), `webhooks` (Phase 11), `automations` (Phase 10-12), `health`.
 
 Not all of these exist yet — see `docs/IMPLEMENTATION-ROADMAP.md` for which phase introduces
 which module. Creating an empty module ahead of the phase that needs it is avoided;
@@ -228,6 +229,31 @@ See `docs/ZERNIO-INTEGRATION.md`'s "Account connection" section for why step 3 e
 trust a value that arrived via the end user's own browser, even one Zernio itself produced)
 and why there's no OAuth authorization code for us to exchange - Zernio hosts that whole
 round trip itself.
+
+## Listing Instagram posts/reels (Phase 9)
+
+```
+apps/web (Posts list / detail pages, Server Components)
+   │  GET /api/organizations/:id/instagram/accounts/:accountId/posts[?page&limit]
+   │  GET /api/organizations/:id/instagram/accounts/:accountId/posts/:postId
+   ▼
+apps/api InstagramService
+   │  1. re-check caller's membership in :id, and that :accountId belongs to it
+   │     (both 404-not-403, same pattern as every other resource in this module)
+   │  2. InstagramProvider.listPosts / getPost
+   ▼
+ZernioInstagramProvider
+   │  GET /v1/posts?profileId&accountId&platform=instagram&source=external&page&limit
+   ▼
+Zernio (synced Instagram posts/reels, up to ~12 months of history)
+```
+
+Nothing here writes to PostgreSQL — per `docs/ADR/0005-simplified-mvp-architecture.md`,
+posts/reels are proxied live from Zernio on every request, never duplicated locally.
+`getPost` has no direct single-post Zernio endpoint available to it for this project's
+use case (see `docs/ZERNIO-INTEGRATION.md`'s "Listing posts/reels" section for why) - it
+searches a `listPosts` call instead, which is why it takes the same `zernioProfileId`/
+`zernioAccountId` input `listPosts` does rather than just a bare post id.
 
 ## Authentication (Phase 5)
 

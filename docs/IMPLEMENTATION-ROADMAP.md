@@ -37,14 +37,14 @@ completed work, just a rewrite of what hadn't started yet).
   "Phase 7 report" below.
 - [x] Phase 8 — Zernio account connection (real OAuth flow, populates `instagram_accounts`).
   See "Phase 8 report" below.
-- [ ] **Phase 9 — List + view Instagram posts/reels** (fetched live from Zernio, not stored
-  in Postgres per ADR 0005; preserve Zernio's real pagination mechanism — verify cursor vs
-  offset against its docs before building, don't assume) — **next phase**
-- [ ] Phase 10 — Comment automation creation (`automations` table: one org + one connected
+- [x] Phase 9 — List + view Instagram posts/reels (fetched live from Zernio, not stored in
+  Postgres per ADR 0005; page/limit pagination, verified against Zernio's real docs, not
+  assumed). See "Phase 9 report" below.
+- [ ] **Phase 10 — Comment automation creation** (`automations` table: one org + one connected
   account + one specific Zernio post/reel + keyword(s) + public reply template + DM
   template; create/save UI on the post/reel detail page; whether matching runs on our side
   or Zernio's own `comment-automations` API does it end to end is decided here, against
-  Zernio's real docs, not assumed)
+  Zernio's real docs, not assumed) — **next phase**
 - [ ] Phase 11 — Webhook ingestion + automation trigger (`POST /webhooks/zernio`,
   `webhook_events` idempotency, in-process execution — no queue, per ADR 0005)
 - [ ] Phase 12 — Automation status/history (run/status records + a simple list/detail UI —
@@ -988,10 +988,127 @@ Re-verified after the fix: `.\scripts\lint.ps1` (ESLint, typecheck across all 10
 projects, Prettier) all clean; manual browser retest of the full connect flow on a fresh org
 still reaches Instagram's real login screen with no regression.
 
+## Phase 9 report
+
+**Re-verification against Zernio's live docs (required by `CLAUDE.md` before this phase
+started)**: fetched Zernio's live OpenAPI spec (`docs.zernio.com/api/openapi`) again — the
+Phase 0 research pass never found a posts/media listing endpoint for Instagram at all. Real
+findings: it's `GET /v1/posts`, a cross-platform "publishing" endpoint (`x-resource-group:
+publishing`), not an Instagram-specific one — its `source` query param picks between
+Zernio-authored content (`zernio`, a feature this project has none of) and content synced in
+from the platform itself (`external`, which is what "list an account's existing posts/reels"
+actually means). Pagination is **page/limit-based**, not cursor-based — the Phase 0
+placeholder's "verify cursor vs offset, don't assume" note is resolved: it's plain
+`page`/`limit`, echoed back in the response as `{ page, limit, total, pages }`. Full detail:
+`docs/ZERNIO-INTEGRATION.md`'s "Listing posts/reels" section.
+
+**What was built**
+- `packages/zernio`: `InstagramProvider.listPosts`/`getPost` + domain type `InstagramPost`
+  (`zernioPostId`, `zernioAccountId`, `platformPostId`, `permalink`, `caption`, `mediaType`,
+  `thumbnailUrl`, `publishedAt`). `ZernioInstagramProvider.listPosts` calls
+  `GET /v1/posts?source=external&accountId&profileId&platform=instagram&page&limit`;
+  `getPost` does **not** call `GET /v1/posts/{postId}` (see the live-testing finding below) —
+  it searches a `listPosts` call instead.
+- `packages/validation`: `listInstagramPostsQuerySchema` (`page` ≥1 default 1, `limit` 1-500
+  default 10 — mirrors Zernio's own bounds, rejects rather than clamps an over-limit value).
+- `apps/api`: `InstagramService.listPosts`/`getPost` + two new `InstagramController` routes
+  (`GET .../instagram/accounts/:accountId/posts`, `.../posts/:postId`), both behind
+  `SessionGuard`, both 404-if-not-a-member **and** 404-if-`:accountId`-not-owned-by-this-org
+  (new `requireOwnAccount` helper, same 404-not-403 pattern as the rest of this module).
+- `apps/api`: 6 new Vitest + Supertest e2e tests (list + pagination passthrough, over-limit
+  rejection, cross-org account-id 404, single-post fetch, cross-org post 404 even with a
+  correctly-guessed id, unknown-post 404) — 24/24 total with the existing suites.
+- `apps/web`: `src/app/instagram/posts/page.tsx` (list, thumbnail grid, prev/next
+  pagination) and `src/app/instagram/posts/[postId]/page.tsx` (detail: full media, caption,
+  published date, a "View on Instagram" link to the real permalink). Dashboard
+  (`src/app/page.tsx`) gained a "View posts" link per connected account.
+- Docs: `docs/ZERNIO-INTEGRATION.md` ("Listing posts/reels" section rewritten with the real,
+  verified endpoint and the `getPost` workaround), `docs/API-SPEC.md` (2 new endpoints),
+  `docs/ARCHITECTURE.md` (new "Listing Instagram posts/reels" flow section, Backend modules
+  note, status line), `docs/DATABASE.md` (status line — no schema change this phase, and
+  why), `apps/api/README.md`, `apps/web/README.md`, `packages/zernio/README.md`, root
+  `README.md`, this file.
+
+**A real Zernio API gap found via live testing, not assumed**: `GET /v1/posts/{postId}`
+returns `{"error":"Post not found",...}` for a `postId` taken directly from a real
+`listPosts` response — confirmed with a bare `curl` call using the exact same id, with and
+without `profileId`/`source` query params added. This endpoint simply does not support
+`source: external` (synced) posts, which is every post this project's use case needs a
+detail view for. Caught during manual browser verification (the detail page 404'd on a real,
+just-listed post) rather than left undiscovered by only testing against the fake provider.
+**Fix**: `ZernioInstagramProvider.getPost` searches a `listPosts` call (`limit: 500`, Zernio's
+own max) for the matching id instead of calling the single-post endpoint at all — verified
+this covers a real test account's full synced history (46 total posts, well under 500).
+`GetPostInput` grew `zernioProfileId`/`zernioAccountId` accordingly (from just a bare post
+id), and `InstagramProvider`'s doc comments record the finding so a future reader doesn't
+reintroduce the original approach.
+
+**A real tenant-isolation gap found and closed before it shipped, not after**: unlike
+`listPosts` (which Zernio itself scopes via the `accountId` query param), a bare
+`GET /v1/posts/{postId}`-style lookup would be scoped only by this project's single, org-wide
+`ZERNIO_API_KEY` — nothing would stop an authenticated member of *any* organization from
+reading *any* other organization's post by guessing/enumerating its `zernioPostId`. Closed
+two ways: `getPost`'s own implementation only ever searches within an already
+accountId-scoped `listPosts` call (structurally can't return a foreign post), and
+`InstagramService.getPost` independently re-checks the returned post's `zernioAccountId`
+against the account the caller actually asked about before returning it anyway — defense in
+depth, the same discipline as the callback handler's live re-confirmation in Phase 8. Covered
+by an e2e test using a *forged, correctly-guessed* post id across two real organizations.
+
+**Full live end-to-end verification**: signed up two fresh test users, each created an
+organization, and repeated the connect flow (real Zernio profile creation, real redirect to
+`instagram.com`'s login screen — stopped there correctly, no credentials entered). To
+exercise the posts-listing flow against real data without a live Meta login, each test
+organization's `zernioProfileId` was pointed (via a direct, local-only database update, same
+technique as Phase 8's verification) at a Zernio profile with a real, already-connected
+Instagram account (`@explore.with_ruthiiii`) and its callback invoked directly with that
+account's real ids. Result: the dashboard's "View posts" link, the posts list page (real
+captions/thumbnails/media types/dates, 46 real posts across 5 pages, `page`/`limit`
+navigation working), and the post detail page (full media, caption, published date, working
+"View on Instagram" permalink) all rendered real data end to end — including the specific
+post that had originally 404'd before the `getPost` fix above, re-verified working after it.
+
+**Commands executed and results**
+| Command | Result |
+|---|---|
+| `pnpm --filter @automationdm/zernio --filter @automationdm/validation run build` | Both `tsc`, exit 0 — needed before `apps/api`'s typecheck could see the new exports. |
+| `.\scripts\lint.ps1` (ESLint + typecheck across all 10 workspace projects + Prettier) | Clean after the `getPost` fix; one earlier round caught 3 files' formatting, fixed via `pnpm run format`. |
+| `.\scripts\pnpm.ps1 --filter @automationdm/api run test` (twice: once before, once after the `getPost` fix) | **24/24 passed** both times (15 instagram + 9 organizations) — the `getPost` bug was real-API-only, invisible to the fake-provider suite by construction (the fake never modeled `GET /v1/posts/{postId}`'s actual failure mode), which is exactly why the manual live-browser verification below caught it and the automated suite didn't. |
+| `pnpm --filter @automationdm/api run build` | `nest build`, exit 0. |
+| Manual browser test: 2 fresh users/orgs, connect flow, DB-repoint + callback technique, posts list + detail pages | All real data, all pagination, all working — see above. First attempt at the detail page 404'd (the `getPost` bug); re-verified working after the fix. |
+| `curl` directly against `GET /v1/posts/{postId}` (with and without `profileId`/`source`) | Confirmed the API gap independently of this project's own code — `{"error":"Post not found",...}` every time, for a real id. |
+| `node --version` / `npm --version`, fresh shell | `v16.13.0` / `8.1.0` at `C:\Program Files\nodejs` — unchanged. |
+
+**Files created**
+`packages/validation/src/instagram.ts` (extended, not new);
+`apps/web/src/app/instagram/posts/{page.tsx,[postId]/page.tsx}`.
+
+**Files modified**
+`packages/zernio/src/{instagram-provider.ts,zernio-instagram-provider.ts}`;
+`apps/api/src/instagram/{instagram.service.ts,instagram.controller.ts,__tests__/instagram.e2e.test.ts}`;
+`apps/web/src/app/page.tsx`;
+`docs/{ZERNIO-INTEGRATION.md,API-SPEC.md,ARCHITECTURE.md,DATABASE.md}`;
+`apps/api/README.md`; `apps/web/README.md`; `packages/zernio/README.md`; root `README.md`;
+this file.
+
+**Known limitations / risks**
+- `getPost`'s `listPosts`-search fallback is bounded by Zernio's own max `limit` (500) in a
+  single call, not an unbounded page-walk. This covers every account size actually observed
+  (a real test account: 46 total synced posts) and this project's actual scale (<1,000 API
+  calls/month, 3-4 users), but an account with more than 500 posts in its ~12-month synced
+  window would have `getPost` miss items past that cutoff. Not addressed now — no real
+  account at this project's scale is anywhere close to that volume, and Zernio's API gives no
+  better mechanism to reach for.
+- No "attach an automation to this post" action exists yet on the detail page — correctly
+  deferred to Phase 10, which is what actually needs it.
+- The known Phase 8 limitations (no Facebook-Login connect variant, no personal-account
+  warning, no Zernio rate-limit handling) are unchanged by this phase.
+
 **Next phase**
 
-Phase 9 — List + view Instagram posts/reels: find Zernio's real media/posts listing
-endpoint and its actual pagination mechanism (cursor vs offset — verify, don't assume) via
-its live docs, then build the `apps/api` endpoint + `apps/web` list/detail UI on top of
-whatever that turns out to be, per `docs/ADR/0005-simplified-mvp-architecture.md` (posts/
-reels are never duplicated into Postgres). Will not start until the user says to proceed.
+Phase 10 — Comment automation creation: verify Zernio's real `comment-automations` API
+(create/list, and specifically whether registering one with Zernio means Zernio executes the
+whole match → reply → DM flow itself, or whether this project must do the keyword matching —
+`docs/AUTOMATION-ENGINE.md`'s open question) against its live docs before building anything,
+then the `automations` table + create/save UI on the post/reel detail page this phase just
+added. Will not start until the user says to proceed.

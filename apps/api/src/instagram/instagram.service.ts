@@ -7,8 +7,8 @@ import {
 } from '@nestjs/common';
 import { z } from 'zod';
 import { Prisma, type InstagramAccountStatus } from '@automationdm/database';
-import { instagramCallbackSchema } from '@automationdm/validation';
-import type { InstagramProvider } from '@automationdm/zernio';
+import { instagramCallbackSchema, listInstagramPostsQuerySchema } from '@automationdm/validation';
+import type { InstagramPost, InstagramProvider, ListPostsResult } from '@automationdm/zernio';
 import { PrismaService } from '../database/prisma.service';
 import { getAppUrl } from '../config/app-url';
 import { INSTAGRAM_PROVIDER } from './instagram-provider.token';
@@ -47,6 +47,86 @@ export class InstagramService {
       orderBy: { createdAt: 'asc' },
     });
     return accounts.map(toSummary);
+  }
+
+  // Same 404-not-403 pattern as requireMembership: an account belonging to a different
+  // organization looks identical to one that doesn't exist at all.
+  private async requireOwnAccount(organizationId: string, accountId: string) {
+    const account = await this.prisma.client.instagramAccount.findUnique({
+      where: { id: accountId },
+    });
+    if (!account || account.organizationId !== organizationId) {
+      throw new NotFoundException('Instagram account not found.');
+    }
+    return account;
+  }
+
+  async listPosts(
+    userId: string,
+    organizationId: string,
+    accountId: string,
+    query: unknown,
+  ): Promise<ListPostsResult> {
+    await this.requireMembership(userId, organizationId);
+    const account = await this.requireOwnAccount(organizationId, accountId);
+
+    let page: number;
+    let limit: number;
+    try {
+      ({ page, limit } = listInstagramPostsQuerySchema.parse(query));
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        throw new BadRequestException(error.issues[0]?.message ?? 'Invalid query.');
+      }
+      throw error;
+    }
+
+    const organization = await this.prisma.client.organization.findUniqueOrThrow({
+      where: { id: organizationId },
+    });
+    if (!organization.zernioProfileId) {
+      // Can't happen in practice - an InstagramAccount row only exists once the connect
+      // flow has already set the organization's zernioProfileId - but keep the type honest.
+      throw new NotFoundException('Instagram account not found.');
+    }
+
+    return this.provider.listPosts({
+      zernioProfileId: organization.zernioProfileId,
+      zernioAccountId: account.zernioAccountId,
+      page,
+      limit,
+    });
+  }
+
+  async getPost(
+    userId: string,
+    organizationId: string,
+    accountId: string,
+    postId: string,
+  ): Promise<InstagramPost> {
+    await this.requireMembership(userId, organizationId);
+    const account = await this.requireOwnAccount(organizationId, accountId);
+
+    const organization = await this.prisma.client.organization.findUniqueOrThrow({
+      where: { id: organizationId },
+    });
+    if (!organization.zernioProfileId) {
+      // Can't happen in practice, same invariant as listPosts above.
+      throw new NotFoundException('Post not found.');
+    }
+
+    const post = await this.provider.getPost({
+      zernioProfileId: organization.zernioProfileId,
+      zernioAccountId: account.zernioAccountId,
+      zernioPostId: postId,
+    });
+    // Defense in depth on top of listPosts's own accountId scoping (see getPost's doc comment
+    // in packages/zernio) - same "never trust an unscoped id" discipline as the callback
+    // handler's live re-confirmation in Phase 8.
+    if (!post || post.zernioAccountId !== account.zernioAccountId) {
+      throw new NotFoundException('Post not found.');
+    }
+    return post;
   }
 
   async createConnectUrl(userId: string, organizationId: string): Promise<{ authUrl: string }> {

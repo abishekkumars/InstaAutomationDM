@@ -11,3 +11,14 @@ export const instagramCallbackSchema = z.object({
 });
 
 export type InstagramCallbackInput = z.infer<typeof instagramCallbackSchema>;
+
+// Query params for GET .../instagram/accounts/:accountId/posts (Phase 9). Mirrors Zernio's
+// own `page`/`limit` constraints (docs/ZERNIO-INTEGRATION.md's "Listing posts/reels" section)
+// rather than inventing a different scheme on our side - values above the max are rejected,
+// not silently clamped, matching Zernio's own behavior.
+export const listInstagramPostsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(500).default(10),
+});
+
+export type ListInstagramPostsQuery = z.infer<typeof listInstagramPostsQuerySchema>;

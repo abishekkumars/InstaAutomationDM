@@ -2,9 +2,9 @@
 
 Next.js (App Router, TypeScript, Tailwind CSS v4) frontend. Scaffolded in Phase 2 as a
 featureless, responsive shell; Phase 5 added real authentication (Auth.js); Phase 6 added
-real organization creation/membership; Phase 8 added the Instagram connect flow. shadcn/ui
-components land when the first real form/data UI beyond auth/onboarding needs them, not
-before.
+real organization creation/membership; Phase 8 added the Instagram connect flow; Phase 9
+added a posts/reels list + detail view. shadcn/ui components land when the first real form/
+data UI beyond auth/onboarding needs them, not before.
 
 ## Structure
 
@@ -23,6 +23,11 @@ before.
   browser back to; forwards the result to `POST .../instagram/callback` then redirects to
   `/` with a `?instagram=connected|error` banner). Sits behind the normal authenticated-
   session requirement like every other page - not a public webhook-style endpoint.
+  `posts/page.tsx` (Phase 9) — a connected account's existing posts/reels, page/limit
+  pagination, linked from the dashboard's account list via `?accountId=`.
+  `posts/[postId]/page.tsx` (Phase 9) — single-post detail view (caption, media, permalink).
+  Both read the caller's primary organization the same way `page.tsx`'s dashboard does (no
+  multi-org switcher exists yet).
 - `src/app/status/page.tsx` — server-rendered page that fetches `apps/api`'s
   `GET /api/health` and shows whether the API is reachable; demonstrates the
   `NEXT_PUBLIC_API_URL` env wiring end to end. Public — not auth-protected.

@@ -1,11 +1,13 @@
 # Database Design
 
-Status: Phase 8, scope simplified per
+Status: Phase 9, scope simplified per
 `docs/ADR/0005-simplified-mvp-architecture.md`. `User`, `Organization`, `OrganizationMember`,
 `InstagramAccount` exist as real, migrated Prisma models
 (`packages/database/prisma/schema.prisma`). Every other table below is the (now much
 smaller) conceptual map for the remaining MVP phases — introduced only when the phase that
-needs it arrives, per this project's usual practice.
+needs it arrives, per this project's usual practice. Phase 9 (listing Instagram posts/reels)
+added no schema at all — per the ADR, posts/reels are proxied live from Zernio, never
+duplicated into Postgres.
 
 ## Engine
 

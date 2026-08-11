@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import type { InstagramPost, ListPostsResult } from '@automationdm/zernio';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/authenticated-user.interface';
 import { SessionGuard } from '../auth/session.guard';
@@ -32,5 +33,25 @@ export class InstagramController {
     @Body() body: unknown,
   ): Promise<InstagramAccountSummary> {
     return this.instagram.handleCallback(user.id, organizationId, body);
+  }
+
+  @Get('accounts/:accountId/posts')
+  listPosts(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('organizationId') organizationId: string,
+    @Param('accountId') accountId: string,
+    @Query() query: unknown,
+  ): Promise<ListPostsResult> {
+    return this.instagram.listPosts(user.id, organizationId, accountId, query);
+  }
+
+  @Get('accounts/:accountId/posts/:postId')
+  getPost(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('organizationId') organizationId: string,
+    @Param('accountId') accountId: string,
+    @Param('postId') postId: string,
+  ): Promise<InstagramPost> {
+    return this.instagram.getPost(user.id, organizationId, accountId, postId);
   }
 }
