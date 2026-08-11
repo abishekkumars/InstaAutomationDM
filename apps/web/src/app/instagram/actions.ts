@@ -19,7 +19,12 @@ export async function connectInstagramAction(formData: FormData): Promise<void> 
       { method: 'POST' },
     );
     authUrl = result.authUrl;
-  } catch {
+  } catch (error) {
+    // Without this, a failed connect attempt (apps/api unreachable, Zernio rejecting the
+    // API key, the caller no longer being a member) is a dead end: the UI only ever shows
+    // a generic "?instagram=error" banner, with nothing in either app's logs to say why -
+    // this is what actually made a real Phase 8 connect failure look like a silent no-op.
+    console.error('[instagram] connect failed:', error);
     redirect('/?instagram=error');
   }
 

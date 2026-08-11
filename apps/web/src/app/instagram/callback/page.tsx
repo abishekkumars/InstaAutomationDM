@@ -29,7 +29,10 @@ export default async function InstagramCallbackPage({
       method: 'POST',
       body: JSON.stringify({ profileId, accountId }),
     });
-  } catch {
+  } catch (error) {
+    // Same reasoning as instagram/actions.ts's connect action - surface the real cause
+    // server-side instead of leaving only a generic error banner to debug from.
+    console.error('[instagram] callback confirmation failed:', error);
     redirect('/?instagram=error');
   }
 

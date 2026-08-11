@@ -945,6 +945,49 @@ root `README.md`; this file.
   status, still low priority at this project's actual call volume (<1,000/month), and
   Zernio's real rate limits are still undocumented in the pages reviewed so far.
 
+**Post-phase bug report (2026-08-11): `Organization.zernioProfileId` not being inserted**
+
+Before starting Phase 9, the user reported that running the project locally and clicking
+"Connect Instagram" left `zernio_profile_id` `null` in the database. Investigated by
+reproducing the flow live rather than guessing:
+
+- Queried the local database directly: exactly one organization (`test-profile`, the user's
+  real one) existed with `zernioProfileId: null`.
+- Started `apps/api`/`apps/web` fresh (project-local tooling, `.env`'s corrected
+  `sk_`-prefixed `ZERNIO_API_KEY` from the Phase 8 fix already in place) and reproduced the
+  connect flow end to end with a disposable test organization: `ensureProfile`,
+  `getConnectUrl`, and the `Organization.zernioProfileId` database write all worked
+  correctly — a real Zernio profile was created and the browser reached Instagram's real
+  login screen.
+- While this was running, the user's own browser session (already pointed at
+  `localhost:3000`) independently retried the same flow for their real `test-profile`
+  organization against these same freshly-started servers — and it succeeded, writing a real
+  `zernioProfileId`. Confirmed directly in the database afterward: both organizations now
+  have one.
+
+**Conclusion**: `InstagramService.createConnectUrl` and `ZernioInstagramProvider` are not
+buggy — verified working correctly against the live API. The reported symptom is consistent
+with `apps/api` not having been reachable (not running, or not yet started) during the
+user's original attempt: a failed `fetch()` in `connectInstagramAction` and any other
+`callApi()` failure in the Instagram connect/callback flow were being caught and silently
+turned into a generic `?instagram=error` banner with **no server-side log line at all** —
+unlike every other Server Action in this codebase (`(auth)/actions.ts`,
+`onboarding/actions.ts`), which either surfaces the `ApiError` message or rethrows. This
+silent-failure gap is what actually made the bug unactionable — there was nothing to look at
+to find the real cause.
+
+**Fix**: `apps/web/src/app/instagram/actions.ts`'s `connectInstagramAction` and
+`apps/web/src/app/instagram/callback/page.tsx` now `console.error` the caught error (with
+context) before redirecting to the error banner, matching this codebase's existing
+error-visibility convention elsewhere. This doesn't change working behavior — it ensures the
+next time this flow fails for any reason (`apps/api` down, an expired/invalid
+`ZERNIO_API_KEY`, a stale organization membership), the real cause is visible in `apps/web`'s
+terminal output instead of being a dead end.
+
+Re-verified after the fix: `.\scripts\lint.ps1` (ESLint, typecheck across all 10 workspace
+projects, Prettier) all clean; manual browser retest of the full connect flow on a fresh org
+still reaches Instagram's real login screen with no regression.
+
 **Next phase**
 
 Phase 9 — List + view Instagram posts/reels: find Zernio's real media/posts listing
