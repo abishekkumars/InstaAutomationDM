@@ -1,0 +1,12 @@
+{
+  // Typecheck-only config covering the Vercel serverless entrypoint in `api/`, which
+  // tsconfig.json deliberately excludes (its `rootDir: "src"` keeps `nest build` emitting a
+  // flat dist/main.js). Vercel compiles `api/` itself at deploy time; without this file a
+  // type error there would only surface during a deploy. Wired into the `typecheck` script.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["src", "api"]
+}

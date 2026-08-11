@@ -14,11 +14,26 @@
 
 generator client {
   provider = "prisma-client-js"
+  // "native" keeps local development working on this Windows machine. The rhel target is
+  // the query engine Vercel's Node runtime (Amazon Linux, OpenSSL 3) actually loads - it is
+  // downloaded at `prisma generate` time, so it must be declared here rather than discovered
+  // at runtime, where a serverless function has no way to fetch it. Without it, every
+  // Prisma call on Vercel fails with "Query engine library for current platform not found".
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
 }
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+  // Runtime connection. In production this is Supabase's *transaction* pooler (port 6543,
+  // with ?pgbouncer=true): serverless functions scale to many short-lived instances, and a
+  // direct connection per instance exhausts Postgres' connection limit almost immediately.
+  url = env("DATABASE_URL")
+
+  // Migrations and introspection only. The transaction pooler cannot run them (it multiplexes
+  // statements across connections, so it has no stable session for advisory locks or DDL),
+  // so Prisma needs a non-pooled path: Supabase's session pooler / direct connection on 5432.
+  // Locally both point at the same embedded Postgres - see docs/ADR/0003.
+  directUrl = env("DIRECT_URL")
 }
 
 /// A human account. `authProviderId`/`authProvider` (Auth.js, Phase 5 — see
