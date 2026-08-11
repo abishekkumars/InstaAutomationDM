@@ -2,6 +2,8 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { ApiError, callApi } from '@/lib/api';
 import { createAutomationAction } from './actions';
+import { DmMessageField } from './dm-message-field';
+import { KeywordsField } from './keywords-field';
 
 interface InstagramPostDetail {
   zernioPostId: string;
@@ -20,6 +22,7 @@ interface AutomationSummary {
   keywords: string[];
   matchMode: 'CONTAINS' | 'WORD' | 'EXACT';
   commentReply: string | null;
+  buttons: { title: string; url: string }[];
   dmMessage: string;
   isActive: boolean;
 }
@@ -87,167 +90,161 @@ export default async function InstagramPostDetailPage({
     <div className="space-y-4">
       <Link
         href={`/instagram/posts?accountId=${accountId}`}
-        className="text-sm text-slate-500 underline"
+        className="text-sm text-text-muted hover:text-text"
       >
-        Back to posts
+        ← Back to posts
       </Link>
       {automation === 'created' && (
-        <div className="rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-800">
+        <div className="rounded-lg border border-success-border bg-success-bg p-3 text-sm text-success">
           Automation created.
         </div>
       )}
       {automation === 'error' && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+        <div className="rounded-lg border border-danger/30 bg-danger-bg p-3 text-sm text-danger">
           Could not create the automation. Please check your input and try again.
         </div>
       )}
-      <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="overflow-hidden rounded-xl border border-border bg-surface shadow-sm">
         {post.thumbnailUrl && (
           // Plain <img>, not next/image: this comes from Zernio/Instagram's own CDN (an
           // arbitrary, unconfigured remote host), not an asset this app optimizes.
-          <img
-            src={post.thumbnailUrl}
-            alt=""
-            className="mb-4 max-h-96 w-full rounded-md object-contain"
-          />
+          <img src={post.thumbnailUrl} alt="" className="max-h-96 w-full object-contain" />
         )}
-        <p className="whitespace-pre-wrap text-sm text-slate-700">
-          {post.caption || '(no caption)'}
-        </p>
-        <dl className="mt-4 space-y-1 text-sm text-slate-500">
-          <div>
-            <dt className="inline font-medium">Type: </dt>
-            <dd className="inline">{post.mediaType ?? 'unknown'}</dd>
+        <div className="p-4">
+          <p className="whitespace-pre-wrap text-sm text-text">{post.caption || '(no caption)'}</p>
+          <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-text-muted">
+            <span>{post.mediaType ?? 'unknown'}</span>
+            {post.publishedAt && <span>{new Date(post.publishedAt).toLocaleString()}</span>}
+            {post.permalink && (
+              <a
+                href={post.permalink}
+                target="_blank"
+                rel="noreferrer"
+                className="text-accent hover:underline"
+              >
+                View on Instagram ↗
+              </a>
+            )}
           </div>
-          {post.publishedAt && (
-            <div>
-              <dt className="inline font-medium">Published: </dt>
-              <dd className="inline">{new Date(post.publishedAt).toLocaleString()}</dd>
-            </div>
-          )}
-          {post.permalink && (
-            <div>
-              <dt className="inline font-medium">Instagram: </dt>
-              <dd className="inline">
-                <a href={post.permalink} target="_blank" rel="noreferrer" className="underline">
-                  View on Instagram
-                </a>
-              </dd>
-            </div>
-          )}
-        </dl>
+        </div>
       </div>
 
-      <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-        <h2 className="font-medium">Comment automation</h2>
+      <div className="rounded-xl border border-border bg-surface p-5 shadow-sm">
         {existingAutomation ? (
-          <dl className="mt-2 space-y-1 text-sm text-slate-600">
-            <div>
-              <dt className="inline font-medium">Name: </dt>
-              <dd className="inline">{existingAutomation.name}</dd>
-            </div>
-            <div>
-              <dt className="inline font-medium">Keywords: </dt>
-              <dd className="inline">{existingAutomation.keywords.join(', ')}</dd>
-            </div>
-            <div>
-              <dt className="inline font-medium">Match mode: </dt>
-              <dd className="inline">{existingAutomation.matchMode.toLowerCase()}</dd>
-            </div>
-            {existingAutomation.commentReply && (
-              <div>
-                <dt className="inline font-medium">Public reply: </dt>
-                <dd className="inline">{existingAutomation.commentReply}</dd>
-              </div>
-            )}
-            <div>
-              <dt className="inline font-medium">DM message: </dt>
-              <dd className="inline">{existingAutomation.dmMessage}</dd>
-            </div>
-            <div>
-              <dt className="inline font-medium">Status: </dt>
-              <dd className="inline">{existingAutomation.isActive ? 'active' : 'inactive'}</dd>
-            </div>
-          </dl>
-        ) : (
-          <form action={createAutomationAction} className="mt-2 space-y-3">
-            <input type="hidden" name="organizationId" value={organizationId} />
-            <input type="hidden" name="accountId" value={accountId} />
-            <input type="hidden" name="postId" value={postId} />
-            <div>
-              <label htmlFor="name" className="block text-sm font-medium text-slate-700">
-                Name
-              </label>
-              <input
-                id="name"
-                name="name"
-                type="text"
-                required
-                className="mt-1 block w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
-              />
-            </div>
-            <div>
-              <label htmlFor="keywords" className="block text-sm font-medium text-slate-700">
-                Keywords
-              </label>
-              <input
-                id="keywords"
-                name="keywords"
-                type="text"
-                required
-                placeholder="link, price, info"
-                className="mt-1 block w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
-              />
-              <p className="mt-1 text-xs text-slate-500">
-                Comma-separated. Any comment matching one of these triggers the automation.
-              </p>
-            </div>
-            <div>
-              <label htmlFor="matchMode" className="block text-sm font-medium text-slate-700">
-                Match mode
-              </label>
-              <select
-                id="matchMode"
-                name="matchMode"
-                defaultValue="contains"
-                className="mt-1 block w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+          <>
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold text-text">{existingAutomation.name}</h2>
+              <span
+                className={
+                  existingAutomation.isActive
+                    ? 'rounded-full border border-success-border bg-success-bg px-2.5 py-0.5 text-xs font-semibold text-success'
+                    : 'rounded-full bg-muted-bg px-2.5 py-0.5 text-xs font-semibold text-text-faint'
+                }
               >
-                <option value="contains">Contains - keyword appears anywhere</option>
-                <option value="word">Word - keyword as a standalone word</option>
-                <option value="exact">Exact - comment matches a keyword exactly</option>
-              </select>
+                {existingAutomation.isActive ? 'Enabled' : 'Disabled'}
+              </span>
             </div>
-            <div>
-              <label htmlFor="commentReply" className="block text-sm font-medium text-slate-700">
-                Public reply (optional)
-              </label>
-              <input
-                id="commentReply"
-                name="commentReply"
-                type="text"
-                className="mt-1 block w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
-              />
-            </div>
-            <div>
-              <label htmlFor="dmMessage" className="block text-sm font-medium text-slate-700">
-                DM message
-              </label>
-              <textarea
-                id="dmMessage"
-                name="dmMessage"
-                required
-                rows={3}
-                maxLength={1000}
-                className="mt-1 block w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
-              />
-            </div>
-            <button
-              type="submit"
-              className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700"
-            >
-              Create automation
-            </button>
-          </form>
+            <dl className="mt-3 grid grid-cols-[110px_1fr] gap-y-2 text-sm">
+              <dt className="text-text-muted">Keywords</dt>
+              <dd className="flex flex-wrap gap-1.5">
+                {existingAutomation.keywords.map((keyword) => (
+                  <span
+                    key={keyword}
+                    className="rounded-full bg-muted-bg px-2.5 py-0.5 text-xs font-medium text-text"
+                  >
+                    {keyword}
+                  </span>
+                ))}
+              </dd>
+              <dt className="text-text-muted">Match mode</dt>
+              <dd className="text-text">{existingAutomation.matchMode.toLowerCase()}</dd>
+              {existingAutomation.commentReply && (
+                <>
+                  <dt className="text-text-muted">Public reply</dt>
+                  <dd className="text-text">"{existingAutomation.commentReply}"</dd>
+                </>
+              )}
+              <dt className="text-text-muted">DM message</dt>
+              <dd className="text-text">"{existingAutomation.dmMessage}"</dd>
+              {existingAutomation.buttons.length > 0 && (
+                <>
+                  <dt className="text-text-muted">Buttons</dt>
+                  <dd className="flex flex-wrap gap-1.5">
+                    {existingAutomation.buttons.map((button) => (
+                      <a
+                        key={button.url}
+                        href={button.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="rounded-full bg-muted-bg px-2.5 py-0.5 text-xs font-medium text-text hover:underline"
+                      >
+                        {button.title} ↗
+                      </a>
+                    ))}
+                  </dd>
+                </>
+              )}
+            </dl>
+            <p className="mt-4 text-xs text-text-faint">
+              Editing and pausing aren't available yet — that needs an update/delete endpoint (a
+              later phase). For now, creating an automation is one-way.
+            </p>
+          </>
+        ) : (
+          <>
+            <h2 className="text-base font-semibold text-text">Create comment automation</h2>
+            <form action={createAutomationAction} className="mt-3 space-y-4">
+              <input type="hidden" name="organizationId" value={organizationId} />
+              <input type="hidden" name="accountId" value={accountId} />
+              <input type="hidden" name="postId" value={postId} />
+              <div>
+                <label htmlFor="name" className="block text-sm font-medium text-text">
+                  Name
+                </label>
+                <input
+                  id="name"
+                  name="name"
+                  type="text"
+                  required
+                  className="mt-1 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
+                />
+              </div>
+              <KeywordsField />
+              <div>
+                <label htmlFor="matchMode" className="block text-sm font-medium text-text">
+                  Match mode
+                </label>
+                <select
+                  id="matchMode"
+                  name="matchMode"
+                  defaultValue="contains"
+                  className="mt-1 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
+                >
+                  <option value="contains">Contains — keyword appears anywhere</option>
+                  <option value="word">Word — keyword as a standalone word</option>
+                  <option value="exact">Exact — comment matches a keyword exactly</option>
+                </select>
+              </div>
+              <div>
+                <label htmlFor="commentReply" className="block text-sm font-medium text-text">
+                  Public reply (optional)
+                </label>
+                <input
+                  id="commentReply"
+                  name="commentReply"
+                  type="text"
+                  className="mt-1 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
+                />
+              </div>
+              <DmMessageField />
+              <button
+                type="submit"
+                className="w-full rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-ink hover:opacity-90 sm:w-auto"
+              >
+                Create automation
+              </button>
+            </form>
+          </>
         )}
       </div>
     </div>

@@ -12,6 +12,11 @@ import { type InstagramProvider, ZernioApiError } from '@automationdm/zernio';
 import { PrismaService } from '../database/prisma.service';
 import { INSTAGRAM_PROVIDER } from '../instagram/instagram-provider.token';
 
+export interface AutomationButton {
+  title: string;
+  url: string;
+}
+
 export interface AutomationSummary {
   id: string;
   zernioPostId: string;
@@ -19,8 +24,17 @@ export interface AutomationSummary {
   keywords: string[];
   matchMode: AutomationMatchMode;
   commentReply: string | null;
+  buttons: AutomationButton[];
   dmMessage: string;
   isActive: boolean;
+}
+
+// listForOrganization's shape (dashboard table) - same fields as AutomationSummary plus
+// which account it belongs to, since that list spans every connected account in the org
+// (listForPost never needs this - the caller already knows the one account it asked about).
+export interface AutomationListItem extends AutomationSummary {
+  instagramAccountId: string;
+  accountUsername: string | null;
 }
 
 function toMatchMode(matchMode: 'contains' | 'word' | 'exact'): AutomationMatchMode {
@@ -69,6 +83,26 @@ export class AutomationsService {
       where: { instagramAccountId: accountId, zernioPostId },
     });
     return automations.map(toSummary);
+  }
+
+  // Org-wide, across every connected account - the dashboard table's data source. Uses the
+  // same organizationId index the schema already carries for exactly this ("a future
+  // dashboard/history view" - docs/DATABASE.md's Automation model), pulled forward from
+  // Phase 12 because the redesigned dashboard needs it now, not a local matching/filtering
+  // step - see docs/IMPLEMENTATION-ROADMAP.md's report for this phase.
+  async listForOrganization(userId: string, organizationId: string): Promise<AutomationListItem[]> {
+    await this.requireMembership(userId, organizationId);
+
+    const automations = await this.prisma.client.automation.findMany({
+      where: { organizationId },
+      include: { instagramAccount: { select: { username: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    return automations.map((automation) => ({
+      ...toSummary(automation),
+      instagramAccountId: automation.instagramAccountId,
+      accountUsername: automation.instagramAccount.username,
+    }));
   }
 
   async create(
@@ -122,6 +156,7 @@ export class AutomationsService {
         keywords: parsed.keywords,
         matchMode: parsed.matchMode,
         commentReply: parsed.commentReply,
+        buttons: parsed.buttons,
         dmMessage: parsed.dmMessage,
       });
     } catch (error) {
@@ -145,6 +180,14 @@ export class AutomationsService {
           keywords: created.keywords,
           matchMode: toMatchMode(created.matchMode),
           commentReply: created.commentReply,
+          // Omitted (not an explicit JSON null) when empty - Prisma.JsonNull would work too,
+          // but there's no need to distinguish "no buttons" from "column left at its default"
+          // for this field; both mean the same thing. Cast, not a plain array literal: an
+          // array of a named interface doesn't structurally match Prisma's InputJsonObject
+          // index signature even though the actual values are plain JSON-safe objects.
+          buttons: created.buttons.length
+            ? (created.buttons as unknown as Prisma.InputJsonValue)
+            : undefined,
           dmMessage: created.dmMessage,
           isActive: created.isActive,
         },
@@ -172,6 +215,7 @@ function toSummary(automation: {
   keywords: string[];
   matchMode: AutomationMatchMode;
   commentReply: string | null;
+  buttons: Prisma.JsonValue | null;
   dmMessage: string;
   isActive: boolean;
 }): AutomationSummary {
@@ -182,7 +226,29 @@ function toSummary(automation: {
     keywords: automation.keywords,
     matchMode: automation.matchMode,
     commentReply: automation.commentReply,
+    buttons: toButtons(automation.buttons),
     dmMessage: automation.dmMessage,
     isActive: automation.isActive,
   };
+}
+
+// automation.buttons is a Prisma Json column - narrow it back to the shape this service
+// itself always writes ([{ title, url }], or null/absent for "no buttons") rather than
+// trusting the column's type-erased JsonValue as-is.
+function toButtons(value: Prisma.JsonValue | null): AutomationButton[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item) => {
+    if (
+      typeof item === 'object' &&
+      item !== null &&
+      !Array.isArray(item) &&
+      typeof item.title === 'string' &&
+      typeof item.url === 'string'
+    ) {
+      return [{ title: item.title, url: item.url }];
+    }
+    return [];
+  });
 }

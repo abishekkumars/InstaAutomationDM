@@ -216,6 +216,16 @@ model Automation {
   commentReply String? @map("comment_reply")
   dmMessage String @map("dm_message")
 
+  /// Up to 3 inline DM buttons, `[{ title, url }]`. Zernio's own `buttons` field supports
+  /// `type: url | postback | phone` (docs/ZERNIO-INTEGRATION.md's "Comment-to-DM automation
+  /// API" section) - this project only ever sends `type: "url"` (postback needs a webhook
+  /// handler this project doesn't have; phone is Facebook-only, irrelevant to an
+  /// Instagram-only tool), so the type itself isn't stored, only title+url pairs. Null/empty
+  /// when the automation has no buttons - a plain-text DM is a fully supported, normal
+  /// configuration. A JSON column, not a separate table: at most 3 small, fixed-shape items
+  /// that are never queried independently of their automation.
+  buttons Json?
+
   isActive Boolean @default(true) @map("is_active")
 
   createdAt DateTime @default(now()) @map("created_at")

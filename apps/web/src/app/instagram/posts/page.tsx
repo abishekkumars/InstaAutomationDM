@@ -66,47 +66,52 @@ export default async function InstagramPostsPage({
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <div>
-        <Link href="/" className="text-sm text-slate-500 underline">
-          Back to dashboard
+        <Link href="/" className="text-sm text-text-muted hover:text-text">
+          ← Back to dashboard
         </Link>
-        <h1 className="mt-2 text-2xl font-bold tracking-tight sm:text-3xl">Posts</h1>
-        <p className="text-sm text-slate-500">
-          Existing Instagram posts and reels for this account. Pick one to attach an automation to
-          (coming in a later phase).
+        <h1 className="mt-2 text-2xl font-bold tracking-tight text-text sm:text-[26px]">Posts</h1>
+        <p className="text-sm text-text-muted">
+          Pick a post or reel to view or create its comment automation.
         </p>
       </div>
 
       {result.posts.length === 0 ? (
-        <p className="text-sm text-slate-500">No posts found for this account yet.</p>
+        <div className="rounded-xl border border-border bg-surface p-6 text-center text-sm text-text-muted shadow-sm">
+          No posts found for this account yet.
+        </div>
       ) : (
-        <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
           {result.posts.map((post) => (
             <li
               key={post.zernioPostId}
-              className="rounded-lg border border-slate-200 bg-white shadow-sm"
+              className="overflow-hidden rounded-xl border border-border bg-surface shadow-sm transition hover:border-border-strong"
             >
               <Link
                 href={`/instagram/posts/${post.zernioPostId}?accountId=${accountId}`}
-                className="block p-4"
+                className="block"
               >
-                {post.thumbnailUrl && (
+                {post.thumbnailUrl ? (
                   // Plain <img>, not next/image: thumbnails come from Zernio/Instagram's own
                   // CDN (arbitrary, unconfigured remote hosts), not an asset this app optimizes.
                   <img
                     src={post.thumbnailUrl}
                     alt=""
-                    className="mb-2 aspect-square w-full rounded-md object-cover"
+                    className="aspect-square w-full object-cover"
                   />
+                ) : (
+                  <div className="flex aspect-square w-full items-center justify-center bg-muted-bg text-text-faint">
+                    {post.mediaType === 'video' ? '▶' : '▣'}
+                  </div>
                 )}
-                <p className="line-clamp-2 text-sm text-slate-700">
-                  {post.caption || '(no caption)'}
-                </p>
-                <p className="mt-1 text-xs text-slate-400">
-                  {post.mediaType ?? 'unknown'}
-                  {post.publishedAt && ` — ${new Date(post.publishedAt).toLocaleDateString()}`}
-                </p>
+                <div className="p-3">
+                  <p className="line-clamp-2 text-sm text-text">{post.caption || '(no caption)'}</p>
+                  <p className="mt-1.5 text-xs text-text-faint">
+                    {post.mediaType ?? 'unknown'}
+                    {post.publishedAt && ` · ${new Date(post.publishedAt).toLocaleDateString()}`}
+                  </p>
+                </div>
               </Link>
             </li>
           ))}
@@ -117,22 +122,22 @@ export default async function InstagramPostsPage({
         {result.pagination.page > 1 ? (
           <Link
             href={`/instagram/posts?accountId=${accountId}&page=${result.pagination.page - 1}`}
-            className="text-slate-600 underline"
+            className="text-text-muted hover:text-text"
           >
-            Previous
+            ← Previous
           </Link>
         ) : (
           <span />
         )}
-        <span className="text-slate-400">
+        <span className="text-text-faint">
           Page {result.pagination.page} of {result.pagination.pages}
         </span>
         {result.pagination.page < result.pagination.pages ? (
           <Link
             href={`/instagram/posts?accountId=${accountId}&page=${result.pagination.page + 1}`}
-            className="text-slate-600 underline"
+            className="text-text-muted hover:text-text"
           >
-            Next
+            Next →
           </Link>
         ) : (
           <span />

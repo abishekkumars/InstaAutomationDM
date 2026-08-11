@@ -84,6 +84,7 @@ class FakeInstagramProvider implements InstagramProvider {
       keywords: input.keywords,
       matchMode: input.matchMode,
       commentReply: input.commentReply ?? null,
+      buttons: input.buttons ?? [],
       dmMessage: input.dmMessage,
       isActive: true,
     };
@@ -277,6 +278,96 @@ describe('POST .../instagram/accounts/:accountId/posts/:postId/automations', () 
       .expect(400);
   });
 
+  it('creates an automation with buttons and persists them', async () => {
+    const { user, organization } = await createOrgWithOwner('alice@example.com');
+    const { accountId } = await connectAndConfirmAccount(
+      app,
+      user,
+      organization,
+      'ig-acct-1',
+      'acme_ig',
+    );
+
+    const response = await request(app.getHttpServer())
+      .post(
+        `/api/organizations/${organization.id}/instagram/accounts/${accountId}/posts/post-1/automations`,
+      )
+      .set('Authorization', bearerFor(user.id, user.email))
+      .send({
+        ...AUTOMATION_BODY,
+        buttons: [
+          { title: 'Shop now', url: 'https://example.com/shop' },
+          { title: 'Sizing', url: 'https://example.com/sizing' },
+        ],
+      })
+      .expect(201);
+
+    expect(response.body.buttons).toEqual([
+      { title: 'Shop now', url: 'https://example.com/shop' },
+      { title: 'Sizing', url: 'https://example.com/sizing' },
+    ]);
+    expect(fakeProvider.lastCreateInput?.buttons).toEqual([
+      { title: 'Shop now', url: 'https://example.com/shop' },
+      { title: 'Sizing', url: 'https://example.com/sizing' },
+    ]);
+
+    const stored = await prisma.automation.findFirst({ where: { zernioPostId: 'post-1' } });
+    expect(stored?.buttons).toEqual([
+      { title: 'Shop now', url: 'https://example.com/shop' },
+      { title: 'Sizing', url: 'https://example.com/sizing' },
+    ]);
+  });
+
+  it('rejects more than 3 buttons', async () => {
+    const { user, organization } = await createOrgWithOwner('alice@example.com');
+    const { accountId } = await connectAndConfirmAccount(
+      app,
+      user,
+      organization,
+      'ig-acct-1',
+      'acme_ig',
+    );
+
+    await request(app.getHttpServer())
+      .post(
+        `/api/organizations/${organization.id}/instagram/accounts/${accountId}/posts/post-1/automations`,
+      )
+      .set('Authorization', bearerFor(user.id, user.email))
+      .send({
+        ...AUTOMATION_BODY,
+        buttons: [
+          { title: 'One', url: 'https://example.com/1' },
+          { title: 'Two', url: 'https://example.com/2' },
+          { title: 'Three', url: 'https://example.com/3' },
+          { title: 'Four', url: 'https://example.com/4' },
+        ],
+      })
+      .expect(400);
+  });
+
+  it('rejects a dmMessage over 640 characters when buttons are attached', async () => {
+    const { user, organization } = await createOrgWithOwner('alice@example.com');
+    const { accountId } = await connectAndConfirmAccount(
+      app,
+      user,
+      organization,
+      'ig-acct-1',
+      'acme_ig',
+    );
+
+    await request(app.getHttpServer())
+      .post(
+        `/api/organizations/${organization.id}/instagram/accounts/${accountId}/posts/post-1/automations`,
+      )
+      .set('Authorization', bearerFor(user.id, user.email))
+      .send({
+        ...AUTOMATION_BODY,
+        buttons: [{ title: 'Shop now', url: 'https://example.com/shop' }],
+        dmMessage: 'x'.repeat(641),
+      })
+      .expect(400);
+  });
+
   it('rejects a second automation for the same post (local pre-check)', async () => {
     const { user, organization } = await createOrgWithOwner('alice@example.com');
     const { accountId } = await connectAndConfirmAccount(
@@ -383,6 +474,94 @@ describe('GET .../instagram/accounts/:accountId/posts/:postId/automations', () =
     expect(response.body[0]).toMatchObject({
       zernioPostId: 'post-1',
       keywords: AUTOMATION_BODY.keywords,
+    });
+  });
+});
+
+describe('GET .../organizations/:organizationId/automations', () => {
+  it('rejects a request with no bearer token', async () => {
+    const { organization } = await createOrgWithOwner('alice@example.com');
+    await request(app.getHttpServer())
+      .get(`/api/organizations/${organization.id}/automations`)
+      .expect(401);
+  });
+
+  it('404s for a caller who is not a member of the organization', async () => {
+    const { organization } = await createOrgWithOwner('alice@example.com');
+    const bob = await prisma.user.create({ data: { email: 'bob@example.com' } });
+
+    await request(app.getHttpServer())
+      .get(`/api/organizations/${organization.id}/automations`)
+      .set('Authorization', bearerFor(bob.id, bob.email))
+      .expect(404);
+  });
+
+  it('returns an empty array for an org with no automations yet', async () => {
+    const { user, organization } = await createOrgWithOwner('alice@example.com');
+
+    const response = await request(app.getHttpServer())
+      .get(`/api/organizations/${organization.id}/automations`)
+      .set('Authorization', bearerFor(user.id, user.email))
+      .expect(200);
+    expect(response.body).toEqual([]);
+  });
+
+  it('lists automations across every connected account in the org, newest first, scoped to that org only', async () => {
+    const { user, organization } = await createOrgWithOwner('alice@example.com');
+    const { accountId: accountA } = await connectAndConfirmAccount(
+      app,
+      user,
+      organization,
+      'ig-acct-a',
+      'studio_a',
+    );
+
+    await request(app.getHttpServer())
+      .post(
+        `/api/organizations/${organization.id}/instagram/accounts/${accountA}/posts/post-1/automations`,
+      )
+      .set('Authorization', bearerFor(user.id, user.email))
+      .send(AUTOMATION_BODY)
+      .expect(201);
+    await request(app.getHttpServer())
+      .post(
+        `/api/organizations/${organization.id}/instagram/accounts/${accountA}/posts/post-2/automations`,
+      )
+      .set('Authorization', bearerFor(user.id, user.email))
+      .send({ ...AUTOMATION_BODY, name: 'Restock alert', keywords: ['restock'] })
+      .expect(201);
+
+    const { organization: otherOrg, user: otherUser } = await createOrgWithOwner('bob@example.com');
+    const { accountId: otherAccount } = await connectAndConfirmAccount(
+      app,
+      otherUser,
+      otherOrg,
+      'ig-acct-other',
+      'someone_else',
+    );
+    await request(app.getHttpServer())
+      .post(
+        `/api/organizations/${otherOrg.id}/instagram/accounts/${otherAccount}/posts/post-other-1/automations`,
+      )
+      .set('Authorization', bearerFor(otherUser.id, otherUser.email))
+      .send(AUTOMATION_BODY)
+      .expect(201);
+
+    const response = await request(app.getHttpServer())
+      .get(`/api/organizations/${organization.id}/automations`)
+      .set('Authorization', bearerFor(user.id, user.email))
+      .expect(200);
+
+    expect(response.body).toHaveLength(2);
+    expect(response.body[0]).toMatchObject({
+      name: 'Restock alert',
+      zernioPostId: 'post-2',
+      instagramAccountId: accountA,
+      accountUsername: 'studio_a',
+    });
+    expect(response.body[1]).toMatchObject({
+      zernioPostId: 'post-1',
+      instagramAccountId: accountA,
     });
   });
 });

@@ -7,12 +7,15 @@ API. Scoped for ~3-4 users and under 1,000 API calls/month — see
 for why this is deliberately small, and
 [`docs/PRODUCT-REQUIREMENTS.md`](docs/PRODUCT-REQUIREMENTS.md) for the exact MVP scope.
 
-**Status:** Phase 10 of `docs/IMPLEMENTATION-ROADMAP.md` complete — authentication (Auth.js),
-multi-tenancy (organizations/membership, with `apps/api` session verification and
+**Status:** Phase 10.2 of `docs/IMPLEMENTATION-ROADMAP.md` complete — authentication
+(Auth.js), multi-tenancy (organizations/membership, with `apps/api` session verification and
 tenant-isolation tests), the Instagram account connection flow, listing an account's
-existing posts/reels, and comment-automation creation (all verified against Zernio's live
-API) are real and working. Automation execution/webhook ingestion (Phase 11 onward) has not
-started yet — Zernio executes created automations server-side already.
+existing posts/reels, comment-automation creation with up to 3 DM buttons (all verified
+against Zernio's live API), and a redesigned, responsive dashboard (an org-wide automations
+list, pulled forward from Phase 12) are real and working. Live send/click stats (a real
+Zernio field, re-verified live) are designed but not yet surfaced anywhere (Phase 10.3).
+Automation execution/webhook ingestion (Phase 11 onward) has not started yet — Zernio
+executes created automations server-side already.
 
 ## Start here
 

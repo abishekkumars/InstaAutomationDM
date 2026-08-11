@@ -104,6 +104,7 @@ class FakeInstagramProvider implements InstagramProvider {
       keywords: input.keywords,
       matchMode: input.matchMode,
       commentReply: input.commentReply ?? null,
+      buttons: input.buttons ?? [],
       dmMessage: input.dmMessage,
       isActive: true,
     };

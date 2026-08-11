@@ -2,7 +2,11 @@ import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/authenticated-user.interface';
 import { SessionGuard } from '../auth/session.guard';
-import { AutomationsService, type AutomationSummary } from './automations.service';
+import {
+  AutomationsService,
+  type AutomationListItem,
+  type AutomationSummary,
+} from './automations.service';
 
 @Controller('organizations/:organizationId/instagram/accounts/:accountId/posts/:postId/automations')
 @UseGuards(SessionGuard)
@@ -28,5 +32,22 @@ export class AutomationsController {
     @Body() body: unknown,
   ): Promise<AutomationSummary> {
     return this.automations.create(user.id, organizationId, accountId, postId, body);
+  }
+}
+
+// Separate controller (rather than a second method on AutomationsController): the route has
+// no accountId/postId segment - it lists across every account in the org, for the dashboard
+// table - see AutomationsService.listForOrganization.
+@Controller('organizations/:organizationId/automations')
+@UseGuards(SessionGuard)
+export class OrganizationAutomationsController {
+  constructor(private readonly automations: AutomationsService) {}
+
+  @Get()
+  listForOrganization(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('organizationId') organizationId: string,
+  ): Promise<AutomationListItem[]> {
+    return this.automations.listForOrganization(user.id, organizationId);
   }
 }

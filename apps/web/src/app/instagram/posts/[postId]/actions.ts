@@ -3,13 +3,14 @@
 import { redirect } from 'next/navigation';
 import { callApi } from '@/lib/api';
 
-// Plain <form action={...}> + hidden inputs for organizationId/accountId/postId, matching
-// the FormData-reading style already used by app/instagram/actions.ts. `keywords` is a
-// single comma-separated text field, not per-keyword inputs - this app has no client-side
-// interactive form components yet (every form so far is a plain server action), and a
-// comma-separated field is the simplest way to accept multiple keywords without introducing
-// one. Split into the array Zernio's own API (and this project's createAutomationSchema)
-// expects before sending.
+// Still a plain <form action={...}> + FormData, matching the style already used by
+// app/instagram/actions.ts - this action itself stays a server action either way. The two
+// client components feeding it (keywords-field.tsx, dm-message-field.tsx) exist because a
+// chip input and a live character-limit counter both need client interactivity that a plain
+// server action can't provide on its own; both still submit through this same FormData
+// contract (keywords as one comma-joined hidden field; buttons as repeated
+// buttonTitle/buttonUrl inputs, paired by position below) rather than needing any change to
+// how this action reads its input.
 export async function createAutomationAction(formData: FormData): Promise<void> {
   const organizationId = formData.get('organizationId');
   const accountId = formData.get('accountId');
@@ -32,6 +33,15 @@ export async function createAutomationAction(formData: FormData): Promise<void> 
       : [];
   const commentReply = formData.get('commentReply');
 
+  // DmMessageField renders each button as two same-named inputs (buttonTitle/buttonUrl),
+  // one pair per row, in the same order - getAll() preserves DOM order, so pairing by index
+  // reconstructs each row without needing indexed field names.
+  const buttonTitles = formData.getAll('buttonTitle').map(String);
+  const buttonUrls = formData.getAll('buttonUrl').map(String);
+  const buttons = buttonTitles
+    .map((title, i) => ({ title: title.trim(), url: (buttonUrls[i] ?? '').trim() }))
+    .filter((button) => button.title.length > 0 && button.url.length > 0);
+
   try {
     await callApi(
       `/api/organizations/${organizationId}/instagram/accounts/${accountId}/posts/${postId}/automations`,
@@ -43,6 +53,7 @@ export async function createAutomationAction(formData: FormData): Promise<void> 
           matchMode: formData.get('matchMode'),
           commentReply:
             typeof commentReply === 'string' && commentReply.length > 0 ? commentReply : undefined,
+          buttons: buttons.length > 0 ? buttons : undefined,
           dmMessage: formData.get('dmMessage'),
         }),
       },

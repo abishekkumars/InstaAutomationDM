@@ -249,11 +249,13 @@ Response (`200`):
     "keywords": ["LINK", "link", "price"],
     "matchMode": "CONTAINS",
     "commentReply": "Check your DMs!",
+    "buttons": [{ "title": "Shop now", "url": "https://example.com/shop" }],
     "dmMessage": "Here is the link you asked for!",
     "isActive": true
   }
 ]
 ```
+`buttons`: `[]`/omitted when the automation has none — a plain-text DM is normal.
 
 ### `POST /api/organizations/:organizationId/instagram/accounts/:accountId/posts/:postId/automations`
 
@@ -268,12 +270,16 @@ Request:
   "keywords": ["LINK", "link", "price"],
   "matchMode": "contains",
   "commentReply": "Check your DMs!",
+  "buttons": [{ "title": "Shop now", "url": "https://example.com/shop" }],
   "dmMessage": "Here is the link you asked for!"
 }
 ```
 `keywords`: array of 1-50 non-empty strings, **not a single string** — matches Zernio's own
 field shape. `matchMode`: `contains` (default) | `word` | `exact`. `commentReply`: optional.
-`dmMessage`: required, ≤1000 chars.
+`buttons`: optional, up to 3, each `{title (≤20 chars), url}` — only `type: "url"` buttons are
+supported (see `docs/ZERNIO-INTEGRATION.md` for why `postback`/`phone` aren't). `dmMessage`:
+required, ≤1000 chars normally, **≤640 once any `buttons` are present** (Zernio's own limit —
+a request with `buttons` and a longer `dmMessage` is a `400`, not silently truncated).
 
 Response (`201`): same shape as one item of the list endpoint's array above.
 
@@ -281,6 +287,37 @@ Errors: `400` (invalid input, e.g. no keywords), `404` (not a member, or `:accou
 found under this organization), `409` (this post already has an automation — enforced both
 locally and by Zernio's own rule; also returned if Zernio itself already has one for this
 post that our own database didn't know about, e.g. created directly in Zernio's dashboard).
+
+### `GET /api/organizations/:organizationId/automations`
+
+Lists every automation in the organization, across every connected Instagram account (Phase
+10.1) — the redesigned dashboard's data source. Unlike the per-post endpoint above, this has
+no `:accountId`/`:postId` segment; it's a separate controller
+(`OrganizationAutomationsController`), not a second method on the per-post one. Requires a
+bearer token; `404` for a caller who isn't a member of `:organizationId`.
+
+Response (`200`):
+```json
+[
+  {
+    "id": "clx...",
+    "zernioPostId": "6a7988dfd0fe733d1ab80576",
+    "instagramAccountId": "clx...",
+    "accountUsername": "acme_ig",
+    "name": "Watch giveaway",
+    "keywords": ["LINK", "link", "price"],
+    "matchMode": "CONTAINS",
+    "commentReply": "Check your DMs!",
+    "buttons": [{ "title": "Shop now", "url": "https://example.com/shop" }],
+    "dmMessage": "Here is the link you asked for!",
+    "isActive": true
+  }
+]
+```
+Ordered newest-first. `accountUsername` is the connected account's own `username` (nullable,
+same as elsewhere in this app — not guaranteed to be set).
+
+Errors: `401` (no/invalid bearer token), `404` (not a member of `:organizationId`).
 
 Further endpoints are documented here as each is actually implemented, with full request/
 response shape, auth requirement, and example — not speculatively written ahead of the

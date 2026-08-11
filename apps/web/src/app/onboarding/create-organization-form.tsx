@@ -12,7 +12,7 @@ export function CreateOrganizationForm() {
   return (
     <form action={formAction} className="space-y-4">
       <div>
-        <label htmlFor="name" className="block text-sm font-medium text-slate-700">
+        <label htmlFor="name" className="block text-sm font-medium text-text">
           Organization name
         </label>
         <input
@@ -20,11 +20,11 @@ export function CreateOrganizationForm() {
           name="name"
           type="text"
           required
-          className="mt-1 block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none"
+          className="mt-1 block w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none"
         />
       </div>
       <div>
-        <label htmlFor="slug" className="block text-sm font-medium text-slate-700">
+        <label htmlFor="slug" className="block text-sm font-medium text-text">
           Slug
         </label>
         <input
@@ -32,17 +32,17 @@ export function CreateOrganizationForm() {
           name="slug"
           type="text"
           required
-          className="mt-1 block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none"
+          className="mt-1 block w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none"
         />
-        <p className="mt-1 text-xs text-slate-500">
+        <p className="mt-1 text-xs text-text-muted">
           Lowercase letters, numbers, and hyphens only (e.g. <code>acme-inc</code>).
         </p>
       </div>
-      {state?.error && <p className="text-sm text-red-600">{state.error}</p>}
+      {state?.error && <p className="text-sm text-danger">{state.error}</p>}
       <button
         type="submit"
         disabled={pending}
-        className="w-full rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-60"
+        className="w-full rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-ink hover:opacity-90 disabled:opacity-60"
       >
         {pending ? 'Creating...' : 'Create organization'}
       </button>

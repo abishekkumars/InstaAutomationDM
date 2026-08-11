@@ -206,12 +206,22 @@ the automation itself; this table only mirrors the config it was created with.
   `CONTAINS` — same three values, same default, as Zernio's own `matchMode`.
 - `commentReply` — nullable `String`. Zernio's own API treats the public reply as optional;
   a DM-only automation with no public reply is a normal, supported configuration.
-- `dmMessage` — `String`, required (Zernio requires it too).
+- `buttons` — nullable `Json` (Phase 10.1), `[{ title, url }]`, up to 3. A JSON column, not a
+  separate table: at most 3 small, fixed-shape items never queried independently of their
+  automation. Only `title`+`url` are stored — this project always sends Zernio's `type: url`
+  (see `docs/ZERNIO-INTEGRATION.md`), so the type itself isn't part of the stored shape.
+- `dmMessage` — `String`, required (Zernio requires it too). Its real max length depends on
+  `buttons`: 640 chars once any are attached, ~1000 otherwise — enforced by
+  `packages/validation`'s `createAutomationSchema`, not by this column (Postgres has no
+  conditional length constraint here).
 - `isActive` — `Boolean`, defaults `true`.
 - `@@unique([instagramAccountId, zernioPostId])` — mirrors Zernio's own "only one active
   per-post automation" rule at our own data layer too, not just trusted from Zernio's `409`.
-- `@@index([organizationId])` — "list an organization's automations," a future Phase 12
-  dashboard/history view.
+- `@@index([organizationId])` — "list an organization's automations." Originally described
+  here as a future Phase 12 dashboard view; the list endpoint itself
+  (`GET /organizations/:organizationId/automations`, `AutomationsService.listForOrganization`)
+  was pulled forward into Phase 10.1 when the redesigned dashboard needed it — Phase 12 is
+  now just the run/status records behind the same list, not the list itself.
 
 ## Conceptual tables (not yet built — introduced per-phase)
 
@@ -273,6 +283,8 @@ Schema changes always go through a generated migration file committed to the rep
   `organizations.zernio_profile_id` column.
 - `20260811171420_add_automations_table` (Phase 10) creates `automations` and the
   `AutomationMatchMode` enum.
+- `20260812090000_add_automation_buttons` (Phase 10.1) adds the nullable `automations.buttons`
+  JSON column.
 
 ## Prisma client
 

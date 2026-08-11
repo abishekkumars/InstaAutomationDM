@@ -45,12 +45,23 @@ completed work, just a rewrite of what hadn't started yet).
   message; create form on the post/reel detail page; resolved against Zernio's real docs
   that Zernio executes the match → reply → DM flow server-side, not this project). See
   "Phase 10 report" below.
+- [x] Phase 10.1 — UI redesign + responsive layout, plus an org-wide automations list
+  (`GET /organizations/:organizationId/automations`, pulled forward from Phase 12's planned
+  dashboard/history view because the redesigned dashboard needed it now — see "Phase 10.1
+  report" below).
+- [x] Phase 10.2 — DM buttons (up to 3, title + link, `automations.buttons` JSON column;
+  `packages/zernio`'s `DmButton`; conditional 640-char `dmMessage` cap once buttons are
+  attached) — see "Phase 10.2 report" below.
+- [ ] Phase 10.3 — live send/click stats on the dashboard (Zernio's `stats.dmsSent`/
+  `linkClicks`, real fields verified in Phase 10.1/10.2, not yet surfaced anywhere in this
+  app) — **next phase**
 - [ ] **Phase 11 — Webhook ingestion + automation trigger recording** (`POST /webhooks/zernio`,
   `webhook_events` idempotency, in-process — no queue, per ADR 0005; records what Zernio's own
   server-side automation execution reports, per Phase 10's finding that Zernio does the
   matching itself) — **next phase**
-- [ ] Phase 12 — Automation status/history (run/status records + a simple list/detail UI —
-  the MVP's item 13, not a general analytics pipeline)
+- [ ] Phase 12 — Automation status/history (run/status records; the list/detail UI itself
+  landed early in Phase 10.1 — this phase is now just the run/status records behind it, the
+  MVP's item 13, not a general analytics pipeline)
 - [ ] Phase 13 — Security hardening (scoped to this app's actual size — tenant isolation,
   secret hygiene, dependency audit; not enterprise-scale rate limiting/WAF work)
 - [ ] Phase 14 — Production deployment (whatever the actual hosting target needs when this
@@ -1235,10 +1246,208 @@ this file.
 
 **Next phase**
 
-Phase 11 — Webhook ingestion + automation trigger recording: verify Zernio's real webhook
-payload shapes (`docs/ZERNIO-INTEGRATION.md`'s "Webhooks" section is still Phase 0 research)
-against its live docs before building `POST /webhooks/zernio`, `webhook_events` idempotency,
-and the org/account resolution step. Per this phase's finding, this is a *recording* step,
-not a matching/execution one - Zernio already ran the automation; the webhook (and/or
-`GET /v1/comment-automations/{id}`'s own trigger logs) reports what happened. Will not start
-until the user says to proceed.
+Phase 10.1 (UI redesign) landed next - see its report below - followed by Phase 11.
+
+## Phase 10.1 report
+
+**What/why**: the user supplied real reference screenshots (a comparable Instagram
+comment-automation product) and asked for the same visual system - dark sidebar shell, pill
+tabs, stat-card row, table-style automation list, chip-style keyword input - applied to this
+app's real pages, verified via a mockup artifact before any code changed. Two things the
+mockup surfaced turned into real, verified scope for this phase:
+
+- **DM buttons and click/send tracking are real Zernio fields** (`buttons` on
+  `POST/PATCH /v1/comment-automations`, up to 3, each `{type: url, title, url}`; `stats`
+  includes `dmsSent`/`triggered` on every list/get response, plus `linkClicks`/`uniqueClicks`
+  when `linkTracking` - on by default - wraps a button's link). Re-verified live against
+  Zernio's OpenAPI spec, not assumed. **Not built this phase** - see "Known limitations"
+  below; documented here because the mockup shown to the user included them and the docs
+  needed correcting either way (`docs/ZERNIO-INTEGRATION.md` previously listed `buttons` as
+  "not used by this project," which stops being true once a later phase builds it).
+- **The dashboard table needs to list automations across every account in an org, not just
+  one post.** No such endpoint existed - `AutomationsService` only had `listForPost`. This
+  is exactly what `docs/DATABASE.md`'s `Automation.organizationId` index was already
+  described as being for ("a future dashboard/history view - Phase 12"). Pulled that slice
+  of Phase 12 forward rather than build a redesigned dashboard with nothing to show - see
+  "Known limitations" for what's still deferred.
+
+**What changed**
+- `apps/api/src/automations/automations.service.ts` - added `listForOrganization` (org-wide,
+  tenant-checked, includes each automation's connected-account username).
+- `apps/api/src/automations/automations.controller.ts` - added `OrganizationAutomationsController`
+  (`GET /organizations/:organizationId/automations`) - a separate controller class, not a
+  second method on the existing one, because the route has no `accountId`/`postId` segment.
+- `apps/api/src/automations/automations.module.ts` - registered the new controller.
+- `apps/api/src/automations/__tests__/automations.e2e.test.ts` - new test suite for the
+  list-for-organization endpoint (auth, tenant isolation, cross-account aggregation, newest
+  first).
+- `apps/web/src/app/globals.css` - new `@theme` color tokens (ink/canvas/accent/success/
+  danger/muted, light + dark via `prefers-color-scheme`) - Tailwind v4 turns each into
+  matching utilities automatically.
+- `apps/web/src/app/layout.tsx` - replaced the top-header shell with a responsive sidebar
+  (collapses to a horizontal top bar under `md:`) for authenticated pages; unauthenticated
+  pages (sign-in/sign-up) keep a simple centered shell, not the sidebar, since there's no
+  org/session to show in it yet.
+- `apps/web/src/app/page.tsx` - dashboard rebuilt around the new automations table (real
+  data from `listForOrganization`, table on wider screens, stacked cards on narrow ones -
+  same markup, no separate mobile view to keep in sync); stat row shows only counts this
+  app can actually derive today (active/total automations, connected accounts) - the
+  reference's "DMs sent"/"followers gained" cards are not here because there is no tracking
+  behind them yet (see "Known limitations"). The org-members list from Phase 6 stays -
+  restyled, not dropped.
+- `apps/web/src/app/instagram/posts/page.tsx`, `.../[postId]/page.tsx` - restyled with the
+  same tokens; `[postId]`'s automation-summary view now shows keyword/status as chips/pills.
+- `apps/web/src/app/instagram/posts/[postId]/keywords-field.tsx` (new) - a small client
+  component: chip-style multi-keyword input with add/remove, syncing to a hidden
+  comma-joined field so the existing server action's parsing (`actions.ts`, unchanged) keeps
+  working. The one client component in this app's form flow - every other form is still a
+  plain server action + `FormData`, per the convention `actions.ts`'s own comment described;
+  a chip input specifically needs client interactivity to add/remove without a page reload.
+- `apps/web/src/app/(auth)/sign-in-form.tsx`, `sign-up-form.tsx`,
+  `onboarding/create-organization-form.tsx`, and their page wrappers - swapped hardcoded
+  `slate-*` colors for the new tokens. Not part of the original ask, but the new dark-mode
+  tokens flip the page background globally via `prefers-color-scheme`, and these forms'
+  hardcoded light-mode text colors became unreadable against a dark background - a real
+  regression caught and fixed during this phase's own browser verification, not shipped.
+
+**Verification actually performed**
+- `scripts/lint.ps1` (eslint + typecheck + prettier) and `scripts/test.ps1` - both clean;
+  51 tests passing (14 `packages/database`, 37 `apps/api`, including the new org-list suite).
+- Browser-verified in the running dev server at both desktop and mobile (375px) widths:
+  sign-in/sign-up/onboarding forms, the dashboard (seeded with a fake, non-Zernio
+  `InstagramAccount`/`Automation` row so the table had real API-shaped data to render
+  without touching any live external Instagram account), and the post-detail error state.
+  The `KeywordsField` chip component was verified via a throwaway route (deleted after) with
+  a scripted DOM interaction, since the Browser pane's click/screenshot pipeline was
+  intermittently unresponsive this session - confirmed the chip renders and the hidden field
+  holds the joined value, not just that the code compiles.
+- Did **not** perform a live Instagram connect / real Zernio call this phase - unlike
+  Phases 8-9's live verification, every fact this phase relied on (DmButton shape, stats
+  shape, dmMessage length caps) was re-confirmed directly against Zernio's live OpenAPI spec
+  fetched fresh, not against a live create call, since this phase built no new Zernio
+  request path (buttons/stats are deferred - see below).
+
+**Known limitations / risks**
+- **DM buttons and live send/click stats are not built** - the mockup shown to the user
+  included them (with the analytics question explicitly asked and answered), but this phase
+  scoped down to the UI/redesign + list-endpoint work only, per "don't build multiple
+  phases' worth of feature in one shot." They're the next two pieces of work (tracked as
+  Phase 10.2/10.3, or folded into whichever phase number is live when they land).
+- The dashboard's automations table has no thumbnail/caption per row (unlike the reference) -
+  post content is deliberately never cached locally (ADR 0005), and fetching each row's post
+  from Zernio individually would be an N+1 call pattern on every dashboard load; a "View"
+  link to the post detail page (which already fetches the one post it needs) was used
+  instead.
+- No edit/rename/pause/duplicate/delete row actions - same reason as Phase 10's report:
+  Zernio's `PATCH`/`DELETE` exist but aren't wired up yet.
+- Sign-in/sign-up/onboarding got only a contrast fix, not a full restyle to match the
+  dashboard's card language - out of scope for a UI phase framed around "the dashboard,"
+  fixed only because the new dark-mode tokens broke their existing contrast.
+
+**Next phase**
+
+Phase 10.2 (DM buttons) landed next - see its report below - followed by Phase 10.3 (live
+stats), then Phase 11.
+
+## Phase 10.2 report
+
+**What/why**: the first of the two items Phase 10.1 deferred. The user asked for DM buttons
+specifically (up to 3, title + link) while reviewing the redesign mockup, and asked whether
+DMs-sent/button-click tracking was real - answering that required re-verifying Zernio's live
+OpenAPI spec, which is where `buttons`, `linkTracking`, and the list endpoint's richer `stats`
+shape (documented in Phase 10.1's report) were confirmed as real, buildable fields. This
+phase builds the buttons half; live stats (Phase 10.3) is a separate, smaller phase since it
+needs no schema change, just a new provider method and a UI surface.
+
+**What changed**
+- `packages/database/prisma/schema.prisma` - added `Automation.buttons` (`Json?`).
+- `packages/database/prisma/migrations/20260812090000_add_automation_buttons/` (new) -
+  additive `ALTER TABLE ... ADD COLUMN "buttons" JSONB`, generated via
+  `prisma migrate diff --script` and applied with `migrate deploy` (the same
+  interactive-prompt workaround as every prior phase's migration - see
+  `docs/DEVELOPMENT-SETUP.md`). Regenerating the Prisma client hit the same Windows
+  query-engine file-lock issue Phase 10 already documented - the currently-running `apps/web`
+  and `apps/api` dev processes (not this phase's own tooling) had the old `.dll.node` loaded;
+  stopped both, ran `prisma generate`, restarted `apps/web` for browser verification.
+- `packages/validation/src/automation.ts` - added `automationButtonSchema` (`title` ≤20
+  chars, `url` must be a valid URL) and `buttons` (max 3) to `createAutomationSchema`, plus a
+  `.refine()` enforcing the 640-char `dmMessage` cap only when `buttons` is non-empty (can't
+  be a plain per-field `.max()`, since the real limit depends on a sibling field).
+- `packages/zernio/src/instagram-provider.ts` - added the `DmButton` domain type
+  (`{title, url}` only - `type` isn't part of it, since this project only ever sends
+  `type: "url"`) and `buttons`/`CommentAutomation.buttons` to the create input/response
+  shapes.
+- `packages/zernio/src/zernio-instagram-provider.ts` - `createCommentAutomation` now sends
+  `buttons` (mapped to Zernio's real `{type: "url", title, url}` shape) when present, omitted
+  entirely otherwise; the response mapper reads `buttons` back, filtering to `type: "url"`
+  items with both a `title` and `url` (defensive, even though Zernio will only ever echo back
+  what this project itself sent).
+- `apps/api/src/automations/automations.service.ts` - `AutomationSummary`/`AutomationButton`
+  gained `buttons`; `create()` passes `parsed.buttons` through to the provider and persists
+  `created.buttons` as the new JSON column (cast to `Prisma.InputJsonValue` - an array of a
+  named interface doesn't structurally satisfy Prisma's `InputJsonObject` index signature
+  even though the values are plain JSON-safe objects); `toSummary()` gained a `toButtons()`
+  helper that narrows the column's type-erased `Prisma.JsonValue` back to `{title,url}[]`
+  rather than trusting it as-is.
+- `apps/api/src/automations/__tests__/automations.e2e.test.ts`,
+  `apps/api/src/instagram/__tests__/instagram.e2e.test.ts` - `FakeInstagramProvider`'s
+  `createCommentAutomation` now echoes `buttons`; new test cases (create with buttons and
+  persist them, reject >3 buttons, reject a >640-char `dmMessage` once buttons are attached).
+- `apps/web/src/app/instagram/posts/[postId]/dm-message-field.tsx` (new) - a client component
+  combining the DM message textarea and the button-row editor in one place, not two separate
+  components like `keywords-field.tsx`: the message's real character limit (640 vs. ~1000)
+  depends on whether any buttons are attached, so the two fields need to share state to show
+  that limit live as the user types/adds a button. Buttons submit as repeated
+  `buttonTitle`/`buttonUrl` inputs (one pair per row, paired by DOM order) rather than a
+  hidden serialized field - unlike keywords, each row's visible inputs already are the real
+  form fields, no chip-style transformation needed.
+- `apps/web/src/app/instagram/posts/[postId]/actions.ts` - `createAutomationAction` now reads
+  `buttonTitle`/`buttonUrl` via `formData.getAll()`, pairs them by index, and includes
+  non-empty pairs as `buttons` in the API request body.
+- `apps/web/src/app/instagram/posts/[postId]/page.tsx` - swapped the plain DM-message
+  textarea for `<DmMessageField />`; the existing-automation summary view now shows each
+  button as a clickable chip.
+- Docs: `docs/ZERNIO-INTEGRATION.md` (moved `buttons`/`linkTracking` out of the "not used"
+  list; documented the list endpoint's richer `stats` shape), `docs/DATABASE.md` (`buttons`
+  column, migration entry), `docs/API-SPEC.md` (request/response examples, the 640-char
+  rule), this file.
+
+**Verification actually performed**
+- `scripts/lint.ps1` (eslint + typecheck + prettier) and `scripts/test.ps1` - both clean; 54
+  tests passing (14 `packages/database`, 40 `apps/api`, including the 3 new button test
+  cases). `packages/zernio` and `packages/validation` needed an explicit rebuild
+  (`pnpm --filter ... run build`) before `apps/api`'s typecheck picked up the new
+  `buttons`/`DmButton` fields - both are consumed via their compiled `dist/` output (no
+  workspace path aliases in `tsconfig.base.json`), not live source, so a stale build silently
+  hides new fields until rebuilt; not a bug, just a step this phase had to remember.
+- Browser-verified `DmMessageField` via a throwaway route (deleted after, same technique as
+  Phase 10.1): scripted typing into the DM message textarea, clicking "+ Add button", and
+  filling the title/url inputs - confirmed the counter/limit switches from `/1000` to `/640`
+  live the moment a button is added, and the row count label updates. Did not browser-verify
+  the *existing-automation* button-chip display or a real end-to-end create-with-buttons call
+  against live Zernio - both require a real connected Instagram account (this app's post
+  detail page always fetches its post live from Zernio before anything else renders, so a
+  seeded fake account can't reach that view), which this phase deliberately didn't touch, per
+  Phase 10.1's same reasoning. The create-with-buttons path is covered by the new automated
+  `apps/api` test instead.
+
+**Known limitations / risks**
+- `type: postback` and `type: phone` buttons are real Zernio fields, not built - postback
+  needs a webhook handler (`messaging_postbacks`) this project doesn't have yet; phone is
+  Facebook-only, irrelevant to an Instagram-only tool. Both documented, not silently dropped.
+- `linkTracking`/`clickTag` are never sent explicitly - `linkTracking` defaults to `true` on
+  Zernio's side, which is exactly the behavior wanted (see Phase 10.3), so there's nothing for
+  this project to set; `clickTag` needs a segmentation/contacts feature this project doesn't
+  have.
+- No live end-to-end verification against a real Zernio account this phase (see above) - the
+  `DmButton` shape and the 640-char rule were re-confirmed directly against Zernio's live
+  OpenAPI spec (not assumed), but no live `createCommentAutomation` call with real buttons was
+  made.
+
+**Next phase**
+
+Phase 10.3 - live send/click stats on the dashboard: call
+`GET /v1/comment-automations?profileId=` (its richer `stats` shape, documented in Phase
+10.1's report) from `packages/zernio`, surface `dmsSent`/`linkClicks` on the dashboard's stat
+row and per-automation table rows. No schema change needed - these are live numbers from
+Zernio, not something this project stores. Will not start until the user says to proceed.

@@ -440,3 +440,30 @@ Phase 2 update below) - NestJS's own `nest build`/`nest start` have no equivalen
 which is the asymmetry that let this go unnoticed until a real user hit it. Verified both
 directions directly: running the built output under the global Node 16 now fails immediately
 with the new message; running it under the project-local Node 24 starts normally.
+
+## A dev server needs restarting after `prisma generate`, not just after a source edit (2026-08-12)
+
+The user reported a `500: Internal server error` when creating a comment automation (Phase
+10.2's new `buttons` field), thrown from `apps/web`'s `callApi` after `apps/api` returned a
+plain 500 with no specific error - the generic NestJS "uncaught exception" shape, not one of
+this app's own `BadRequestException`/`ConflictException`s.
+
+Root cause: `apps/api`'s already-running `nest start --watch` process had a **stale, already
+`require()`'d Prisma Client** in memory from before `packages/database`'s migration this
+session added `automations.buttons` - `nest start --watch` restarts the whole Node process on
+a *source file* change (`tsc --watch` recompiling), but does nothing when a *dependency* in
+`node_modules` changes on disk (`prisma generate` rewrites the shared, hoisted
+`@prisma/client` package), so a long-running process's already-loaded copy never picks up new
+columns/fields until it's actually restarted. Confirmed directly, not assumed: a throwaway
+script using a brand-new `PrismaClient` (guaranteed fresh, since it's a new process) inserted
+the exact same `buttons`-shaped row this app's own `AutomationsService.create()` builds
+without error; only the long-running dev process failed.
+
+**Takeaway**: after `prisma generate` (directly, or indirectly via `migrate dev`/`deploy`),
+every already-running process that imports `@automationdm/database` needs an actual restart
+- editing an unrelated source file to trigger `nest start --watch`'s own recompile is enough
+and doesn't require manually killing anything. **Killing the process directly is not
+equivalent** to letting the watcher restart it on its own: `pnpm run --parallel --recursive
+dev` does not respawn a workspace's script if its process exits (confirmed the hard way this
+session - had to explicitly restart `apps/api`'s `dev` script by hand afterward). Prefer
+touching a source file over killing the process when only a Prisma-client refresh is needed.

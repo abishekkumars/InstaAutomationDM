@@ -109,9 +109,9 @@ is now resolved, not assumed.
   the DM send itself. `packages/automation-engine` was never built - there is no local
   matching logic anywhere in this project.
 - `POST /v1/comment-automations` — create.
-  - Required: `profileId`, `accountId`, `name`, `dmMessage` (≤640 chars if buttons are
-    attached, ~1000 otherwise - this project never sends buttons, so 1000 is the real bound
-    `packages/validation`'s `createAutomationSchema` enforces).
+  - Required: `profileId`, `accountId`, `name`, `dmMessage` (≤640 chars once `buttons` are
+    attached, ~1000 otherwise - enforced by `packages/validation`'s `createAutomationSchema`,
+    conditionally, since it depends on the sibling `buttons` field).
   - `keywords` is a **string array**, not a single string (`type: array, items: {type:
     string}`) - `InstagramProvider.createCommentAutomation` and the create form both take
     multiple keywords for exactly this reason, not one.
@@ -124,18 +124,33 @@ is now resolved, not assumed.
     `AutomationMatchMode` enum already anticipated.
   - `commentReply` (the public reply text) is **optional**, not required - a DM-only
     automation with no public reply is a normal, supported configuration.
+  - `buttons` (Phase 10.1 - real, built): up to 3 inline DM buttons,
+    `{type, title (≤20 chars), url}[]`. Zernio's real `DmButton` schema also supports
+    `type: postback` (delivered via a `messaging_postbacks` webhook this project doesn't
+    handle) and `type: phone` (Facebook-only) - this project only ever sends `type: "url"`,
+    the only type relevant to an Instagram-only tool with no postback webhook. `linkTracking`
+    (boolean, default **true**) wraps `url` buttons in a tracked redirect so clicks are
+    counted - left at its default; this project never sends it explicitly, since the default
+    is exactly the behavior wanted (see the `stats` fields below).
   - Not used by this project (documented for completeness, not built): `trigger:
-    story_reply`, `buttons`, `template`, `*Variations` rotation, `linkTracking`/`clickTag`,
+    story_reply`, `template`, `*Variations` rotation, `clickTag`,
     `dmDelaySeconds`/`commentReplyDelaySeconds`, `audience`/`followGate`,
     `excludeKeywords`/`typoTolerance`, `alsoMatchInDms`.
   - Response: `{ automation: { id, name, platform, trigger, platformPostId, keywords,
-    matchMode, commentReply, dmMessage, isActive, stats: {totalTriggered, totalSent,
+    matchMode, commentReply, buttons, dmMessage, isActive, stats: {totalTriggered, totalSent,
     totalFailed}, createdAt, ... } }`. **Does not echo `accountId`** (list/get do) -
     `ZernioInstagramProvider` doesn't rely on it being present in the create response, since
     the caller already knows which account it asked to create the automation for.
 - `GET /v1/comment-automations?profileId=` — list. Only filters by `profileId` (no
   `accountId`/`platformPostId` filter) - each item includes `accountId` and `platformPostId`
-  for the caller to filter further if needed.
+  for the caller to filter further if needed. **Its `stats` object is richer than the
+  create/get response's** - verified live during Phase 10.1, a real, load-bearing
+  inconsistency in Zernio's own API, not assumed to match: `{triggered, dmsSent, dmsFailed,
+  uniqueContacts, trackedSends, linkClicks, uniqueClicks, delivered, read}`, vs. create/get's
+  `{totalTriggered, totalSent, totalFailed}`. `linkClicks`/`uniqueClicks` (real click-through
+  counts on tracked button links) and `dmsSent` only come from this list endpoint - see
+  "Known limitations" in the Phase 10.1 roadmap report for what this means for the dashboard
+  (not yet wired up to call this).
 - `GET /v1/comment-automations/{automationId}` — get one, including recent trigger `logs`
   (per-comment outcome: `status` sent/failed/skipped/gated/pending, `commentText`,
   `commenterId`, errors). Useful for Phase 12's status/history view - not built yet.

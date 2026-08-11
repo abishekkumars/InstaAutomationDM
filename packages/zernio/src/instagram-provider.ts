@@ -86,6 +86,16 @@ export interface GetPostInput {
   zernioPostId: string;
 }
 
+/** An inline DM button - title + link only. Zernio's real `DmButton` schema also supports
+ * `type: postback | phone`; this project only ever sends `type: "url"` (see
+ * docs/ZERNIO-INTEGRATION.md's "Comment-to-DM automation API" section for why), so the type
+ * itself isn't part of this domain shape - ZernioInstagramProvider adds it back when calling
+ * Zernio, and strips it back off when reading Zernio's response. */
+export interface DmButton {
+  title: string;
+  url: string;
+}
+
 export interface CreateCommentAutomationInput {
   zernioProfileId: string;
   zernioAccountId: string;
@@ -98,6 +108,9 @@ export interface CreateCommentAutomationInput {
   /** Optional public reply posted on the triggering comment - Zernio's own API treats this
    * as optional, not required. */
   commentReply?: string;
+  /** Up to 3 (Zernio's own limit). Omit or pass an empty array for a plain-text DM. Attaching
+   * any buttons lowers Zernio's own dmMessage length limit from ~1000 to 640 chars. */
+  buttons?: DmButton[];
   dmMessage: string;
 }
 
@@ -114,6 +127,7 @@ export interface CommentAutomation {
   keywords: string[];
   matchMode: 'contains' | 'word' | 'exact';
   commentReply: string | null;
+  buttons: DmButton[];
   dmMessage: string;
   isActive: boolean;
 }

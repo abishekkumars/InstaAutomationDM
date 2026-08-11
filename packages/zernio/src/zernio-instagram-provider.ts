@@ -2,6 +2,7 @@ import type {
   CommentAutomation,
   ConnectedInstagramAccount,
   CreateCommentAutomationInput,
+  DmButton,
   EnsureProfileInput,
   EnsureProfileResult,
   FindConnectedAccountInput,
@@ -136,6 +137,10 @@ export class ZernioInstagramProvider implements InstagramProvider {
         keywords: input.keywords,
         matchMode: input.matchMode,
         commentReply: input.commentReply,
+        // Omit entirely (not []) when there are none - undefined keys are dropped by
+        // JSON.stringify, same as commentReply above; Zernio's own docs say either is
+        // equivalent for "no buttons," but omitting keeps the request body minimal.
+        buttons: input.buttons?.length ? input.buttons.map(toRawDmButton) : undefined,
         dmMessage: input.dmMessage,
       },
     );
@@ -203,10 +208,36 @@ interface RawPostsListResponse {
   pagination: { page: number; limit: number; total: number; pages: number };
 }
 
+// Raw shape of a DM button on the comment-automations endpoints (Zernio's `DmButton` schema,
+// verified against the live spec during Phase 10.1) - `type: postback | phone` are real but
+// out of this project's scope (see docs/ZERNIO-INTEGRATION.md), so only `url` is ever sent or
+// read back.
+interface RawDmButton {
+  type?: 'url' | 'postback' | 'phone';
+  title?: string;
+  url?: string;
+  payload?: string;
+  phone?: string;
+}
+
+function toRawDmButton(button: DmButton): RawDmButton {
+  return { type: 'url', title: button.title, url: button.url };
+}
+
+function fromRawDmButtons(buttons: RawDmButton[] | undefined): DmButton[] {
+  return (buttons ?? [])
+    .filter(
+      (button): button is RawDmButton & { title: string; url: string } =>
+        button.type === 'url' && Boolean(button.title) && Boolean(button.url),
+    )
+    .map((button) => ({ title: button.title, url: button.url }));
+}
+
 // Raw shape of the comment-automations endpoints (create/list), verified against the live
-// spec during Phase 10 - see docs/ZERNIO-INTEGRATION.md's "Comment-to-DM automation API"
-// section. The create response omits `accountId` (list/get include it); callers that need it
-// already have it from their own input, so this is not treated as missing data.
+// spec during Phase 10 (and re-verified for `buttons` during Phase 10.1) - see
+// docs/ZERNIO-INTEGRATION.md's "Comment-to-DM automation API" section. The create response
+// omits `accountId` (list/get include it); callers that need it already have it from their
+// own input, so this is not treated as missing data.
 interface RawCommentAutomation {
   id: string;
   accountId?: string;
@@ -215,6 +246,7 @@ interface RawCommentAutomation {
   keywords?: string[];
   matchMode?: 'contains' | 'word' | 'exact';
   commentReply?: string;
+  buttons?: RawDmButton[];
   dmMessage: string;
   isActive?: boolean;
 }
@@ -228,6 +260,7 @@ function toCommentAutomation(automation: RawCommentAutomation): CommentAutomatio
     keywords: automation.keywords ?? [],
     matchMode: automation.matchMode ?? 'contains',
     commentReply: automation.commentReply ?? null,
+    buttons: fromRawDmButtons(automation.buttons),
     dmMessage: automation.dmMessage,
     isActive: automation.isActive ?? true,
   };

@@ -1,6 +1,6 @@
 # Architecture
 
-Status: Phase 10 baseline, **scope simplified** — see
+Status: Phase 10.2 baseline, **scope simplified** — see
 `docs/ADR/0005-simplified-mvp-architecture.md`. This project is a small internal/limited-use
 tool (~3-4 users, under 1,000 API calls/month), not a general-purpose SaaS; the architecture
 below reflects that directly rather than carrying infrastructure sized for a scale this
@@ -128,7 +128,11 @@ module rather than a separate `posts` module, since it's still entirely about on
 Instagram account), `automations` (Phase 10 — real: comment-automation creation, mounted
 under `organizations/:organizationId/instagram/accounts/:accountId/posts/:postId/automations`;
 imports `InstagramModule` to reuse its `INSTAGRAM_PROVIDER` binding rather than creating a
-second `ZernioInstagramProvider` instance), `webhooks` (Phase 11), `health`.
+second `ZernioInstagramProvider` instance; Phase 10.1 added a second controller,
+`OrganizationAutomationsController`, in the same module for the org-wide
+`organizations/:organizationId/automations` list the redesigned dashboard needed — a separate
+class rather than a second method on `AutomationsController` since the route has no
+`accountId`/`postId` segment), `webhooks` (Phase 11), `health`.
 
 Not all of these exist yet — see `docs/IMPLEMENTATION-ROADMAP.md` for which phase introduces
 which module. Creating an empty module ahead of the phase that needs it is avoided;
