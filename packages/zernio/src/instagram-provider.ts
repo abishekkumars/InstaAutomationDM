@@ -23,6 +23,11 @@ export interface EnsureProfileInput {
 export interface EnsureProfileResult {
   /** Zernio's profile _id - what packages/database's Organization.zernioProfileId stores. */
   zernioProfileId: string;
+  /** True when an existing Zernio profile with this name was reused rather than a new one
+   * created. Lets apps/api tell "we adopted the profile that was already there" apart from
+   * "we just created one", which matters for reconciling an organization whose local
+   * zernioProfileId was lost or never persisted. */
+  reused: boolean;
 }
 
 export interface GetConnectUrlInput {
@@ -99,9 +104,17 @@ export interface DmButton {
 export interface CreateCommentAutomationInput {
   zernioProfileId: string;
   zernioAccountId: string;
-  /** Zernio's own post id (`platformPostId`) - scopes the automation to this one post/reel,
-   * matching docs/AUTOMATION-ENGINE.md's fixed one-automation-per-post model. */
+  /** Zernio's own post id (the `_id` from listPosts). Sent as Zernio's `postId` field, which
+   * its spec marks "required only when also targeting a specific post via platformPostId" -
+   * which this project always does. */
   zernioPostId: string;
+  /** The *Instagram* media id (`InstagramPost.platformPostId`), which is what Zernio's
+   * `platformPostId` field actually means ("Platform media/post ID"). These are two different
+   * ids and must not be swapped: sending Zernio's own `_id` here creates an automation Zernio
+   * scopes to a post id Instagram will never report on an incoming comment. Optional only
+   * because Zernio's synced data can lack it; the caller rejects that case rather than
+   * silently creating an account-wide automation. */
+  platformPostId: string;
   name: string;
   keywords: string[];
   matchMode: 'contains' | 'word' | 'exact';
@@ -122,7 +135,13 @@ export interface CreateCommentAutomationInput {
 export interface CommentAutomation {
   zernioAutomationId: string;
   zernioAccountId: string | null;
+  /** Zernio's own post id, from its `postId` field. Null for automations created before this
+   * project started sending `postId`, and for account-wide ones. */
   zernioPostId: string | null;
+  /** The Instagram media id, from Zernio's `platformPostId` field. Reconciliation matches on
+   * this as well as `zernioPostId`, since historical automations may carry only one of the
+   * two - see docs/ZERNIO-INTEGRATION.md. */
+  platformPostId: string | null;
   name: string;
   keywords: string[];
   matchMode: 'contains' | 'word' | 'exact';
@@ -137,9 +156,13 @@ export interface ListCommentAutomationsInput {
 }
 
 export interface InstagramProvider {
-  /** Creates the Zernio profile for an organization that doesn't have one yet. Idempotent
-   * from the caller's side: apps/api only calls this once per organization and persists the
-   * result on Organization.zernioProfileId. */
+  /** Resolves the Zernio profile for an organization, creating one only if it doesn't
+   * already exist. Idempotent on Zernio's side, not just the caller's: implementations must
+   * look the profile up by name first (`GET /v1/profiles?name=`, an exact-match filter
+   * Zernio's own spec documents for exactly this purpose) and only `POST /v1/profiles` when
+   * that finds nothing - otherwise an organization whose local zernioProfileId was never
+   * persisted (a crash between the create and the DB write) accumulates a second, duplicate
+   * Zernio profile on every retry. `reused` reports which of the two paths ran. */
   ensureProfile(input: EnsureProfileInput): Promise<EnsureProfileResult>;
 
   /** Gets the OAuth URL to redirect the user's browser to, for the default (no secondary

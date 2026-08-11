@@ -1,6 +1,7 @@
 'use client';
 
 import { useActionState } from 'react';
+import { LoadingOverlay } from '../loader';
 import { signInAction, type AuthActionResult } from './actions';
 
 export function SignInForm() {
@@ -11,6 +12,7 @@ export function SignInForm() {
 
   return (
     <form action={formAction} className="space-y-4">
+      {pending && <LoadingOverlay />}
       <div>
         <label htmlFor="email" className="block text-sm font-medium text-text">
           Email

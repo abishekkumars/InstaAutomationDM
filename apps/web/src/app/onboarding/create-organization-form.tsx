@@ -1,6 +1,7 @@
 'use client';
 
 import { useActionState } from 'react';
+import { LoadingOverlay } from '../loader';
 import { createOrganizationAction, type CreateOrganizationActionResult } from './actions';
 
 export function CreateOrganizationForm() {
@@ -11,6 +12,7 @@ export function CreateOrganizationForm() {
 
   return (
     <form action={formAction} className="space-y-4">
+      {pending && <LoadingOverlay />}
       <div>
         <label htmlFor="name" className="block text-sm font-medium text-text">
           Organization name

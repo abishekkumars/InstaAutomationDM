@@ -35,8 +35,171 @@
   --color-muted-bg: #eef0f5;
 }
 
+/* Loading spinner. Kept as plain CSS rather than Tailwind utilities because it relies on
+   ::before/::after pseudo-elements and @keyframes, which utilities can't express. `position:
+   relative` is added to the original snippet: the pseudo-elements are absolutely positioned,
+   so without a positioned ancestor they would anchor to the page instead of the spinner. */
+.loader {
+  /* The spinner is drawn ENTIRELY by box-shadow in currentcolor - there is no background or
+     border - so --color-1 must contrast with whatever is behind it. The original #fff is
+     invisible on a light backdrop, so it tracks the theme's own text color instead; the
+     second ring keeps the original accent orange, which reads on both themes. */
+  --color-1: var(--color-text, #fff);
+  --color-2: #ff3d00;
+  --size: 1px;
+
+  /* `display: inline-block` and `position: relative` are additions to the original snippet,
+     and both are load-bearing:
+       - a bare <span> is display:inline, where width/height are IGNORED, so the box collapsed
+         to 0x0. The ::before/::after use `width: inherit`, so they inherited that zero and the
+         spinner rendered nothing at all.
+       - the pseudo-elements are position:absolute, so without a positioned ancestor they would
+         anchor to the page instead of the spinner. */
+  /* The box-shadow offsets below are in `em`, so they scale with font-size, not with the
+     spinner's own width. At the inherited ~13-16px that made the orbit ~3px across inside a
+     48px box. Pinning font-size to the spinner size makes 0.2em a proportional offset again. */
+  font-size: calc(48 * var(--size));
+  display: inline-block;
+  position: relative;
+  transform: rotateZ(45deg);
+  perspective: calc(1000 * var(--size));
+  border-radius: 50%;
+  width: calc(48 * var(--size));
+  height: calc(48 * var(--size));
+  color: var(--color-1);
+}
+.loader:before,
+.loader:after {
+  content: '';
+  display: block;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: inherit;
+  height: inherit;
+  border-radius: 50%;
+  transform: rotateX(70deg);
+  /* NOT named `spin`: Tailwind ships its own `@keyframes spin` (a plain 360deg rotation) for
+     its animate-spin utility. Two keyframe rules with the same name collide, Tailwind's wins,
+     and this loader's box-shadow steps get replaced wholesale - which silently erased the only
+     thing that actually draws the spinner, leaving a blurred overlay with nothing in it. */
+  animation: 1s loader-orbit linear infinite;
+}
+.loader:after {
+  color: var(--color-2);
+  transform: rotateY(70deg);
+  animation-delay: 0.4s;
+}
+
+@keyframes rotate {
+  0% {
+    transform: translate(-50%, -50%) rotateZ(0deg);
+  }
+  100% {
+    transform: translate(-50%, -50%) rotateZ(360deg);
+  }
+}
+
+@keyframes rotateccw {
+  0% {
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+  100% {
+    transform: translate(-50%, -50%) rotate(-360deg);
+  }
+}
+
+@keyframes loader-orbit {
+  0%,
+  100% {
+    box-shadow: 0.2em 0 0 0 currentcolor;
+  }
+  12% {
+    box-shadow: 0.2em 0.2em 0 0 currentcolor;
+  }
+  25% {
+    box-shadow: 0 0.2em 0 0 currentcolor;
+  }
+  37% {
+    box-shadow: -0.2em 0.2em 0 0 currentcolor;
+  }
+  50% {
+    box-shadow: -0.2em 0 0 0 currentcolor;
+  }
+  62% {
+    box-shadow: -0.2em -0.2em 0 0 currentcolor;
+  }
+  75% {
+    box-shadow: 0 -0.2em 0 0 currentcolor;
+  }
+  87% {
+    box-shadow: 0.2em -0.2em 0 0 currentcolor;
+  }
+}
+
+/* Keeps native UI (scrollbars, form controls, the pre-hydration page background) in step with
+   the chosen theme. Mirrors the same three-state logic as the color tokens below. */
+:root {
+  color-scheme: light;
+}
 @media (prefers-color-scheme: dark) {
-  @theme {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+  }
+}
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
+:root[data-theme='light'] {
+  color-scheme: light;
+}
+
+/* Dark palette, defined once and applied from two places below.
+
+   Previously these values lived directly inside `@media (prefers-color-scheme: dark)`, which
+   made the OS setting the ONLY input - a user on a dark-mode OS got a dark site with no way
+   to opt out, which is exactly the "entire site is showing darker" problem this replaces.
+
+   There are three states to support, and the order here is what makes them work:
+     1. no `data-theme` attribute + light OS  -> light  (the bare :root tokens above)
+     2. no `data-theme` attribute + dark OS   -> dark   (the media query, "system" setting)
+     3. an explicit `data-theme` on <html>    -> that choice wins in BOTH directions
+   The media query is guarded with :not([data-theme='light']) so that an explicit "light"
+   choice is not overridden by a dark OS; the [data-theme='dark'] block comes last so an
+   explicit "dark" choice wins on a light OS. */
+@layer theme {
+  /* State 2: "system" - no explicit choice, and the OS asks for dark. */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme='light']) {
+      --color-canvas: #10111a;
+      --color-surface: #191b26;
+      --color-surface-2: #14151f;
+      --color-border: #2b2d3d;
+      --color-border-strong: #3a3d52;
+
+      --color-text: #e9e9f2;
+      --color-text-muted: #a3a6ba;
+      --color-text-faint: #6f7288;
+
+      --color-accent: #7c8bff;
+      --color-accent-ink: #0b0d1a;
+      --color-accent-soft: #1c2145;
+      --color-accent-soft-border: #333c72;
+
+      --color-success: #6adf9a;
+      --color-success-bg: #0f2e1e;
+      --color-success-border: #1e4a30;
+
+      --color-danger: #ff9a90;
+      --color-danger-bg: #33191a;
+
+      --color-muted-bg: #1d2032;
+    }
+  }
+
+  /* State 3: an explicit "dark" choice - wins even on a light OS. Last, so it also beats
+     the media query above when both match. */
+  :root[data-theme='dark'] {
     --color-canvas: #10111a;
     --color-surface: #191b26;
     --color-surface-2: #14151f;

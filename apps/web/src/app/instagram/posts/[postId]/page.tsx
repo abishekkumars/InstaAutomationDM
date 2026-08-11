@@ -1,4 +1,4 @@
-import Link from 'next/link';
+import { LoadingLink } from '../../../loader';
 import { redirect } from 'next/navigation';
 import { ApiError, callApi } from '@/lib/api';
 import { CreateAutomationModal } from './create-automation-modal';
@@ -56,12 +56,12 @@ export default async function InstagramPostDetailPage({
   } catch (error) {
     return (
       <div className="space-y-4">
-        <Link
+        <LoadingLink
           href={`/instagram/posts?accountId=${accountId}`}
           className="text-sm text-slate-500 underline"
         >
           Back to posts
-        </Link>
+        </LoadingLink>
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-800">
           <p className="font-medium">Could not load this post</p>
           <p className="mt-1 text-sm">
@@ -86,12 +86,12 @@ export default async function InstagramPostDetailPage({
 
   return (
     <div className="space-y-4">
-      <Link
+      <LoadingLink
         href={`/instagram/posts?accountId=${accountId}`}
         className="text-sm text-text-muted hover:text-text"
       >
         ← Back to posts
-      </Link>
+      </LoadingLink>
       {automation === 'created' && (
         <div className="rounded-lg border border-success-border bg-success-bg p-3 text-sm text-success">
           Automation created.

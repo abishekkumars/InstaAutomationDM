@@ -10,6 +10,7 @@ import {
   type ConnectedInstagramAccount,
   type CreateCommentAutomationInput,
   type EnsureProfileResult,
+  type GetPostInput,
   type FindConnectedAccountInput,
   type GetConnectUrlInput,
   type GetConnectUrlResult,
@@ -42,7 +43,7 @@ class FakeInstagramProvider implements InstagramProvider {
 
   async ensureProfile(): Promise<EnsureProfileResult> {
     this.profileCounter += 1;
-    return { zernioProfileId: `fake-profile-${this.profileCounter}` };
+    return { zernioProfileId: `fake-profile-${this.profileCounter}`, reused: false };
   }
 
   async getConnectUrl(input: GetConnectUrlInput): Promise<GetConnectUrlResult> {
@@ -63,8 +64,20 @@ class FakeInstagramProvider implements InstagramProvider {
     return { posts: [], pagination: { page: 1, limit: 10, total: 0, pages: 1 } };
   }
 
-  async getPost(): Promise<InstagramPost | null> {
-    return null;
+  // Any post id resolves, and its Instagram media id is deliberately DIFFERENT from Zernio's
+  // own post id (`ig-media-<zernioPostId>`) - these really are two different ids in Zernio's
+  // API, and a fake that returned the same value for both would hide a swap between them.
+  async getPost(input: GetPostInput): Promise<InstagramPost | null> {
+    return {
+      zernioPostId: input.zernioPostId,
+      zernioAccountId: input.zernioAccountId,
+      platformPostId: `ig-media-${input.zernioPostId}`,
+      permalink: null,
+      caption: '',
+      mediaType: null,
+      thumbnailUrl: null,
+      publishedAt: null,
+    };
   }
 
   async createCommentAutomation(input: CreateCommentAutomationInput): Promise<CommentAutomation> {
@@ -76,10 +89,11 @@ class FakeInstagramProvider implements InstagramProvider {
     }
     this.automationCounter += 1;
     this.postsWithAutomation.add(input.zernioPostId);
-    return {
+    const automation: CommentAutomation = {
       zernioAutomationId: `fake-automation-${this.automationCounter}`,
       zernioAccountId: input.zernioAccountId,
       zernioPostId: input.zernioPostId,
+      platformPostId: input.platformPostId,
       name: input.name,
       keywords: input.keywords,
       matchMode: input.matchMode,
@@ -88,18 +102,40 @@ class FakeInstagramProvider implements InstagramProvider {
       dmMessage: input.dmMessage,
       isActive: true,
     };
+    this.remoteAutomations.push(automation);
+    return automation;
   }
+
+  // Automations that exist on Zernio's side, which is what listCommentAutomations returns.
+  private remoteAutomations: CommentAutomation[] = [];
 
   // Simulates a per-post automation that already exists on Zernio's side (e.g. created
   // directly in Zernio's own dashboard) without this app's database knowing about it.
-  simulateExistingZernioAutomation(zernioPostId: string): void {
+  simulateExistingZernioAutomation(
+    zernioPostId: string,
+    remote?: Partial<CommentAutomation> & { zernioAccountId: string },
+  ): void {
     this.postsWithAutomation.add(zernioPostId);
+    if (remote) {
+      this.automationCounter += 1;
+      this.remoteAutomations.push({
+        zernioAutomationId: `zernio-dashboard-${this.automationCounter}`,
+        zernioPostId,
+        platformPostId: `ig-media-${zernioPostId}`,
+        name: 'Made in Zernio',
+        keywords: ['price'],
+        matchMode: 'contains',
+        commentReply: null,
+        buttons: [],
+        dmMessage: 'Here is the link',
+        isActive: true,
+        ...remote,
+      });
+    }
   }
 
-  // Not exercised by this file's own tests yet (Phase 10.3 will use this for live stats) -
-  // present only to satisfy InstagramProvider's contract.
   async listCommentAutomations(): Promise<CommentAutomation[]> {
-    return [];
+    return this.remoteAutomations;
   }
 
   reset(): void {
@@ -107,6 +143,7 @@ class FakeInstagramProvider implements InstagramProvider {
     this.connectedByProfile.clear();
     this.automationCounter = 0;
     this.postsWithAutomation.clear();
+    this.remoteAutomations = [];
     this.lastCreateInput = undefined;
   }
 }
@@ -259,6 +296,12 @@ describe('POST .../instagram/accounts/:accountId/posts/:postId/automations', () 
       isActive: true,
     });
     expect(fakeProvider.lastCreateInput?.keywords).toEqual(['LINK', 'link', 'price']);
+    // The two post ids must go to their own fields, not be swapped: Zernio's `platformPostId`
+    // means Instagram's media id, while its `postId` means Zernio's own post id. Sending
+    // Zernio's `_id` as `platformPostId` (the original bug) produces an automation scoped to
+    // an id Instagram never reports on an incoming comment, so it can never fire.
+    expect(fakeProvider.lastCreateInput?.zernioPostId).toBe('post-1');
+    expect(fakeProvider.lastCreateInput?.platformPostId).toBe('ig-media-post-1');
 
     const stored = await prisma.automation.findFirst({ where: { zernioPostId: 'post-1' } });
     expect(stored?.keywords).toEqual(['LINK', 'link', 'price']);
@@ -410,7 +453,7 @@ describe('POST .../instagram/accounts/:accountId/posts/:postId/automations', () 
       'ig-acct-1',
       'acme_ig',
     );
-    fakeProvider.simulateExistingZernioAutomation('post-1');
+    fakeProvider.simulateExistingZernioAutomation('post-1', { zernioAccountId: 'ig-acct-1' });
 
     await request(app.getHttpServer())
       .post(
@@ -420,7 +463,12 @@ describe('POST .../instagram/accounts/:accountId/posts/:postId/automations', () 
       .send(AUTOMATION_BODY)
       .expect(409);
 
-    expect(await prisma.automation.count()).toBe(0);
+    // Still a 409 (we did NOT create a second automation on Zernio), but the pre-existing one
+    // is now backfilled locally instead of staying invisible - otherwise the post page shows
+    // "No automation yet" plus a create button that can only ever 409.
+    const stored = await prisma.automation.findMany();
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({ name: 'Made in Zernio', zernioPostId: 'post-1' });
   });
 });
 
@@ -450,6 +498,57 @@ describe('GET .../instagram/accounts/:accountId/posts/:postId/automations', () =
       )
       .set('Authorization', bearerFor(bob.id, bob.email))
       .expect(404);
+  });
+
+  it('lists an automation that exists only on Zernio, and backfills it locally', async () => {
+    // The reported bug: automations created directly in Zernio's dashboard (or by a request
+    // whose local insert failed after the Zernio call succeeded) were invisible here, because
+    // this endpoint only ever read our own table. Zernio is the system of record.
+    const { user, organization } = await createOrgWithOwner('alice@example.com');
+    const { accountId } = await connectAndConfirmAccount(
+      app,
+      user,
+      organization,
+      'ig-acct-1',
+      'acme_ig',
+    );
+    fakeProvider.simulateExistingZernioAutomation('post-1', { zernioAccountId: 'ig-acct-1' });
+    expect(await prisma.automation.count()).toBe(0);
+
+    const response = await request(app.getHttpServer())
+      .get(
+        `/api/organizations/${organization.id}/instagram/accounts/${accountId}/posts/post-1/automations`,
+      )
+      .set('Authorization', bearerFor(user.id, user.email))
+      .expect(200);
+
+    expect(response.body).toHaveLength(1);
+    expect(response.body[0]).toMatchObject({ name: 'Made in Zernio', keywords: ['price'] });
+    // Backfilled, so the org-wide dashboard list sees it too - not just re-fetched every time.
+    expect(await prisma.automation.count()).toBe(1);
+  });
+
+  it('does not adopt a Zernio automation belonging to a different connected account', async () => {
+    const { user, organization } = await createOrgWithOwner('alice@example.com');
+    const { accountId } = await connectAndConfirmAccount(
+      app,
+      user,
+      organization,
+      'ig-acct-1',
+      'acme_ig',
+    );
+    // Same post id, but the automation is scoped to a different Instagram account.
+    fakeProvider.simulateExistingZernioAutomation('post-1', { zernioAccountId: 'ig-acct-other' });
+
+    const response = await request(app.getHttpServer())
+      .get(
+        `/api/organizations/${organization.id}/instagram/accounts/${accountId}/posts/post-1/automations`,
+      )
+      .set('Authorization', bearerFor(user.id, user.email))
+      .expect(200);
+
+    expect(response.body).toEqual([]);
+    expect(await prisma.automation.count()).toBe(0);
   });
 
   it('lists the automation for a post after it is created', async () => {

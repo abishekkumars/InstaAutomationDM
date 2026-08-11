@@ -3,7 +3,11 @@ import type { InstagramPost, ListPostsResult } from '@automationdm/zernio';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/authenticated-user.interface';
 import { SessionGuard } from '../auth/session.guard';
-import { InstagramService, type InstagramAccountSummary } from './instagram.service';
+import {
+  InstagramService,
+  type ConnectResult,
+  type InstagramAccountSummary,
+} from './instagram.service';
 
 @Controller('organizations/:organizationId/instagram')
 @UseGuards(SessionGuard)
@@ -22,7 +26,7 @@ export class InstagramController {
   createConnectUrl(
     @CurrentUser() user: AuthenticatedUser,
     @Param('organizationId') organizationId: string,
-  ): Promise<{ authUrl: string }> {
+  ): Promise<ConnectResult> {
     return this.instagram.createConnectUrl(user.id, organizationId);
   }
 

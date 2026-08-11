@@ -77,12 +77,104 @@ export class AutomationsService {
     zernioPostId: string,
   ): Promise<AutomationSummary[]> {
     await this.requireMembership(userId, organizationId);
-    await this.requireOwnAccount(organizationId, accountId);
+    const account = await this.requireOwnAccount(organizationId, accountId);
 
-    const automations = await this.prisma.client.automation.findMany({
+    const local = await this.prisma.client.automation.findMany({
       where: { instagramAccountId: accountId, zernioPostId },
     });
-    return automations.map(toSummary);
+    if (local.length > 0) {
+      return local.map(toSummary);
+    }
+
+    // Nothing locally - but Zernio is the system of record for automations (it executes them
+    // server-side; see docs/ZERNIO-INTEGRATION.md), and an automation can exist there without
+    // a local row: created directly in Zernio's own dashboard, or created through this app in
+    // a request whose local insert failed after the Zernio call already succeeded. Reading
+    // only our own table made those invisible, which is why a post with a real, working
+    // automation still rendered "No automation yet".
+    const reconciled = await this.reconcileFromZernio(organizationId, account, zernioPostId);
+    return reconciled ? [reconciled] : [];
+  }
+
+  /** Looks this post's automation up on Zernio and, if one exists, backfills the missing local
+   * row so later reads (and the org-wide dashboard list) see it too. Returns null when Zernio
+   * has none either. Never throws on a Zernio failure - the caller degrades to "no automation"
+   * rather than failing the whole page, since this is a read path. */
+  private async reconcileFromZernio(
+    organizationId: string,
+    account: { id: string; zernioAccountId: string },
+    zernioPostId: string,
+  ): Promise<AutomationSummary | null> {
+    const organization = await this.prisma.client.organization.findUniqueOrThrow({
+      where: { id: organizationId },
+    });
+    if (!organization.zernioProfileId) {
+      return null;
+    }
+
+    let remote;
+    try {
+      const all = await this.provider.listCommentAutomations({
+        zernioProfileId: organization.zernioProfileId,
+      });
+      // Zernio only filters by profileId, so narrow to this account AND this post ourselves -
+      // a profile can hold automations for several accounts/posts. Matching on the account too
+      // (not just the post id) keeps the same tenant-isolation discipline used elsewhere.
+      // Match on EITHER id. Zernio's `postId` (its own post id) is only present on automations
+      // created with that field set, and `platformPostId` holds Instagram's media id - older
+      // automations, and any created directly in Zernio's dashboard, may carry only one of the
+      // two, so keying on just one silently misses them.
+      const post = await this.provider
+        .getPost({
+          zernioProfileId: organization.zernioProfileId,
+          zernioAccountId: account.zernioAccountId,
+          zernioPostId,
+        })
+        .catch(() => null);
+      remote = all.find(
+        (item) =>
+          item.zernioAccountId === account.zernioAccountId &&
+          (item.zernioPostId === zernioPostId ||
+            (post?.platformPostId != null && item.platformPostId === post.platformPostId)),
+      );
+    } catch (error) {
+      console.error('[automations] Zernio reconciliation failed:', error);
+      return null;
+    }
+    if (!remote) {
+      return null;
+    }
+
+    try {
+      const created = await this.prisma.client.automation.create({
+        data: {
+          organizationId,
+          instagramAccountId: account.id,
+          zernioAutomationId: remote.zernioAutomationId,
+          zernioPostId,
+          name: remote.name,
+          keywords: remote.keywords,
+          matchMode: toMatchMode(remote.matchMode),
+          commentReply: remote.commentReply,
+          buttons: remote.buttons.length
+            ? (remote.buttons as unknown as Prisma.InputJsonValue)
+            : undefined,
+          dmMessage: remote.dmMessage,
+          isActive: remote.isActive,
+        },
+      });
+      return toSummary(created);
+    } catch (error) {
+      // A concurrent reconciliation (or create) won the race and inserted the row first. Read
+      // it back instead of failing - both requests should end up reporting the same automation.
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        const existing = await this.prisma.client.automation.findUnique({
+          where: { zernioAutomationId: remote.zernioAutomationId },
+        });
+        return existing ? toSummary(existing) : null;
+      }
+      throw error;
+    }
   }
 
   // Org-wide, across every connected account - the dashboard table's data source. Uses the
@@ -146,12 +238,32 @@ export class AutomationsService {
       throw new ConflictException('An automation already exists for this post.');
     }
 
+    // Zernio needs Instagram's OWN media id in `platformPostId` (see the provider's comment) -
+    // that's the id an incoming comment carries. Resolve it from the post itself rather than
+    // reusing Zernio's `_id`, which is a different id entirely.
+    const post = await this.provider.getPost({
+      zernioProfileId: organization.zernioProfileId,
+      zernioAccountId: account.zernioAccountId,
+      zernioPostId,
+    });
+    if (!post) {
+      throw new NotFoundException('Post not found.');
+    }
+    if (!post.platformPostId) {
+      // Without it the automation could only be created account-wide, which would silently
+      // apply to every post on the account - never do that implicitly.
+      throw new BadRequestException(
+        'This post has no Instagram media id yet, so an automation cannot be scoped to it.',
+      );
+    }
+
     let created;
     try {
       created = await this.provider.createCommentAutomation({
         zernioProfileId: organization.zernioProfileId,
         zernioAccountId: account.zernioAccountId,
         zernioPostId,
+        platformPostId: post.platformPostId,
         name: parsed.name,
         keywords: parsed.keywords,
         matchMode: parsed.matchMode,
@@ -161,9 +273,12 @@ export class AutomationsService {
       });
     } catch (error) {
       // A post that already has an active automation created directly in Zernio's own
-      // dashboard (not through this app) would 409 here even though our own pre-check above
-      // found nothing - map it to the same error the pre-check would have thrown.
+      // dashboard (not through this app) 409s here even though our own pre-check above found
+      // nothing. Backfill the missing local row from Zernio before reporting the conflict, so
+      // the next page load shows the real automation instead of "No automation yet" plus a
+      // create button that can never succeed.
       if (error instanceof ZernioApiError && error.status === 409) {
+        await this.reconcileFromZernio(organizationId, account, zernioPostId);
         throw new ConflictException('An automation already exists for this post.');
       }
       throw error;

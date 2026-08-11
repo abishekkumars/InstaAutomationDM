@@ -52,6 +52,16 @@ completed work, just a rewrite of what hadn't started yet).
 - [x] Phase 10.2 — DM buttons (up to 3, title + link, `automations.buttons` JSON column;
   `packages/zernio`'s `DmButton`; conditional 640-char `dmMessage` cap once buttons are
   attached) — see "Phase 10.2 report" below.
+- [x] Phase 10.2a — connect-flow idempotency fix: `ensureProfile` now looks a Zernio profile
+  up by name (`GET /v1/profiles?name=`) before creating one, and `POST .../instagram/connect`
+  short-circuits when Zernio already reports a connected account instead of re-running OAuth.
+  See "Phase 10.2a report" below.
+- [x] Phase 10.2b — automation listing/creation fixes + UI pass: automations are now
+  reconciled from Zernio (the system of record) instead of read only from our own table; the
+  `platformPostId`/`postId` id swap that made created automations unable to fire is corrected;
+  the create wizard no longer drops its own fields on submit; plus a light/dark theme switch,
+  a fixed app shell with a virtualized/searchable/sortable posts browser, and a global loading
+  overlay. See "Phase 10.2b report" below.
 - [ ] Phase 10.3 — live send/click stats on the dashboard (Zernio's `stats.dmsSent`/
   `linkClicks`, real fields verified in Phase 10.1/10.2, not yet surfaced anywhere in this
   app) — **next phase**
@@ -1451,3 +1461,254 @@ Phase 10.3 - live send/click stats on the dashboard: call
 10.1's report) from `packages/zernio`, surface `dmsSent`/`linkClicks` on the dashboard's stat
 row and per-automation table rows. No schema change needed - these are live numbers from
 Zernio, not something this project stores. Will not start until the user says to proceed.
+
+## Phase 10.2a report
+
+A bug fix requested by the user against the Phase 8 connect flow, not a new feature: "if an
+account is already present the API still creates a new one - check whether the Zernio profile
+already exists and whether an account is already connected; if it is, don't create a new one,
+just update the DB."
+
+**The two real defects**
+
+1. **`ensureProfile` created without ever looking.** It called `POST /v1/profiles`
+   unconditionally and only recovered an existing profile from the *error path* - a `409`
+   that also happened to carry `details.existingProfileId`. So an organization whose
+   `zernioProfileId` was never persisted locally (a crash, or a failed
+   `organization.update`, after Zernio's create already succeeded) would mint a brand-new
+   Zernio profile on every subsequent connect attempt. Nothing in `packages/zernio` called
+   `GET /v1/profiles` at all.
+2. **`createConnectUrl` never asked whether an account was already connected.** It always
+   built an OAuth URL and sent the user through the full authorize round trip, even when
+   `findConnectedAccount` (already implemented, already used by the callback handler) would
+   have answered "this profile already has one" immediately.
+
+**Zernio API verification** (per `CLAUDE.md`'s "never invent Zernio API behavior" rule): the
+live OpenAPI spec was re-fetched from `docs.zernio.com/api/openapi`. `GET /v1/profiles`
+(`operationId: listProfiles`) is real and takes an **exact-match** `name` query param whose
+own spec description is "Useful to recover a profile id after an ambiguous create (timeout
+followed by a 409 on retry)" - i.e. Zernio documents this endpoint for precisely this bug.
+Response shape `{ profiles: Profile[] }` (+ `total`/`skip`/`limit`, present only when
+`limit`/`skip` was passed). Also confirmed from the spec: the `409` on create carries
+`details.existingProfileId` for the name-conflict case (`code: profile_name_conflict`), but
+that **same status code** is also returned while a request with the same `Idempotency-Key` is
+still processing - where that field is not guaranteed, which is why the 409 path now re-queries
+by name rather than assuming the field is present.
+
+**What changed**
+- `packages/zernio/src/zernio-instagram-provider.ts`: new private `findProfileByName`
+  (`GET /v1/profiles?name=`, re-checking the exact name client-side rather than trusting the
+  server to have filtered). `ensureProfile` now looks first and creates only on a miss; the
+  409 path is kept as a backstop for the genuine race between the lookup and the create, and
+  re-queries by name when `details.existingProfileId` is absent.
+- `packages/zernio/src/instagram-provider.ts`: `EnsureProfileResult` gains `reused: boolean`
+  so a caller can tell "adopted an existing profile" from "created a new one"; the
+  `ensureProfile` doc comment now states the lookup-first contract as a requirement on
+  implementations, not just a caller-side convention.
+- `apps/api/src/instagram/instagram.service.ts`: `createConnectUrl` calls
+  `findConnectedAccount` before building any OAuth URL. When Zernio already reports a
+  connected account, the new private `adoptConnectedAccount` upserts it into
+  `instagram_accounts` (on `zernioAccountId`, so never a second row) and the endpoint returns
+  `{ alreadyConnected: true, account }`. Return type is now the discriminated `ConnectResult`.
+- **Tenant-isolation guard kept intact**: an account already connected to a *different*
+  organization is never adopted - `adoptConnectedAccount` returns `null` and the caller falls
+  back to the normal OAuth flow, where `handleCallback` still raises its proper `409`. A
+  `P2002` from the concurrent-connect race takes the same fallback rather than failing the
+  request.
+- `apps/api/src/instagram/instagram.controller.ts`: return type updated to `ConnectResult`.
+- `apps/web/src/app/instagram/actions.ts`: handles the discriminated response - redirects to
+  `/?instagram=already-connected` instead of an external OAuth URL when there is nothing to
+  authorize.
+- `apps/web/src/app/page.tsx`: new `already-connected` status banner.
+- Tests: `apps/api`'s `FakeInstagramProvider` now models the real lookup-before-create
+  contract (same name -> same id, `reused: true`) instead of always returning a fresh id - a
+  fake that kept minting ids would have let the duplicate-creating regression pass. Four new
+  e2e tests (below). `automations.e2e.test.ts`'s own fake updated for the new `reused` field.
+
+**Commands executed and results**
+| Command | Result |
+|---|---|
+| `scripts/pnpm.ps1 --filter @automationdm/zernio run build` | `tsc`, exit 0 |
+| `scripts/db.ps1 start` | Local Postgres already running (PID 2504) |
+| `scripts/pnpm.ps1 --filter @automationdm/api run test` | **44/44 passed** across 3 files - `instagram.e2e` 15 -> **19** (4 new), `automations.e2e` 16, `organizations.e2e` 9 |
+| `scripts/lint.ps1` | ESLint 0 errors, typecheck 8/8 `Done`, Prettier all pass. Exit 0. |
+| `scripts/pnpm.ps1 --filter @automationdm/web run build` | `next build`, exit 0, route list unchanged (10 routes + Proxy) |
+
+**The four new tests** (all in `apps/api/src/instagram/__tests__/instagram.e2e.test.ts`)
+- *adopts an existing Zernio profile for the same slug instead of creating a duplicate* -
+  seeds a pre-existing profile for the org's slug, asserts connect resolves to **that** id and
+  persists it, rather than creating a second one. Directly covers defect 1.
+- *returns the already-connected account instead of an authUrl when Zernio already has one* -
+  asserts `alreadyConnected: true`, no `authUrl`, and that the account was reconciled into the
+  local DB without any OAuth round trip. Directly covers defect 2.
+- *does not create a second local row when connect runs again for an already-connected
+  account* - runs connect 3x, asserts exactly one `instagram_accounts` row.
+- *falls back to the OAuth flow when the connected account belongs to another organization* -
+  asserts the cross-tenant case is **not** silently adopted and the original owner's row is
+  untouched.
+
+**Known limitations / risks**
+- Verified against the **fake** provider and the live OpenAPI spec, not against a live Zernio
+  account - no real `GET /v1/profiles` call was made during this fix (it needs a real
+  `ZERNIO_API_KEY` and a real connected account to be meaningful). The endpoint, its `name`
+  filter semantics, and its response shape all come from the live spec, not assumption, but
+  the first real-network exercise of `findProfileByName` will be the next live connect.
+- `ensureProfile`'s `reused` flag is returned but not yet acted on by `apps/api` beyond being
+  available - `createConnectUrl` currently only needs the id. Left in place because the
+  distinction is the load-bearing fact this fix is about, and Phase 11's reconciliation work
+  is the natural consumer.
+- `findProfileByName` fetches without `limit`/`skip`, so it relies on Zernio's exact-match
+  `name` filter returning a small result set. Fine at this project's scale (one profile per
+  organization, 3-4 organizations); revisit only if profile counts ever grow enough for the
+  unpaginated list to matter.
+- The `already-connected` banner is a new user-visible string in `apps/web` - verified by
+  build/typecheck, not by a browser walkthrough this pass (no live Zernio connection available
+  to trigger the branch end to end).
+
+## Phase 10.2b report
+
+Four user-reported bugs plus a UI pass, all against work that had already shipped. Not new
+feature scope - every item here is a defect fix or a usability gap in Phases 9/10/10.1.
+
+### Issue 1 - automations existed in Zernio but the post page showed "No automation yet"
+
+**Cause**: `AutomationsService.listForPost` read only `prisma.automation.findMany`. But Zernio
+is the system of record - it executes automations server-side (resolved in Phase 10). An
+automation created directly in Zernio's dashboard, or by a request whose local insert failed
+after the Zernio call already succeeded, had no local row and was therefore invisible.
+
+**Fix**: when nothing is found locally, `listForPost` now calls `listCommentAutomations`,
+filters to this account + post, and **backfills the local row** so the org-wide dashboard list
+sees it too. A Zernio failure is caught and degrades to "no automation" rather than breaking
+the page - this is a read path. The `create` 409 path reconciles the same way, so a post whose
+automation was made in Zernio's dashboard stops showing a create button that could only ever
+409.
+
+### Issue 2 - "Could not create the automation. Please check your input"
+
+**Cause**: `create-automation-modal.tsx` is a 3-step wizard that renders each step
+conditionally. React *unmounts* steps 1 and 2 when the user reaches step 3, and an unmounted
+input is gone from the DOM - so `name`, `dmMessage`, and the `buttonTitle`/`buttonUrl` pairs
+were all absent from the submitted `FormData`. `createAutomationSchema` correctly rejected the
+resulting nulls; the message was accurate, the payload was the problem.
+
+**Fix**: every submitted value now lives in an always-mounted hidden field; the visible inputs
+lost their `name` attributes so they cannot double-submit.
+
+### Issue 3 - the two post ids were swapped (found while verifying issue 2, not reported)
+
+Zernio's own spec is explicit, and the two fields are different ids:
+
+- `platformPostId` - "Platform media/post ID" (Instagram's own media id, the id an incoming
+  comment actually carries)
+- `postId` - "Zernio post ID ... required only when also targeting a specific post via
+  platformPostId", which this project always does
+
+This project sent Zernio's own `_id` as `platformPostId` and never sent `postId` at all. The
+automation was therefore scoped to an id Instagram never reports, so **it could never fire**.
+Confirmed against a real API response: `platformPostId` held a 24-char ObjectId.
+
+**Fix**: `createCommentAutomation` now sends both fields with their correct ids;
+`CommentAutomation` carries both back. Reconciliation (issue 1) matches on **either** id,
+because automations created before this fix carry only the wrong one.
+
+**Known data impact**: automations created before this fix are still scoped to the wrong id in
+Zernio. They now appear in the app but will not fire. Zernio has
+`PATCH /v1/comment-automations/{id}`, which this project does not implement - repairing them
+needs either that endpoint or deleting/recreating them in Zernio. Flagged to the user, not
+silently fixed.
+
+### Issue 4 - UI pass
+
+- **Dark/light switch** (`app/theme-toggle.tsx`): the dark palette had been bound *only* to
+  `@media (prefers-color-scheme: dark)`, so a dark-mode OS forced dark with no override -
+  "the entire site is showing darker". `globals.css` now encodes three states: light default,
+  system (`:not([data-theme='light'])` inside the media query), and an explicit choice
+  (`[data-theme='dark']`, last so it wins both ways). The stored preference is applied by an
+  inlined `<head>` script *before first paint* - a React effect runs after paint, which
+  flashes the wrong theme. `<html suppressHydrationWarning>` plus a mount guard keeps the
+  first client render matching the server's.
+- **Fixed shell + posts browser** (`app/instagram/posts/posts-browser.tsx`): the whole
+  document used to scroll, carrying the sidebar away. The shell is now `h-screen
+  overflow-hidden` with scrolling delegated to the content pane (`min-h-0` on the flex child
+  is load-bearing - a flex item defaults to `min-height:auto` and refuses to shrink). Adds a
+  card/list toggle, caption search, newest/oldest sort, selectable page size, numbered jump
+  pagination, and a windowed virtual scroller.
+- **Full-window fetch**: Zernio's list endpoint has no search or sort parameters, so both
+  happen client-side - which means they must cover every post, not just the visible page, or
+  "search" would silently only search 12 items. The page now fetches the account's whole
+  synced window (limit 500, Zernio's own max and the same window `getPost` already relies on)
+  in one call. Tradeoff: one larger fetch instead of many small ones; an account with more
+  than 500 synced posts would have an invisible tail.
+- **Loading overlay** (`app/loader.tsx`): `callApi` is server-side only (it signs
+  `API_INTERNAL_SECRET`, which can never reach the browser), so there is no client fetch to
+  hook a spinner onto. Every API call is either a server render (a navigation) or a server
+  action (a form submit), so the overlay tracks exactly those two via `useLinkStatus` and
+  `useFormStatus`. Navigations are delayed 250ms so prefetched, instant ones do not flash.
+
+### Three real bugs found while building the UI pass, each fixed
+
+1. **Virtual scroller looped back on itself while scrolling.** The scroll-reset effect
+   depended on the `items` array, which is a fresh `slice()` identity on every parent render -
+   so it re-fired mid-scroll and snapped to the top repeatedly. Re-keyed on a stable
+   `page|pageSize|sort|search` string. Row geometry was also pinned (`gridAutoRows` =
+   rowHeight - gap) because natural-height rows drifted against the spacer math.
+2. **Captions vanished from post cards.** A square thumbnail's height equals the *column
+   width* (~231px at 4 columns), which consumed the entire fixed 248px row and clipped the
+   caption out. The thumbnail is now a fixed 150px tall, leaving 86px for a caption block that
+   needs ~75px - independent of column count.
+3. **The loader rendered nothing.** Two causes, both silent: (a) `.loader` never sets
+   `display`, and a bare `<span>` is `display:inline`, where width/height are **ignored** - the
+   box collapsed to 0x0 and the `width: inherit` pseudo-elements inherited that zero;
+   (b) the snippet's animation was named `spin`, which **collides with Tailwind's own
+   `@keyframes spin`** - Tailwind's plain-rotation definition won and replaced all eight
+   `box-shadow` steps, erasing the only thing that draws the spinner. Renamed to
+   `loader-orbit`; added `display: inline-block`; pinned `font-size` so the `em`-based offsets
+   scale with the spinner rather than the inherited text size; and made `--color-1` follow the
+   theme (`#fff` was invisible on the light theme).
+
+### Commands executed and results
+
+| Command | Result |
+|---|---|
+| `scripts/pnpm.ps1 --filter @automationdm/zernio run build` | `tsc`, exit 0 |
+| `scripts/pnpm.ps1 --filter @automationdm/api run test` | **46/46 passed** (was 44 - two new reconciliation tests) |
+| `scripts/pnpm.ps1 --filter @automationdm/web run build` | `next build`, exit 0, 10 routes + Proxy |
+| `scripts/lint.ps1` (1st run) | **1 ESLint error** - a `@next/next/no-img-element` disable comment for a rule this repo does not have (no `eslint-config-next`, per the Phase 2 report); referencing an undefined rule is itself an error. Removed. |
+| `scripts/lint.ps1` (2nd run) | ESLint 0 errors, typecheck 8/8 `Done`, Prettier all pass. Exit 0. |
+| Headless Edge screenshot of the compiled `.loader` CSS | Spinner renders (dark + `#ff3d00` arcs). Re-run with the fix reverted confirmed a 0x0 box - proving the cause rather than assuming it. |
+| Virtualizer scroll-sweep simulation (5 layouts) | Constant total height and full viewport coverage at every scroll offset |
+
+### New tests
+
+`apps/api/src/automations/__tests__/automations.e2e.test.ts`:
+
+- *lists an automation that exists only on Zernio, and backfills it locally* - the reported bug
+- *does not adopt a Zernio automation belonging to a different connected account* - keeps the
+  reconciliation path inside the same tenant-isolation discipline as the rest of the service
+- the existing "Zernio already has an automation" test now asserts the backfill happens (it
+  previously asserted `count === 0`, which encoded the old, broken behavior)
+- the create test now asserts `zernioPostId` and `platformPostId` land in their **own** fields,
+  which is the regression guard for issue 3
+
+The `FakeInstagramProvider`s were updated to model the real contracts rather than conveniently
+agreeable stubs: `ensureProfile` returns the same id for the same name (`reused: true`), and
+`getPost` returns a `platformPostId` deliberately *different* from the Zernio post id
+(`ig-media-<id>`), so a swap between the two cannot pass.
+
+### Known limitations / risks
+
+- **Not verified in a browser against live Zernio.** Every fix here is verified by the test
+  suite, the build, the compiled-CSS checks, and (for the loader) a headless screenshot. The
+  reconciliation path has not been exercised against a real Zernio account, because that needs
+  a live `ZERNIO_API_KEY` and a real connected account.
+- **Pre-existing automations will not fire** until their `platformPostId` is corrected in
+  Zernio - see issue 3 above.
+- The posts browser's virtual scroller uses fixed row heights (88px list / 248px grid). Any
+  future change to card contents must keep those constants in step, or content drifts against
+  the scrollbar.
+- Thumbnails are no longer square (fixed 150px band, `object-cover`) - the cost of the fixed
+  row heights the virtualizer needs.
+- `.env.example` in the working copy currently holds **real** secret values. It is deliberately
+  excluded from this commit and has never been committed with those values (verified with
+  `git log -S`). It must be reset to empty placeholders before it is ever staged again.

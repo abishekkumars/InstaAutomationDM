@@ -45,24 +45,54 @@ export class ZernioInstagramProvider implements InstagramProvider {
   constructor(private readonly apiKey: string) {}
 
   async ensureProfile(input: EnsureProfileInput): Promise<EnsureProfileResult> {
+    // Look first, create second. Zernio's GET /v1/profiles takes an exact-match `name` filter
+    // that its own spec documents for precisely this case ("useful to recover a profile id
+    // after an ambiguous create"). Without this lookup, an organization whose zernioProfileId
+    // was never persisted locally - a crash, or a failed DB write, between the Zernio create
+    // and our own update - would POST a fresh profile on every retry, and Zernio's 409 body is
+    // the only thing standing between that and a pile of duplicate profiles.
+    const existing = await this.findProfileByName(input.name);
+    if (existing) {
+      return { zernioProfileId: existing, reused: true };
+    }
+
     try {
       const response = await this.request<{ profile: { _id: string } }>('POST', '/profiles', {
         name: input.name,
       });
-      return { zernioProfileId: response.profile._id };
+      return { zernioProfileId: response.profile._id, reused: false };
     } catch (error) {
-      // A duplicate profile name (409) is expected on a retried create after a prior attempt
-      // created the Zernio profile but failed before we could persist its id locally -
-      // recover the existing profile id instead of leaving the organization stuck.
-      if (
-        error instanceof ZernioApiError &&
-        error.status === 409 &&
-        error.body?.details?.existingProfileId
-      ) {
-        return { zernioProfileId: error.body.details.existingProfileId };
+      // Backstop for the race between the lookup above and this create (two concurrent
+      // connect attempts for the same organization): Zernio returns a 409 whose
+      // details.existingProfileId carries the winner's id. Recover it rather than leaving
+      // the organization stuck - but re-query by name if that field is absent, since the
+      // spec only guarantees it for the name-conflict case, not for the "same
+      // Idempotency-Key still processing" 409 that shares this status code.
+      if (error instanceof ZernioApiError && error.status === 409) {
+        if (error.body?.details?.existingProfileId) {
+          return { zernioProfileId: error.body.details.existingProfileId, reused: true };
+        }
+        const raced = await this.findProfileByName(input.name);
+        if (raced) {
+          return { zernioProfileId: raced, reused: true };
+        }
       }
       throw error;
     }
+  }
+
+  /** Exact-match profile lookup by name. Returns the profile's `_id`, or null if Zernio has
+   * no profile with that name. `name` is an exact-match filter per Zernio's own spec, but the
+   * result is still re-checked here rather than trusting the server to have filtered - the
+   * same "never trust an unscoped response" discipline used elsewhere in this provider. */
+  private async findProfileByName(name: string): Promise<string | null> {
+    const query = new URLSearchParams({ name });
+    const response = await this.request<{
+      profiles?: Array<{ _id: string; name?: string }>;
+    }>('GET', `/profiles?${query.toString()}`);
+
+    const match = (response.profiles ?? []).find((profile) => profile.name === name);
+    return match?._id ?? null;
   }
 
   async getConnectUrl(input: GetConnectUrlInput): Promise<GetConnectUrlResult> {
@@ -133,7 +163,14 @@ export class ZernioInstagramProvider implements InstagramProvider {
       {
         profileId: input.zernioProfileId,
         accountId: input.zernioAccountId,
-        platformPostId: input.zernioPostId,
+        // Two DIFFERENT ids, per Zernio's own spec: `platformPostId` is "Platform media/post
+        // ID" (Instagram's own media id - what an incoming comment reports), while `postId` is
+        // "Zernio post ID ... required only when also targeting a specific post via
+        // platformPostId", which this project always does. Sending Zernio's `_id` as
+        // `platformPostId` (as this did before) scopes the automation to an id Instagram never
+        // reports, so it can never fire.
+        platformPostId: input.platformPostId,
+        postId: input.zernioPostId,
         name: input.name,
         keywords: input.keywords,
         matchMode: input.matchMode,
@@ -251,7 +288,10 @@ function fromRawDmButtons(buttons: RawDmButton[] | undefined): DmButton[] {
 interface RawCommentAutomation {
   id: string;
   accountId?: string;
+  /** Instagram's own media id. */
   platformPostId?: string;
+  /** Zernio's own post id. Only present on automations created with the `postId` field set. */
+  postId?: string;
   name: string;
   keywords?: string[];
   matchMode?: 'contains' | 'word' | 'exact';
@@ -265,7 +305,8 @@ function toCommentAutomation(automation: RawCommentAutomation): CommentAutomatio
   return {
     zernioAutomationId: automation.id,
     zernioAccountId: automation.accountId ?? null,
-    zernioPostId: automation.platformPostId ?? null,
+    zernioPostId: automation.postId ?? null,
+    platformPostId: automation.platformPostId ?? null,
     name: automation.name,
     keywords: automation.keywords ?? [],
     matchMode: automation.matchMode ?? 'contains',

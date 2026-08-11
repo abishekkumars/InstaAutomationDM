@@ -20,6 +20,14 @@ export interface InstagramAccountSummary {
   status: InstagramAccountStatus;
 }
 
+/** Result of POST .../instagram/connect. Discriminated on `alreadyConnected` so apps/web can
+ * tell "redirect the browser to Zernio's OAuth page" apart from "this organization's Zernio
+ * profile already has an Instagram account connected; we reconciled it locally and there is
+ * nothing to authorize". */
+export type ConnectResult =
+  | { alreadyConnected: false; authUrl: string }
+  | { alreadyConnected: true; account: InstagramAccountSummary };
+
 @Injectable()
 export class InstagramService {
   constructor(
@@ -129,13 +137,16 @@ export class InstagramService {
     return post;
   }
 
-  async createConnectUrl(userId: string, organizationId: string): Promise<{ authUrl: string }> {
+  async createConnectUrl(userId: string, organizationId: string): Promise<ConnectResult> {
     await this.requireMembership(userId, organizationId);
 
     const organization = await this.prisma.client.organization.findUniqueOrThrow({
       where: { id: organizationId },
     });
 
+    // Resolve the Zernio profile for this organization's slug. ensureProfile itself looks the
+    // profile up by name before creating one (see packages/zernio), so a lost/never-persisted
+    // zernioProfileId re-adopts the existing Zernio profile instead of creating a duplicate.
     let zernioProfileId = organization.zernioProfileId;
     if (!zernioProfileId) {
       const profile = await this.provider.ensureProfile({ name: organization.slug });
@@ -146,9 +157,61 @@ export class InstagramService {
       });
     }
 
+    // Ask Zernio whether this profile already has a connected Instagram account before
+    // sending the user through OAuth again. If it does, reconcile our own database to match
+    // and report the account back instead of an authUrl - a reconnect is only worth the
+    // round trip when there's nothing connected, or the user explicitly wants to switch
+    // accounts (which is what handleCallback still supports).
+    const connected = await this.provider.findConnectedAccount({ zernioProfileId });
+    if (connected) {
+      const account = await this.adoptConnectedAccount(organizationId, connected);
+      if (account) {
+        return { alreadyConnected: true, account };
+      }
+    }
+
     const redirectUrl = `${getAppUrl()}/instagram/callback?organizationId=${organizationId}`;
     const { authUrl } = await this.provider.getConnectUrl({ zernioProfileId, redirectUrl });
-    return { authUrl };
+    return { alreadyConnected: false, authUrl };
+  }
+
+  /** Writes an account Zernio reports as connected into our own database, updating the
+   * existing row rather than inserting a second one for the same zernioAccountId. Returns
+   * null (rather than throwing) when the account belongs to a *different* organization - the
+   * caller falls back to the normal OAuth flow, where handleCallback raises the proper 409,
+   * so a cross-tenant collision can never be silently adopted here. */
+  private async adoptConnectedAccount(
+    organizationId: string,
+    connected: { zernioAccountId: string; username: string | null },
+  ): Promise<InstagramAccountSummary | null> {
+    const existing = await this.prisma.client.instagramAccount.findUnique({
+      where: { zernioAccountId: connected.zernioAccountId },
+    });
+    if (existing && existing.organizationId !== organizationId) {
+      return null;
+    }
+
+    try {
+      const account = await this.prisma.client.instagramAccount.upsert({
+        where: { zernioAccountId: connected.zernioAccountId },
+        create: {
+          organizationId,
+          zernioAccountId: connected.zernioAccountId,
+          username: connected.username,
+          status: 'CONNECTED',
+        },
+        update: { username: connected.username, status: 'CONNECTED' },
+      });
+      return toSummary(account);
+    } catch (error) {
+      // Same race as handleCallback's: a concurrent connect for the same zernioAccountId can
+      // win between the check above and this upsert. Fall back to the OAuth flow rather than
+      // failing the request outright.
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        return null;
+      }
+      throw error;
+    }
   }
 
   async handleCallback(

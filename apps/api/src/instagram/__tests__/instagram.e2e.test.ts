@@ -8,6 +8,7 @@ import type {
   CommentAutomation,
   ConnectedInstagramAccount,
   CreateCommentAutomationInput,
+  EnsureProfileInput,
   EnsureProfileResult,
   FindConnectedAccountInput,
   GetConnectUrlInput,
@@ -38,13 +39,27 @@ class FakeInstagramProvider implements InstagramProvider {
   private profileCounter = 0;
   private connectedByProfile = new Map<string, ConnectedInstagramAccount>();
 
-  // No params needed (the fake doesn't care about the profile name) - fewer params than the
-  // interface declares is valid TypeScript, same pattern as ZernioInstagramProvider's own
-  // stub methods, and avoids an unused-parameter lint error.
-  async ensureProfile(): Promise<EnsureProfileResult> {
+  // Models the real provider's lookup-before-create contract: a profile name that already
+  // exists resolves to the SAME id and is reported as reused, rather than minting another.
+  // A fake that always returned a fresh id would let a duplicate-creating regression pass.
+  private profileIdsByName = new Map<string, string>();
+
+  async ensureProfile(input: EnsureProfileInput): Promise<EnsureProfileResult> {
     this.ensureProfileCallCount += 1;
+    const existing = this.profileIdsByName.get(input.name);
+    if (existing) {
+      return { zernioProfileId: existing, reused: true };
+    }
     this.profileCounter += 1;
-    return { zernioProfileId: `fake-profile-${this.profileCounter}` };
+    const zernioProfileId = `fake-profile-${this.profileCounter}`;
+    this.profileIdsByName.set(input.name, zernioProfileId);
+    return { zernioProfileId, reused: false };
+  }
+
+  /** Simulates a Zernio profile that already exists for `name` - i.e. one created by a prior
+   * attempt whose id we never persisted locally. */
+  seedProfile(name: string, zernioProfileId: string): void {
+    this.profileIdsByName.set(name, zernioProfileId);
   }
 
   async getConnectUrl(input: GetConnectUrlInput): Promise<GetConnectUrlResult> {
@@ -100,6 +115,7 @@ class FakeInstagramProvider implements InstagramProvider {
       zernioAutomationId: 'unused',
       zernioAccountId: input.zernioAccountId,
       zernioPostId: input.zernioPostId,
+      platformPostId: input.platformPostId,
       name: input.name,
       keywords: input.keywords,
       matchMode: input.matchMode,
@@ -119,6 +135,7 @@ class FakeInstagramProvider implements InstagramProvider {
   reset(): void {
     this.ensureProfileCallCount = 0;
     this.profileCounter = 0;
+    this.profileIdsByName.clear();
     this.connectedByProfile.clear();
     this.postsByAccount.clear();
   }
@@ -230,6 +247,7 @@ describe('POST /api/organizations/:id/instagram/connect', () => {
       .set('Authorization', bearerFor(user.id, user.email))
       .expect(201);
 
+    expect(response.body.alreadyConnected).toBe(false);
     expect(response.body.authUrl).toContain('fake-zernio.test/oauth');
     expect(response.body.authUrl).toContain('redirect_url=');
 
@@ -250,6 +268,108 @@ describe('POST /api/organizations/:id/instagram/connect', () => {
       .expect(201);
 
     expect(fakeProvider.ensureProfileCallCount).toBe(1);
+  });
+
+  it('adopts an existing Zernio profile for the same slug instead of creating a duplicate', async () => {
+    // The real bug this guards: an organization whose zernioProfileId was never persisted
+    // (a crash or failed DB write after Zernio's create succeeded) used to POST a brand new
+    // profile on the next attempt, leaving two Zernio profiles for one organization.
+    const { user, organization } = await createOrgWithOwner('alice@example.com');
+    fakeProvider.seedProfile(organization.slug, 'pre-existing-profile');
+
+    const response = await request(app.getHttpServer())
+      .post(`/api/organizations/${organization.id}/instagram/connect`)
+      .set('Authorization', bearerFor(user.id, user.email))
+      .expect(201);
+
+    expect(new URL(response.body.authUrl).searchParams.get('profileId')).toBe(
+      'pre-existing-profile',
+    );
+    const updated = await prisma.organization.findUniqueOrThrow({ where: { id: organization.id } });
+    expect(updated.zernioProfileId).toBe('pre-existing-profile');
+  });
+
+  it('returns the already-connected account instead of an authUrl when Zernio already has one', async () => {
+    // The second half of the same bug: connect used to always hand back an OAuth URL, so a
+    // user with a perfectly good connection was sent through the whole authorize flow again.
+    const { user, organization } = await createOrgWithOwner('alice@example.com');
+    fakeProvider.seedProfile(organization.slug, 'profile-1');
+    fakeProvider.setConnectedAccount('profile-1', {
+      zernioAccountId: 'ig-already',
+      username: 'already_ig',
+    });
+
+    const response = await request(app.getHttpServer())
+      .post(`/api/organizations/${organization.id}/instagram/connect`)
+      .set('Authorization', bearerFor(user.id, user.email))
+      .expect(201);
+
+    expect(response.body).toMatchObject({
+      alreadyConnected: true,
+      account: { zernioAccountId: 'ig-already', username: 'already_ig', status: 'CONNECTED' },
+    });
+    expect(response.body.authUrl).toBeUndefined();
+
+    // Reconciled into our own database without the user ever going through OAuth.
+    const stored = await prisma.instagramAccount.findUnique({
+      where: { zernioAccountId: 'ig-already' },
+    });
+    expect(stored?.organizationId).toBe(organization.id);
+  });
+
+  it('does not create a second local row when connect runs again for an already-connected account', async () => {
+    const { user, organization } = await createOrgWithOwner('alice@example.com');
+    fakeProvider.seedProfile(organization.slug, 'profile-1');
+    fakeProvider.setConnectedAccount('profile-1', {
+      zernioAccountId: 'ig-already',
+      username: 'already_ig',
+    });
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await request(app.getHttpServer())
+        .post(`/api/organizations/${organization.id}/instagram/connect`)
+        .set('Authorization', bearerFor(user.id, user.email))
+        .expect(201);
+    }
+
+    const accounts = await prisma.instagramAccount.findMany({
+      where: { organizationId: organization.id },
+    });
+    expect(accounts).toHaveLength(1);
+  });
+
+  it('falls back to the OAuth flow when the connected account belongs to another organization', async () => {
+    // A cross-tenant collision must never be silently adopted - connect hands back a normal
+    // authUrl and lets handleCallback raise the proper 409 instead.
+    const { user: alice, organization: aliceOrg } = await createOrgWithOwner('alice@example.com');
+    fakeProvider.seedProfile(aliceOrg.slug, 'alice-profile');
+    fakeProvider.setConnectedAccount('alice-profile', {
+      zernioAccountId: 'ig-shared',
+      username: 'shared',
+    });
+    await request(app.getHttpServer())
+      .post(`/api/organizations/${aliceOrg.id}/instagram/connect`)
+      .set('Authorization', bearerFor(alice.id, alice.email))
+      .expect(201);
+
+    const { user: bob, organization: bobOrg } = await createOrgWithOwner('bob@example.com');
+    fakeProvider.seedProfile(bobOrg.slug, 'bob-profile');
+    fakeProvider.setConnectedAccount('bob-profile', {
+      zernioAccountId: 'ig-shared',
+      username: 'shared',
+    });
+
+    const response = await request(app.getHttpServer())
+      .post(`/api/organizations/${bobOrg.id}/instagram/connect`)
+      .set('Authorization', bearerFor(bob.id, bob.email))
+      .expect(201);
+
+    expect(response.body.alreadyConnected).toBe(false);
+    expect(response.body.authUrl).toContain('fake-zernio.test/oauth');
+    const stored = await prisma.instagramAccount.findUniqueOrThrow({
+      where: { zernioAccountId: 'ig-shared' },
+    });
+    expect(stored.organizationId).toBe(aliceOrg.id);
   });
 });
 

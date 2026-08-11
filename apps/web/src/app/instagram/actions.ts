@@ -12,13 +12,16 @@ export async function connectInstagramAction(formData: FormData): Promise<void> 
     redirect('/?instagram=error');
   }
 
-  let authUrl: string;
+  type ConnectResult =
+    | { alreadyConnected: false; authUrl: string }
+    | { alreadyConnected: true; account: { username: string | null } };
+
+  let result: ConnectResult;
   try {
-    const result = await callApi<{ authUrl: string }>(
+    result = await callApi<ConnectResult>(
       `/api/organizations/${organizationId}/instagram/connect`,
       { method: 'POST' },
     );
-    authUrl = result.authUrl;
   } catch (error) {
     // Without this, a failed connect attempt (apps/api unreachable, Zernio rejecting the
     // API key, the caller no longer being a member) is a dead end: the UI only ever shows
@@ -28,7 +31,15 @@ export async function connectInstagramAction(formData: FormData): Promise<void> 
     redirect('/?instagram=error');
   }
 
+  // apps/api found this organization's Zernio profile already had an Instagram account
+  // connected and reconciled it into our own database - there is nothing to authorize, so
+  // skip the OAuth round trip entirely rather than sending the user through a flow that
+  // would only re-connect what they already have.
+  if (result.alreadyConnected) {
+    redirect('/?instagram=already-connected');
+  }
+
   // Zernio hosts the entire OAuth flow (docs/ZERNIO-INTEGRATION.md) - this is a real
   // redirect to an external origin, not a route within this app.
-  redirect(authUrl);
+  redirect(result.authUrl);
 }

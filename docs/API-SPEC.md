@@ -140,16 +140,32 @@ an organization's existence):
 
 Starts the Instagram OAuth connect flow for this organization (Phase 8). Requires a bearer
 token; 404s if the caller isn't a member of `:organizationId` (same tenant-isolation pattern
-as `GET /api/organizations/:id/members`). Creates the organization's Zernio profile on first
-call (persists `Organization.zernioProfileId`); reuses it on every later call. See
-`docs/ZERNIO-INTEGRATION.md`'s "Account connection" section.
+as `GET /api/organizations/:id/members`). Resolves the organization's Zernio profile on first
+call (persists `Organization.zernioProfileId`); reuses it on every later call — including
+re-adopting a pre-existing Zernio profile with the same name rather than creating a duplicate.
+See `docs/ZERNIO-INTEGRATION.md`'s "Zernio profiles" and "Account connection" sections.
 
-Response (`201`):
+The response is **discriminated on `alreadyConnected`**, because this endpoint short-circuits
+when Zernio already reports a connected Instagram account for the profile — there is no reason
+to send the user through OAuth for a connection they already have.
+
+Response (`201`) — nothing connected yet, authorize normally:
 ```json
-{ "authUrl": "https://www.facebook.com/v21.0/dialog/oauth?client_id=..." }
+{ "alreadyConnected": false, "authUrl": "https://www.facebook.com/v21.0/dialog/oauth?client_id=..." }
 ```
 `apps/web`'s server action redirects the browser to `authUrl` — this is a real redirect to
 an external origin, not a route within this app.
+
+Response (`201`) — already connected; the account was reconciled into `instagram_accounts`
+(upserted on `zernioAccountId`, never a duplicate row) and no OAuth round trip is needed:
+```json
+{
+  "alreadyConnected": true,
+  "account": { "id": "...", "zernioAccountId": "...", "username": "acme_ig", "status": "CONNECTED" }
+}
+```
+An account already connected to a *different* organization is never adopted here — that case
+returns the normal `alreadyConnected: false` shape and lets the callback raise its `409`.
 
 Errors: `404` (not a member), `500` (Zernio API error — e.g. an invalid/rejected
 `ZERNIO_API_KEY`; see `docs/IMPLEMENTATION-ROADMAP.md`'s Phase 8 report for a known instance

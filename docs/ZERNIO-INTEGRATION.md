@@ -1,6 +1,6 @@
 # Zernio Integration
 
-Status: Phase 10 — account connection (Phase 8), listing posts/reels (Phase 9), and comment
+Status: Phase 10.2b — account connection (Phase 8), listing posts/reels (Phase 9), and comment
 automations (Phase 10) are all real, verified directly against Zernio's live OpenAPI spec
 (`docs.zernio.com/api/openapi`, re-fetched fresh for each phase), not assumed from the Phase
 0 research pass. Everything else below (webhooks) is still the Phase 0 pass and **must** be
@@ -53,12 +53,39 @@ Zernio's own multi-tenancy model (`/multi-tenant` guide): "if you're building so
 features into your own product, your customers each bring their own social accounts.
 Zernio's tenant boundary for this is the **profile**: one profile per customer." This maps
 directly onto one Zernio profile per our own `Organization` — `Organization.zernioProfileId`
-(`docs/DATABASE.md`) stores it, created lazily via `POST /v1/profiles` (`{ name }` →
-`{ profile: { _id } }`) on that organization's first Instagram-connect attempt, never at
-organization-creation time. `InstagramProvider.ensureProfile` uses the organization's own
-`slug` as the profile name (already globally unique in our system) to avoid Zernio's
-per-workspace unique-name collisions; a genuine 409 on create is recovered via the error
-body's `details.existingProfileId` rather than left as a hard failure.
+(`docs/DATABASE.md`) stores it, resolved lazily on that organization's first
+Instagram-connect attempt, never at organization-creation time.
+`InstagramProvider.ensureProfile` uses the organization's own `slug` as the profile name
+(already globally unique in our system) to avoid Zernio's per-workspace unique-name
+collisions.
+
+**`ensureProfile` looks before it creates** (verified against the live spec's `listProfiles`
+operation): it first calls `GET /v1/profiles?name=<slug>` — an **exact-match** filter Zernio's
+own spec documents for precisely this case ("useful to recover a profile id after an ambiguous
+create") — and only falls through to `POST /v1/profiles` (`{ name }` → `{ profile: { _id } }`)
+when that finds nothing. Response shape is `{ profiles: Profile[] }` (plus `total`/`skip`/
+`limit`, present only when `limit`/`skip` was passed); the exact-name match is re-checked
+client-side rather than trusting the server to have filtered.
+
+Without that lookup, an organization whose `zernioProfileId` was never persisted locally — a
+crash or a failed DB write between Zernio's create succeeding and our own `organization.update`
+— would `POST` a brand-new profile on **every** retry, silently accumulating duplicate Zernio
+profiles for one organization. The 409-recovery path below is a backstop for the remaining
+race, not the primary defense:
+
+- A 409 whose `details.existingProfileId` is present resolves to that id directly.
+- A 409 **without** it re-queries by name, because the spec assigns that same status code to a
+  second case (a request with the same `Idempotency-Key` still processing), where the field is
+  not guaranteed.
+
+**Connecting is skipped when an account is already connected.** `apps/api`'s
+`createConnectUrl` calls `findConnectedAccount` before building any OAuth URL. If Zernio already
+reports a connected Instagram account for the profile, the account is reconciled into our own
+`instagram_accounts` table (upserted on `zernioAccountId`, never a second row) and the endpoint
+returns `{ alreadyConnected: true, account }` instead of an `authUrl` — the user is not sent
+through an authorize round trip for a connection they already have. A connected account that
+belongs to a *different* organization is never adopted this way; that case falls back to the
+normal OAuth flow so the callback handler raises its proper `409`.
 
 ## Account connection
 
@@ -115,7 +142,20 @@ is now resolved, not assumed.
   - `keywords` is a **string array**, not a single string (`type: array, items: {type:
     string}`) - `InstagramProvider.createCommentAutomation` and the create form both take
     multiple keywords for exactly this reason, not one.
-  - `platformPostId` scopes the automation to one specific post/reel (omit for
+  - `platformPostId` and `postId` are **two different ids, and must not be swapped** (corrected
+    in Phase 10.2b - this was previously wrong in both this doc and the code):
+    - `platformPostId` is *"Platform media/post ID"* - **Instagram's own media id**, i.e. the
+      id an incoming comment actually carries. This is `InstagramPost.platformPostId`.
+    - `postId` is *"Zernio post ID ... required only when also targeting a specific post via
+      platformPostId"* - Zernio's own `_id`, i.e. `InstagramPost.zernioPostId`.
+
+    Sending Zernio's `_id` as `platformPostId` (what this project did until Phase 10.2b)
+    creates an automation scoped to an id Instagram never reports, so **it can never fire**,
+    while still returning a perfectly successful-looking `201`. `apps/api` resolves the real
+    media id via `getPost` before creating, and rejects the create if the post has none rather
+    than silently falling back to an account-wide automation.
+
+    Setting `platformPostId` scopes the automation to one specific post/reel (omit for
     account-wide - **only one active per-post automation is allowed per post**, enforced by
     Zernio with a `409` on a duplicate, and mirrored locally by `Automation`'s
     `unique(instagramAccountId, zernioPostId)`). This project always sets it - "one specific
@@ -157,6 +197,16 @@ is now resolved, not assumed.
 - `PATCH`/`DELETE /v1/comment-automations/{automationId}` exist (update settings, permanently
   delete) - not built in Phase 10 ("comment automation **creation**" per the roadmap); a
   future phase adds edit/delete if a real need appears.
+
+**Zernio is the system of record for automations, and `apps/api` reconciles from it** (Phase
+10.2b). `AutomationsService.listForPost` reads the local `automations` table first, but when
+that finds nothing it calls `GET /v1/comment-automations?profileId=`, filters to the account +
+post in question, and backfills the missing local row. Without this, an automation created
+directly in Zernio's own dashboard - or by a request whose local insert failed *after* the
+Zernio call already succeeded - is invisible in this app forever, which is exactly the bug
+Phase 10.2b fixed. The match is made on **either** `postId` or `platformPostId`, because
+automations created before the id fix above carry only the (wrong) one. A Zernio failure here
+degrades to "no automation" rather than failing the page - this is a read path.
 
 This maps directly onto `Automation` (`docs/DATABASE.md`) - one org + one connected account +
 one specific Zernio post/reel + `keywords[]` + match mode + optional public reply + DM

@@ -1,8 +1,8 @@
-import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import type { OrganizationRole } from '@automationdm/database';
 import { ApiError, callApi } from '@/lib/api';
 import { connectInstagramAction } from './instagram/actions';
+import { FormPendingOverlay, LoadingLink } from './loader';
 
 interface OrganizationSummary {
   id: string;
@@ -93,6 +93,13 @@ function StatusBanner({ instagram }: { instagram?: string }) {
       </div>
     );
   }
+  if (instagram === 'already-connected') {
+    return (
+      <div className="rounded-lg border border-success-border bg-success-bg p-3 text-sm text-success">
+        This Instagram account was already connected — no need to authorize it again.
+      </div>
+    );
+  }
   if (instagram === 'error') {
     return (
       <div className="rounded-lg border border-danger/30 bg-danger-bg p-3 text-sm text-danger">
@@ -152,6 +159,7 @@ export default async function HomePage({
             Connect a Business or Creator Instagram account to start creating automations.
           </p>
           <form action={connectInstagramAction} className="mt-3">
+            <FormPendingOverlay />
             <input type="hidden" name="organizationId" value={organization.id} />
             <button
               type="submit"
@@ -186,12 +194,12 @@ export default async function HomePage({
                       {account.status.toLowerCase()}
                     </span>
                   </span>
-                  <Link
+                  <LoadingLink
                     href={`/instagram/posts?accountId=${account.id}`}
                     className="shrink-0 text-accent hover:underline"
                   >
                     View posts →
-                  </Link>
+                  </LoadingLink>
                 </li>
               ))}
             </ul>
@@ -280,12 +288,12 @@ function AutomationsTable({
                 <StatusPill isActive={automation.isActive} />
               </td>
               <td className="px-4 py-3 text-right">
-                <Link
+                <LoadingLink
                   href={`/instagram/posts/${automation.zernioPostId}?accountId=${automation.instagramAccountId}`}
                   className="text-accent hover:underline"
                 >
                   View →
-                </Link>
+                </LoadingLink>
               </td>
             </tr>
           ))}
@@ -313,12 +321,12 @@ function AutomationsTable({
               </span>
               {automation.keywords.join(', ')}
             </div>
-            <Link
+            <LoadingLink
               href={`/instagram/posts/${automation.zernioPostId}?accountId=${automation.instagramAccountId}`}
               className="mt-2 inline-block text-sm text-accent hover:underline"
             >
               View →
-            </Link>
+            </LoadingLink>
           </li>
         ))}
       </ul>

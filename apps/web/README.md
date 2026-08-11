@@ -4,13 +4,30 @@ Next.js (App Router, TypeScript, Tailwind CSS v4) frontend. Scaffolded in Phase 
 featureless, responsive shell; Phase 5 added real authentication (Auth.js); Phase 6 added
 real organization creation/membership; Phase 8 added the Instagram connect flow; Phase 9
 added a posts/reels list + detail view; Phase 10 added comment-automation creation on the
-post detail page. shadcn/ui components land when the first real form/data UI beyond auth/
-onboarding needs them, not before.
+post detail page; Phase 10.1 redesigned the shell (sidebar + dashboard); Phase 10.2b added a
+theme switch, a searchable/sortable/virtualized posts browser, and a global loading overlay.
+shadcn/ui components land when the first real form/data UI beyond auth/onboarding needs them,
+not before.
 
 ## Structure
 
-- `src/app/layout.tsx` — root layout: responsive header/main/footer shell, shows the signed-
-  in user's email + a sign-out button, or a sign-in link.
+- `src/app/layout.tsx` — root layout: fixed sidebar + fixed top bar, with scrolling delegated
+  to the content pane only (`h-screen overflow-hidden` on the shell; the `min-h-0` on the
+  flex child is load-bearing — a flex item defaults to `min-height:auto` and refuses to
+  shrink below its content, which puts the scrollbar back on the page). Shows the signed-in
+  user, a sign-out button, and the theme switch.
+- `src/app/theme-toggle.tsx` (Phase 10.2b) — Light/Auto/Dark switch. "Auto" removes the
+  `data-theme` attribute rather than resolving it, so the page keeps following the OS. The
+  stored choice is applied by `ThemeScript`, inlined into `<head>` so it runs *before first
+  paint* — a React effect runs after paint and would flash the wrong theme. See the three
+  theme states documented in `src/app/globals.css`.
+- `src/app/loader.tsx` (Phase 10.2b) — the loading overlay (blurred backdrop + spinner).
+  `callApi` is server-side only, so there is no client fetch to attach a spinner to: every
+  API call is either a server render (a navigation) or a server action (a form submit), and
+  these components track exactly those two via `useLinkStatus`/`useFormStatus`. Use
+  `LoadingLink` instead of `next/link` for any link that changes page. The spinner's CSS
+  lives in `globals.css` as `.loader` — note its animation is deliberately **not** named
+  `spin`, which would collide with Tailwind's own `@keyframes spin` and silently replace it.
 - `src/app/page.tsx` (Phase 6) — dashboard: calls `apps/api` for the caller's organizations;
   redirects to `/onboarding` if there are none, otherwise shows the first org's name/slug/
   role and member list, degrading gracefully (a message, not a crash) if `apps/api` is
@@ -24,16 +41,24 @@ onboarding needs them, not before.
   browser back to; forwards the result to `POST .../instagram/callback` then redirects to
   `/` with a `?instagram=connected|error` banner). Sits behind the normal authenticated-
   session requirement like every other page - not a public webhook-style endpoint.
-  `posts/page.tsx` (Phase 9) — a connected account's existing posts/reels, page/limit
-  pagination, linked from the dashboard's account list via `?accountId=`.
+  `posts/page.tsx` (Phase 9; reworked in Phase 10.2b) — a connected account's existing
+  posts/reels, linked from the dashboard's account list via `?accountId=`. It fetches the
+  account's **whole** synced window in one call (limit 500, Zernio's own max) rather than one
+  server page at a time, because Zernio's list endpoint has no search or sort parameters, so
+  both happen client-side — and they must cover every post, not just the visible page, or
+  "search" would silently only search one page. `posts/posts-browser.tsx` owns that UI:
+  card/list toggle, caption search, newest/oldest sort, page size, numbered jump pagination,
+  and a windowed virtual scroller. The scroller's fixed row heights (88px list / 248px grid)
+  must stay in step with the card contents, or content drifts against the scrollbar.
   `posts/[postId]/page.tsx` (Phase 9: caption, media, permalink; Phase 10: a comment-
-  automation section - shows the existing automation if one exists, otherwise a create form
-  with a single comma-separated `keywords` text field rather than per-keyword inputs, since
-  this app has no client-side interactive form components yet and every form so far is a
-  plain server action) + `[postId]/actions.ts` (Phase 10) `createAutomationAction` (splits
-  the comma-separated field into the array `POST .../automations` expects). Both read the
-  caller's primary organization the same way `page.tsx`'s dashboard does (no multi-org
-  switcher exists yet).
+  automation section — shows the existing automation if one exists, otherwise a create
+  button) + `[postId]/create-automation-modal.tsx` (Phase 10.1) — a 3-step modal wizard.
+  Because each step is conditionally rendered, React unmounts the off-screen steps, and an
+  unmounted input is absent from `FormData`; **every submitted value therefore lives in an
+  always-mounted hidden field**, and the visible inputs carry no `name` (Phase 10.2b — this
+  was a real bug that made every submit fail validation). `[postId]/actions.ts` (Phase 10)
+  `createAutomationAction` posts to `.../automations`. Both pages read the caller's primary
+  organization the same way `page.tsx`'s dashboard does (no multi-org switcher exists yet).
 - `src/app/status/page.tsx` — server-rendered page that fetches `apps/api`'s
   `GET /api/health` and shows whether the API is reachable; demonstrates the
   `NEXT_PUBLIC_API_URL` env wiring end to end. Public — not auth-protected.

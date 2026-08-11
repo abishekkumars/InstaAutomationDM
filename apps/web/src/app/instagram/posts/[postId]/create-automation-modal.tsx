@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, type KeyboardEvent } from 'react';
+import { FormPendingOverlay } from '../../../loader';
 import { createAutomationAction } from './actions';
 
 interface ButtonRow {
@@ -124,12 +125,33 @@ export function CreateAutomationModal({
             onClick={(e) => e.stopPropagation()}
           >
             <form action={createAutomationAction} className="flex min-h-0 flex-1 flex-col">
+              {/* Inside the form on purpose - useFormStatus only reports on its nearest parent
+                  form. This submit calls Zernio, so it is the slowest wait in the app. */}
+              <FormPendingOverlay />
+              {/* Every submitted value lives in a hidden field here, NOT in the visible
+                  step-1/step-2 inputs. Those inputs are conditionally rendered, so React
+                  unmounts them when the wizard advances - and an unmounted input is gone from
+                  the DOM, so its value never reaches FormData. Submitting on step 3 therefore
+                  used to send name/dmMessage/buttons as null, which the API rejected as
+                  "invalid input" even though the visible form looked complete. Keeping the
+                  canonical values here makes the submitted payload independent of which step
+                  happens to be on screen. */}
               <input type="hidden" name="organizationId" value={organizationId} />
               <input type="hidden" name="accountId" value={accountId} />
               <input type="hidden" name="postId" value={postId} />
+              <input type="hidden" name="name" value={name} />
               <input type="hidden" name="keywords" value={keywords.join(',')} />
               <input type="hidden" name="matchMode" value={matchMode} />
               <input type="hidden" name="commentReply" value={replyEnabled ? commentReply : ''} />
+              <input type="hidden" name="dmMessage" value={dmMessage} />
+              {buttons
+                .filter((button) => button.title.trim() && button.url.trim())
+                .map((button) => (
+                  <div key={button.key}>
+                    <input type="hidden" name="buttonTitle" value={button.title} />
+                    <input type="hidden" name="buttonUrl" value={button.url} />
+                  </div>
+                ))}
 
               <div className="flex items-center gap-2 border-b border-border px-4 py-3">
                 <span className="text-lg">💬</span>
@@ -160,11 +182,11 @@ export function CreateAutomationModal({
                       >
                         Name
                       </label>
+                      {/* No `name` attribute: the hidden field above is the single source of
+                          truth for what gets submitted (see the comment there). */}
                       <input
                         id="automation-name"
-                        name="name"
                         type="text"
-                        required
                         value={name}
                         onChange={(e) => setName(e.target.value)}
                         className="mt-1 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
@@ -287,8 +309,6 @@ export function CreateAutomationModal({
                     </label>
                     <textarea
                       id="dmMessage"
-                      name="dmMessage"
-                      required
                       rows={3}
                       value={dmMessage}
                       onChange={(e) => setDmMessage(e.target.value)}
@@ -313,7 +333,6 @@ export function CreateAutomationModal({
                           <div key={row.key} className="flex gap-2">
                             <input
                               type="text"
-                              name="buttonTitle"
                               value={row.title}
                               onChange={(e) => updateButton(row.key, 'title', e.target.value)}
                               maxLength={20}
@@ -322,7 +341,6 @@ export function CreateAutomationModal({
                             />
                             <input
                               type="text"
-                              name="buttonUrl"
                               value={row.url}
                               onChange={(e) => updateButton(row.key, 'url', e.target.value)}
                               placeholder="https://..."
