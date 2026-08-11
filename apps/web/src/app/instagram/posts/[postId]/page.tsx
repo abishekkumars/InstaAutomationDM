@@ -1,9 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { ApiError, callApi } from '@/lib/api';
-import { createAutomationAction } from './actions';
-import { DmMessageField } from './dm-message-field';
-import { KeywordsField } from './keywords-field';
+import { CreateAutomationModal } from './create-automation-modal';
 
 interface InstagramPostDetail {
   zernioPostId: string;
@@ -191,60 +189,19 @@ export default async function InstagramPostDetailPage({
             </p>
           </>
         ) : (
-          <>
-            <h2 className="text-base font-semibold text-text">Create comment automation</h2>
-            <form action={createAutomationAction} className="mt-3 space-y-4">
-              <input type="hidden" name="organizationId" value={organizationId} />
-              <input type="hidden" name="accountId" value={accountId} />
-              <input type="hidden" name="postId" value={postId} />
-              <div>
-                <label htmlFor="name" className="block text-sm font-medium text-text">
-                  Name
-                </label>
-                <input
-                  id="name"
-                  name="name"
-                  type="text"
-                  required
-                  className="mt-1 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
-                />
-              </div>
-              <KeywordsField />
-              <div>
-                <label htmlFor="matchMode" className="block text-sm font-medium text-text">
-                  Match mode
-                </label>
-                <select
-                  id="matchMode"
-                  name="matchMode"
-                  defaultValue="contains"
-                  className="mt-1 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
-                >
-                  <option value="contains">Contains — keyword appears anywhere</option>
-                  <option value="word">Word — keyword as a standalone word</option>
-                  <option value="exact">Exact — comment matches a keyword exactly</option>
-                </select>
-              </div>
-              <div>
-                <label htmlFor="commentReply" className="block text-sm font-medium text-text">
-                  Public reply (optional)
-                </label>
-                <input
-                  id="commentReply"
-                  name="commentReply"
-                  type="text"
-                  className="mt-1 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
-                />
-              </div>
-              <DmMessageField />
-              <button
-                type="submit"
-                className="w-full rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-ink hover:opacity-90 sm:w-auto"
-              >
-                Create automation
-              </button>
-            </form>
-          </>
+          <div className="flex flex-col items-start gap-2 py-4">
+            <h2 className="text-base font-semibold text-text">No automation yet</h2>
+            <p className="text-sm text-text-muted">
+              Set a keyword trigger, an optional public reply, and the DM this post should send.
+            </p>
+            <div className="mt-2">
+              <CreateAutomationModal
+                organizationId={organizationId}
+                accountId={accountId}
+                postId={postId}
+              />
+            </div>
+          </div>
         )}
       </div>
     </div>

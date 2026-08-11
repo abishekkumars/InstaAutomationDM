@@ -96,6 +96,12 @@ class FakeInstagramProvider implements InstagramProvider {
     this.postsWithAutomation.add(zernioPostId);
   }
 
+  // Not exercised by this file's own tests yet (Phase 10.3 will use this for live stats) -
+  // present only to satisfy InstagramProvider's contract.
+  async listCommentAutomations(): Promise<CommentAutomation[]> {
+    return [];
+  }
+
   reset(): void {
     this.profileCounter = 0;
     this.connectedByProfile.clear();

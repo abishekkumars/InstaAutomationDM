@@ -132,6 +132,10 @@ export interface CommentAutomation {
   isActive: boolean;
 }
 
+export interface ListCommentAutomationsInput {
+  zernioProfileId: string;
+}
+
 export interface InstagramProvider {
   /** Creates the Zernio profile for an organization that doesn't have one yet. Idempotent
    * from the caller's side: apps/api only calls this once per organization and persists the
@@ -161,4 +165,13 @@ export interface InstagramProvider {
    * ZernioApiError) if this post already has an active per-post automation - Zernio's own
    * rule, mirrored locally by Automation's unique(instagramAccountId, zernioPostId). */
   createCommentAutomation(input: CreateCommentAutomationInput): Promise<CommentAutomation>;
+
+  /** Lists every comment-to-DM automation on a profile (`GET /v1/comment-automations?profileId=`,
+   * verified live against Zernio's OpenAPI spec). Zernio only filters by profileId - each item
+   * carries its own `zernioAccountId`/`zernioPostId` for the caller to filter further. Used to
+   * recover from a 409 on create (an automation already exists in Zernio for this post - either
+   * created directly in Zernio's own dashboard, or a prior create() whose local DB insert failed
+   * after the Zernio side already succeeded) by finding the real automation instead of leaving
+   * the caller stuck with no way to see or reconcile it locally. */
+  listCommentAutomations(input: ListCommentAutomationsInput): Promise<CommentAutomation[]>;
 }

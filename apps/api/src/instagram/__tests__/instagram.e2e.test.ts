@@ -110,6 +110,12 @@ class FakeInstagramProvider implements InstagramProvider {
     };
   }
 
+  // Not exercised by this file's own tests (see automations.e2e.test.ts) - present only to
+  // satisfy InstagramProvider's contract.
+  async listCommentAutomations(): Promise<CommentAutomation[]> {
+    return [];
+  }
+
   reset(): void {
     this.ensureProfileCallCount = 0;
     this.profileCounter = 0;

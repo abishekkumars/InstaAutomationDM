@@ -92,6 +92,14 @@ function initialise() {
       '--auth=password',
       `--username=${USER}`,
       `--pwfile=${passwordFile}`,
+      // Without these, initdb falls back to the OS's default locale/codepage - on this
+      // Windows machine that produced a WIN1252-encoded cluster, which silently rejects any
+      // text outside Latin-1 (most emoji included) on insert. `--locale=C` keeps the choice
+      // portable across platforms (it's valid with any encoding, unlike named locales such as
+      // "en-US" which aren't installed the same way on every OS) while `--encoding=UTF8`
+      // makes the actual storage encoding explicit instead of inherited.
+      '--encoding=UTF8',
+      '--locale=C',
     ]);
     if (result.status !== 0) {
       throw new Error(`initdb failed:\n${result.stdout}\n${result.stderr}`);

@@ -11,6 +11,7 @@ import type {
   GetPostInput,
   InstagramPost,
   InstagramProvider,
+  ListCommentAutomationsInput,
   ListPostsInput,
   ListPostsResult,
 } from './instagram-provider';
@@ -145,6 +146,15 @@ export class ZernioInstagramProvider implements InstagramProvider {
       },
     );
     return toCommentAutomation(response.automation);
+  }
+
+  async listCommentAutomations(input: ListCommentAutomationsInput): Promise<CommentAutomation[]> {
+    const query = new URLSearchParams({ profileId: input.zernioProfileId });
+    const response = await this.request<{ automations: RawCommentAutomation[] }>(
+      'GET',
+      `/comment-automations?${query.toString()}`,
+    );
+    return response.automations.map(toCommentAutomation);
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
