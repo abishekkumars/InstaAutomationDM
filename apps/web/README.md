@@ -16,6 +16,12 @@ not before.
   flex child is load-bearing — a flex item defaults to `min-height:auto` and refuses to
   shrink below its content, which puts the scrollbar back on the page). Shows the signed-in
   user, a sign-out button, and the theme switch.
+- `src/app/automations-browser.tsx` (Phase 10.3) — the dashboard's automations table as a
+  client component: search (name/keywords/account/caption), sort (most sent, most clicks,
+  name, enabled-first), post thumbnails, and live sent/click counts. Renders an em dash, never
+  a `0`, when `stats` is null — a failed Zernio stats fetch must not read as "sent nothing".
+  The `AutomationListItem` shape lives here rather than in `page.tsx` so the server page and
+  the component that renders it cannot drift apart.
 - `src/app/theme-toggle.tsx` (Phase 10.2b) — Light/Auto/Dark switch. "Auto" removes the
   `data-theme` attribute rather than resolving it, so the page keeps following the OS. The
   stored choice is applied by `ThemeScript`, inlined into `<head>` so it runs *before first

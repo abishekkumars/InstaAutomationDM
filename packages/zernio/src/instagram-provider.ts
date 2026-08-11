@@ -127,6 +127,23 @@ export interface CreateCommentAutomationInput {
   dmMessage: string;
 }
 
+/** Live counters Zernio keeps per automation. **Only the list endpoint returns this richer
+ * shape** - create/get return a smaller `{totalTriggered, totalSent, totalFailed}` object
+ * instead (a real inconsistency in Zernio's own API, verified live in Phase 10.1, not
+ * assumed). Every field is optional because of that: a CommentAutomation built from a create
+ * response has no stats at all. */
+export interface CommentAutomationStats {
+  triggered: number;
+  dmsSent: number;
+  dmsFailed: number;
+  uniqueContacts: number;
+  /** DMs sent with a trackable (wrapped) link. Per Zernio's own spec this - NOT dmsSent - is
+   * the correct CTR denominator, since a DM with no tracked link can never be clicked. */
+  trackedSends: number;
+  linkClicks: number;
+  uniqueClicks: number;
+}
+
 /** A comment-to-DM automation as Zernio's API represents it - see
  * docs/ZERNIO-INTEGRATION.md's "Comment-to-DM automation API" section. Zernio itself executes
  * the keyword-matching, public reply, and DM send server-side (verified live during Phase
@@ -149,6 +166,9 @@ export interface CommentAutomation {
   buttons: DmButton[];
   dmMessage: string;
   isActive: boolean;
+  /** Null when this automation came from a create/get response, which returns a different,
+   * smaller stats shape - see CommentAutomationStats. */
+  stats: CommentAutomationStats | null;
 }
 
 export interface ListCommentAutomationsInput {

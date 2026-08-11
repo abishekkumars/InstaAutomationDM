@@ -299,6 +299,17 @@ interface RawCommentAutomation {
   buttons?: RawDmButton[];
   dmMessage: string;
   isActive?: boolean;
+  /** Only present on the LIST endpoint's response - create/get return a different, smaller
+   * `{totalTriggered, totalSent, totalFailed}` shape, which this project doesn't map. */
+  stats?: {
+    triggered?: number;
+    dmsSent?: number;
+    dmsFailed?: number;
+    uniqueContacts?: number;
+    trackedSends?: number;
+    linkClicks?: number;
+    uniqueClicks?: number;
+  };
 }
 
 function toCommentAutomation(automation: RawCommentAutomation): CommentAutomation {
@@ -314,6 +325,19 @@ function toCommentAutomation(automation: RawCommentAutomation): CommentAutomatio
     buttons: fromRawDmButtons(automation.buttons),
     dmMessage: automation.dmMessage,
     isActive: automation.isActive ?? true,
+    // Distinguish "no stats object at all" (a create/get response) from "stats present but a
+    // counter is absent" (treated as 0) - the first is missing data, the second is a real zero.
+    stats: automation.stats
+      ? {
+          triggered: automation.stats.triggered ?? 0,
+          dmsSent: automation.stats.dmsSent ?? 0,
+          dmsFailed: automation.stats.dmsFailed ?? 0,
+          uniqueContacts: automation.stats.uniqueContacts ?? 0,
+          trackedSends: automation.stats.trackedSends ?? 0,
+          linkClicks: automation.stats.linkClicks ?? 0,
+          uniqueClicks: automation.stats.uniqueClicks ?? 0,
+        }
+      : null,
   };
 }
 

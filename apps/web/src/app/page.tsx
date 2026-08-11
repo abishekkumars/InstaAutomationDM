@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation';
 import type { OrganizationRole } from '@automationdm/database';
 import { ApiError, callApi } from '@/lib/api';
+import { AutomationsBrowser, type AutomationListItem } from './automations-browser';
 import { connectInstagramAction } from './instagram/actions';
 import { FormPendingOverlay, LoadingLink } from './loader';
 
@@ -24,16 +25,8 @@ interface InstagramAccountSummary {
   status: 'CONNECTED' | 'DISCONNECTED' | 'ERROR';
 }
 
-interface AutomationListItem {
-  id: string;
-  zernioPostId: string;
-  instagramAccountId: string;
-  accountUsername: string | null;
-  name: string;
-  keywords: string[];
-  matchMode: 'CONTAINS' | 'WORD' | 'EXACT';
-  isActive: boolean;
-}
+// Shape lives in automations-browser.tsx (the client component that renders it) so the two
+// cannot drift apart.
 
 type PrimaryOrganizationResult =
   | {
@@ -78,12 +71,6 @@ async function loadPrimaryOrganization(): Promise<PrimaryOrganizationResult> {
     };
   }
 }
-
-const MATCH_MODE_LABEL: Record<AutomationListItem['matchMode'], string> = {
-  CONTAINS: 'contains',
-  WORD: 'word',
-  EXACT: 'exact',
-};
 
 function StatusBanner({ instagram }: { instagram?: string }) {
   if (instagram === 'connected') {
@@ -136,6 +123,8 @@ export default async function HomePage({
 
   const { organization, members, instagramAccounts, automations } = result;
   const activeCount = automations.filter((a) => a.isActive).length;
+  const disabledCount = automations.length - activeCount;
+  const totals = sumStats(automations);
 
   return (
     <div className="space-y-5">
@@ -174,9 +163,42 @@ export default async function HomePage({
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <StatCard
               eyebrow="Active automations"
-              value={`${activeCount} / ${automations.length}`}
+              value={
+                <>
+                  {activeCount}
+                  <span className="text-base font-semibold text-text-faint">
+                    {' '}
+                    / {automations.length}
+                  </span>
+                </>
+              }
+              sub={disabledCount > 0 ? `${disabledCount} disabled` : 'all enabled'}
             />
-            <StatCard eyebrow="Connected accounts" value={String(instagramAccounts.length)} />
+            <StatCard
+              eyebrow="DMs sent"
+              value={totals.hasStats ? totals.dmsSent.toLocaleString() : '—'}
+              sub={
+                totals.hasStats ? 'Zernio stats.dmsSent, all-time' : 'stats unavailable right now'
+              }
+            />
+            <StatCard
+              eyebrow="Button clicks"
+              value={totals.hasStats ? totals.linkClicks.toLocaleString() : '—'}
+              // CTR uses trackedSends, not dmsSent, per Zernio's own spec - a DM with no
+              // tracked link can never be clicked, so dmsSent would understate the rate.
+              sub={
+                totals.hasStats
+                  ? totals.ctr === null
+                    ? 'Zernio stats.linkClicks'
+                    : `Zernio stats.linkClicks · ${totals.ctr.toFixed(1)}% CTR`
+                  : 'stats unavailable right now'
+              }
+            />
+            <StatCard
+              eyebrow="Connected accounts"
+              value={String(instagramAccounts.length)}
+              sub={instagramAccounts.map((a) => `@${a.username ?? a.zernioAccountId}`).join(', ')}
+            />
           </div>
 
           <div className="rounded-xl border border-border bg-surface p-4 shadow-sm">
@@ -205,7 +227,7 @@ export default async function HomePage({
             </ul>
           </div>
 
-          <AutomationsTable automations={automations} instagramAccounts={instagramAccounts} />
+          <AutomationsBrowser automations={automations} />
 
           <div className="rounded-xl border border-border bg-surface p-4 shadow-sm">
             <h2 className="text-sm font-medium text-text">Team</h2>
@@ -224,126 +246,61 @@ export default async function HomePage({
   );
 }
 
-function StatCard({ eyebrow, value }: { eyebrow: string; value: string }) {
+/** Org-wide totals for the stat cards. `hasStats` is false when Zernio returned no stats for
+ * any automation (unreachable, or none have stats yet) - the cards then show a dash instead of
+ * a fabricated 0, so a failed fetch never reads as "nothing has been sent". CTR is computed
+ * from summed trackedSends per Zernio's own spec, not from dmsSent. */
+function sumStats(automations: AutomationListItem[]): {
+  hasStats: boolean;
+  dmsSent: number;
+  linkClicks: number;
+  ctr: number | null;
+} {
+  const withStats = automations.filter((a) => a.stats !== null);
+  if (withStats.length === 0) {
+    return { hasStats: false, dmsSent: 0, linkClicks: 0, ctr: null };
+  }
+
+  let dmsSent = 0;
+  let linkClicks = 0;
+  // Recovered from each row's own rate rather than exposing trackedSends through the API:
+  // clicks / (clicks / rate) === the row's trackedSends, so summing gives the right
+  // denominator for an org-wide rate without widening the API surface.
+  let trackedSends = 0;
+  for (const automation of withStats) {
+    const stats = automation.stats;
+    if (!stats) continue;
+    dmsSent += stats.dmsSent;
+    linkClicks += stats.linkClicks;
+    if (stats.clickThroughRate !== null && stats.clickThroughRate > 0) {
+      trackedSends += (stats.linkClicks / stats.clickThroughRate) * 100;
+    }
+  }
+
+  return {
+    hasStats: true,
+    dmsSent,
+    linkClicks,
+    ctr: trackedSends > 0 ? (linkClicks / trackedSends) * 100 : null,
+  };
+}
+
+function StatCard({
+  eyebrow,
+  value,
+  sub,
+}: {
+  eyebrow: string;
+  value: React.ReactNode;
+  sub?: string;
+}) {
   return (
     <div className="rounded-xl border border-border bg-surface p-4 shadow-sm">
       <div className="text-[11px] font-semibold uppercase tracking-wide text-text-faint">
         {eyebrow}
       </div>
       <div className="mt-1.5 text-2xl font-bold text-text">{value}</div>
+      {sub && <div className="mt-1 truncate text-[11px] text-text-faint">{sub}</div>}
     </div>
-  );
-}
-
-function AutomationsTable({
-  automations,
-  instagramAccounts,
-}: {
-  automations: AutomationListItem[];
-  instagramAccounts: InstagramAccountSummary[];
-}) {
-  if (automations.length === 0) {
-    return (
-      <div className="rounded-xl border border-border bg-surface p-6 text-center text-sm text-text-muted shadow-sm">
-        No automations yet. Open a post from "View posts" above to create one.
-      </div>
-    );
-  }
-
-  const accountsById = new Map(instagramAccounts.map((a) => [a.id, a]));
-
-  return (
-    <div className="overflow-hidden rounded-xl border border-border bg-surface shadow-sm">
-      {/* Table on wider screens */}
-      <table className="hidden w-full border-collapse text-sm md:table">
-        <thead>
-          <tr className="border-b border-border bg-surface-2 text-left text-[11px] font-semibold uppercase tracking-wide text-text-faint">
-            <th className="px-4 py-3">Automation</th>
-            <th className="px-4 py-3">Account</th>
-            <th className="px-4 py-3">Status</th>
-            <th className="px-4 py-3" />
-          </tr>
-        </thead>
-        <tbody>
-          {automations.map((automation) => (
-            <tr
-              key={automation.id}
-              className="border-b border-border last:border-0 hover:bg-surface-2"
-            >
-              <td className="px-4 py-3">
-                <div className="font-semibold text-text">{automation.name}</div>
-                <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-text-muted">
-                  <span className="rounded-full bg-muted-bg px-2 py-0.5 font-medium">
-                    {MATCH_MODE_LABEL[automation.matchMode]}
-                  </span>
-                  {automation.keywords.join(', ')}
-                </div>
-              </td>
-              <td className="px-4 py-3 text-text-muted">
-                @
-                {automation.accountUsername ??
-                  accountsById.get(automation.instagramAccountId)?.zernioAccountId}
-              </td>
-              <td className="px-4 py-3">
-                <StatusPill isActive={automation.isActive} />
-              </td>
-              <td className="px-4 py-3 text-right">
-                <LoadingLink
-                  href={`/instagram/posts/${automation.zernioPostId}?accountId=${automation.instagramAccountId}`}
-                  className="text-accent hover:underline"
-                >
-                  View →
-                </LoadingLink>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      {/* Stacked cards on narrow screens - same data, no sideways scrolling */}
-      <ul className="divide-y divide-border md:hidden">
-        {automations.map((automation) => (
-          <li key={automation.id} className="p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="font-semibold text-text">{automation.name}</div>
-                <div className="mt-0.5 text-xs text-text-muted">
-                  @
-                  {automation.accountUsername ??
-                    accountsById.get(automation.instagramAccountId)?.zernioAccountId}
-                </div>
-              </div>
-              <StatusPill isActive={automation.isActive} />
-            </div>
-            <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-text-muted">
-              <span className="rounded-full bg-muted-bg px-2 py-0.5 font-medium">
-                {MATCH_MODE_LABEL[automation.matchMode]}
-              </span>
-              {automation.keywords.join(', ')}
-            </div>
-            <LoadingLink
-              href={`/instagram/posts/${automation.zernioPostId}?accountId=${automation.instagramAccountId}`}
-              className="mt-2 inline-block text-sm text-accent hover:underline"
-            >
-              View →
-            </LoadingLink>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function StatusPill({ isActive }: { isActive: boolean }) {
-  return (
-    <span
-      className={
-        isActive
-          ? 'rounded-full border border-success-border bg-success-bg px-2.5 py-0.5 text-xs font-semibold text-success'
-          : 'rounded-full bg-muted-bg px-2.5 py-0.5 text-xs font-semibold text-text-faint'
-      }
-    >
-      {isActive ? 'Enabled' : 'Disabled'}
-    </span>
   );
 }

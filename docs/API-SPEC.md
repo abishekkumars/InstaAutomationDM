@@ -326,14 +326,36 @@ Response (`200`):
     "commentReply": "Check your DMs!",
     "buttons": [{ "title": "Shop now", "url": "https://example.com/shop" }],
     "dmMessage": "Here is the link you asked for!",
-    "isActive": true
+    "isActive": true,
+    "stats": { "dmsSent": 129, "linkClicks": 28, "clickThroughRate": 24.3 },
+    "post": {
+      "caption": "Handmade tote reel",
+      "thumbnailUrl": "https://cdn.instagram.com/...",
+      "permalink": "https://instagram.com/p/abc123"
+    }
   }
 ]
 ```
 Ordered newest-first. `accountUsername` is the connected account's own `username` (nullable,
 same as elsewhere in this app — not guaranteed to be set).
 
-Errors: `401` (no/invalid bearer token), `404` (not a member of `:organizationId`).
+`stats` and `post` (Phase 10.3) are fetched **live from Zernio** on every request and never
+stored locally (per `docs/ADR/0005`):
+
+- `stats` comes from `GET /v1/comment-automations?profileId=` — the only Zernio endpoint that
+  returns the richer stats shape. **`null` when Zernio is unreachable or has no matching
+  automation**, which is deliberately distinct from zeroed counters: the dashboard renders an
+  em dash for `null` so a failed fetch never reads as "this automation has sent nothing".
+- `clickThroughRate` is a percentage computed as `linkClicks / trackedSends * 100`.
+  `trackedSends` — not `dmsSent` — is the denominator Zernio's own spec mandates, since a DM
+  with no tracked link can never be clicked. It is `null` when `trackedSends` is 0.
+- `post` is the automation's post preview, resolved from one `listPosts` call per distinct
+  connected account. `null` when the post can't be resolved.
+- `isActive` prefers Zernio's own value over the locally stored copy — this project has no
+  edit/pause endpoint, so a toggle flipped in Zernio's dashboard would otherwise never show.
+
+Errors: `401` (no/invalid bearer token), `404` (not a member of `:organizationId`). A Zernio
+outage does **not** produce an error here — it degrades to `stats: null` / `post: null`.
 
 Further endpoints are documented here as each is actually implemented, with full request/
 response shape, auth requirement, and example — not speculatively written ahead of the

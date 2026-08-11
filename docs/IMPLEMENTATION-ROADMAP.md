@@ -62,9 +62,9 @@ completed work, just a rewrite of what hadn't started yet).
   the create wizard no longer drops its own fields on submit; plus a light/dark theme switch,
   a fixed app shell with a virtualized/searchable/sortable posts browser, and a global loading
   overlay. See "Phase 10.2b report" below.
-- [ ] Phase 10.3 — live send/click stats on the dashboard (Zernio's `stats.dmsSent`/
-  `linkClicks`, real fields verified in Phase 10.1/10.2, not yet surfaced anywhere in this
-  app) — **next phase**
+- [x] Phase 10.3 — live send/click stats on the dashboard (Zernio's `stats.dmsSent`/
+  `linkClicks` from the list endpoint's richer stats shape), plus post thumbnails, search and
+  sort on the automations table, and four summary stat cards. See "Phase 10.3 report" below.
 - [ ] **Phase 11 — Webhook ingestion + automation trigger recording** (`POST /webhooks/zernio`,
   `webhook_events` idempotency, in-process — no queue, per ADR 0005; records what Zernio's own
   server-side automation execution reports, per Phase 10's finding that Zernio does the
@@ -1712,3 +1712,84 @@ agreeable stubs: `ensureProfile` returns the same id for the same name (`reused:
 - `.env.example` in the working copy currently holds **real** secret values. It is deliberately
   excluded from this commit and has never been committed with those values (verified with
   `git log -S`). It must be reset to empty placeholders before it is ever staged again.
+
+## Phase 10.3 report
+
+Live send/click stats on the dashboard, built to a mockup the user supplied: four summary stat
+cards, post thumbnails per row, plus search and sort over the automations table.
+
+**What was built**
+
+- `packages/zernio`: new `CommentAutomationStats` (`triggered`, `dmsSent`, `dmsFailed`,
+  `uniqueContacts`, `trackedSends`, `linkClicks`, `uniqueClicks`) on `CommentAutomation.stats`.
+  Nullable **by design**: only the LIST endpoint returns this richer shape - create/get return a
+  smaller `{totalTriggered, totalSent, totalFailed}` object instead. That inconsistency in
+  Zernio's own API was documented back in Phase 10.1; `stats: null` is how a
+  CommentAutomation built from a create response represents "no stats here", as distinct from a
+  stats object whose counters are genuinely 0.
+- `apps/api`: `listForOrganization` now enriches every row with `stats` and a `post` preview
+  (`caption`, `thumbnailUrl`, `permalink`). Both are fetched live from Zernio and never stored
+  locally, per ADR 0005. Post previews come from **one `listPosts` call per distinct account**,
+  not per automation - several automations usually share an account, so a per-row call would be
+  N round trips for the same data. `isActive` now prefers Zernio's value over the local copy,
+  since this project has no edit/pause endpoint and a toggle flipped in Zernio's own dashboard
+  would otherwise never appear here.
+- `apps/web`: new `app/automations-browser.tsx` (client component) - search across name,
+  keywords, account and post caption; sort by most sent / most clicks / name / enabled-first;
+  thumbnail, sent and clicks columns. The dashboard's four stat cards are Active automations,
+  DMs sent, Button clicks (with CTR), and Connected accounts. The old server-rendered
+  `AutomationsTable`/`StatusPill` in `page.tsx` were deleted, not left alongside.
+
+**The CTR denominator is `trackedSends`, not `dmsSent`** - Zernio's own spec says so
+explicitly, and the reason is real: a DM carrying no tracked link can never be clicked, so
+dividing by `dmsSent` systematically understates the rate. `AutomationStats.clickThroughRate`
+is `null` (not `0`) when `trackedSends` is 0, because "nothing trackable has gone out yet" and
+"a genuine 0% click-through" are different facts, and dividing by zero would yield NaN. The
+org-wide card recovers summed `trackedSends` from each row's own rate
+(`clicks / rate * 100`) rather than widening the API surface to expose it.
+
+**Degradation is explicit, not silent.** A failed stats or posts fetch leaves `stats`/`post`
+as `null`, and the UI renders an em dash - never a fabricated `0`, which would read as "this
+automation has sent nothing". The row itself still renders either way: a Zernio outage
+downgrades the dashboard to names/keywords/status rather than breaking the page, the same
+read-path discipline as Phase 10.2b's reconciliation.
+
+**Commands executed and results**
+
+| Command | Result |
+|---|---|
+| `scripts/pnpm.ps1 --filter @automationdm/zernio run build` | `tsc`, exit 0 |
+| `scripts/pnpm.ps1 --filter @automationdm/api run typecheck` (1st) | 3 errors - the test fakes' `CommentAutomation` literals lacked the new required `stats`. Fixed. |
+| `scripts/pnpm.ps1 --filter @automationdm/api run test` | **48/48 passed** (was 46 - two new stats tests) |
+| `scripts/pnpm.ps1 --filter @automationdm/web run build` | `next build`, exit 0 |
+| `scripts/lint.ps1` (1st) | ESLint 0, typecheck 8/8, Prettier flagged 2 files |
+| `pnpm run format` + `scripts/lint.ps1` (2nd) | All three pass, exit 0 |
+
+**New tests**
+
+- *enriches each row with live Zernio stats and the post thumbnail* - asserts
+  `clickThroughRate === 25` from 2 clicks / 8 `trackedSends`. The fake deliberately sets
+  `trackedSends` (8) **lower** than `dmsSent` (10), which is how Zernio's real data behaves, so
+  computing CTR against the wrong denominator yields 20% and fails the assertion. That is the
+  regression guard for the denominator choice.
+- *returns null stats rather than zeros when Zernio cannot be reached* - a new
+  `failListCommentAutomations` flag on the fake makes the stats call throw; asserts
+  `stats === null` and that the row still renders.
+- The automations fake's `listPosts` now returns registered posts instead of an empty array,
+  so the thumbnail lookup has something real to resolve against.
+
+**Known limitations / risks**
+
+- **Not verified against live Zernio.** The stats shape comes from Zernio's live OpenAPI spec
+  (re-read this phase) and the fake models it, but no real `listCommentAutomations` response has
+  been observed with this code. The user's own screenshot of a real response was the reference
+  for the field names.
+- Stats are all-time totals; Zernio's list endpoint exposes no date filtering, so no
+  "last 7 days" view is possible without a different endpoint.
+- `delivered`/`read`/`uniqueContacts`/`dmsFailed` are mapped in `packages/zernio` but not
+  surfaced in the UI - available for a later phase without another provider change.
+- The dashboard now makes 1 + N Zernio calls (one automations list + one posts list per
+  distinct connected account). Fine at this project's scale (3-4 users, one account each);
+  worth caching if account counts ever grow.
+- Search/sort are client-side over the org's own automations, which is correct at this scale -
+  the full list is already loaded for the table.

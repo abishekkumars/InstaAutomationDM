@@ -123,6 +123,7 @@ class FakeInstagramProvider implements InstagramProvider {
       buttons: input.buttons ?? [],
       dmMessage: input.dmMessage,
       isActive: true,
+      stats: null,
     };
   }
 

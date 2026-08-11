@@ -188,9 +188,14 @@ is now resolved, not assumed.
   inconsistency in Zernio's own API, not assumed to match: `{triggered, dmsSent, dmsFailed,
   uniqueContacts, trackedSends, linkClicks, uniqueClicks, delivered, read}`, vs. create/get's
   `{totalTriggered, totalSent, totalFailed}`. `linkClicks`/`uniqueClicks` (real click-through
-  counts on tracked button links) and `dmsSent` only come from this list endpoint - see
-  "Known limitations" in the Phase 10.1 roadmap report for what this means for the dashboard
-  (not yet wired up to call this).
+  counts on tracked button links) and `dmsSent` only come from this list endpoint. **Wired up
+  in Phase 10.3**: `apps/api`'s `listForOrganization` calls this to put live sent/click counts
+  on the dashboard, and `CommentAutomation.stats` is nullable precisely because create/get
+  return the other, smaller shape.
+  **CTR denominator**: Zernio's own spec is explicit that `trackedSends`, not `dmsSent`, is the
+  right divisor for a click-through rate ("divide clicks by this, not dmsSent") - a DM carrying
+  no tracked link can never be clicked, so `dmsSent` understates the rate. This project follows
+  that, and reports `null` rather than `0` when `trackedSends` is 0.
 - `GET /v1/comment-automations/{automationId}` — get one, including recent trigger `logs`
   (per-comment outcome: `status` sent/failed/skipped/gated/pending, `commentText`,
   `commenterId`, errors). Useful for Phase 12's status/history view - not built yet.

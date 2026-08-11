@@ -8,7 +8,13 @@ import {
 import { z } from 'zod';
 import { AutomationMatchMode, Prisma } from '@automationdm/database';
 import { createAutomationSchema } from '@automationdm/validation';
-import { type InstagramProvider, ZernioApiError } from '@automationdm/zernio';
+import {
+  type CommentAutomation,
+  type CommentAutomationStats,
+  type InstagramPost,
+  type InstagramProvider,
+  ZernioApiError,
+} from '@automationdm/zernio';
 import { PrismaService } from '../database/prisma.service';
 import { INSTAGRAM_PROVIDER } from '../instagram/instagram-provider.token';
 
@@ -35,10 +41,42 @@ export interface AutomationSummary {
 export interface AutomationListItem extends AutomationSummary {
   instagramAccountId: string;
   accountUsername: string | null;
+  /** Live counters from Zernio's list endpoint (Phase 10.3). Null when Zernio is unreachable
+   * or has no matching automation - the dashboard renders a dash rather than a fake 0, so a
+   * failed stats fetch never reads as "this automation has sent nothing". */
+  stats: AutomationStats | null;
+  /** Post caption/thumbnail for the row, fetched live from Zernio (post content is never
+   * stored locally - see docs/ADR/0005). Null when the post can't be resolved. */
+  post: AutomationPostPreview | null;
+}
+
+export interface AutomationStats {
+  dmsSent: number;
+  linkClicks: number;
+  /** Clicks / trackedSends, as a percentage, or null when nothing trackable was sent. Zernio's
+   * own spec is explicit that trackedSends - not dmsSent - is the right denominator: a DM with
+   * no tracked link can never be clicked, so dividing by dmsSent understates CTR. */
+  clickThroughRate: number | null;
+}
+
+export interface AutomationPostPreview {
+  caption: string;
+  thumbnailUrl: string | null;
+  permalink: string | null;
 }
 
 function toMatchMode(matchMode: 'contains' | 'word' | 'exact'): AutomationMatchMode {
   return matchMode.toUpperCase() as AutomationMatchMode;
+}
+
+function toStats(stats: CommentAutomationStats): AutomationStats {
+  return {
+    dmsSent: stats.dmsSent,
+    linkClicks: stats.linkClicks,
+    // Null, not 0, when nothing trackable went out - "no trackable sends yet" and "a real 0%
+    // click-through" are different facts, and dividing by zero would produce Infinity/NaN.
+    clickThroughRate: stats.trackedSends > 0 ? (stats.linkClicks / stats.trackedSends) * 100 : null,
+  };
 }
 
 @Injectable()
@@ -187,14 +225,98 @@ export class AutomationsService {
 
     const automations = await this.prisma.client.automation.findMany({
       where: { organizationId },
-      include: { instagramAccount: { select: { username: true } } },
+      include: { instagramAccount: { select: { username: true, zernioAccountId: true } } },
       orderBy: { createdAt: 'desc' },
     });
-    return automations.map((automation) => ({
-      ...toSummary(automation),
-      instagramAccountId: automation.instagramAccountId,
-      accountUsername: automation.instagramAccount.username,
-    }));
+    if (automations.length === 0) {
+      return [];
+    }
+
+    const organization = await this.prisma.client.organization.findUniqueOrThrow({
+      where: { id: organizationId },
+    });
+
+    // Live stats + post previews are fetched from Zernio, never stored locally (ADR 0005).
+    // Both are best-effort: a Zernio outage degrades the dashboard to names/keywords/status
+    // rather than failing the whole page, which is the same read-path discipline as
+    // listForPost's reconciliation.
+    const [remoteByAutomationId, postsByAccount] = await Promise.all([
+      this.fetchRemoteAutomations(organization.zernioProfileId),
+      this.fetchPostsForAccounts(
+        organization.zernioProfileId,
+        // One listPosts call per DISTINCT account, not per automation - several automations
+        // usually share an account, and a per-row call would be N round trips for the same data.
+        [...new Set(automations.map((a) => a.instagramAccount.zernioAccountId))],
+      ),
+    ]);
+
+    return automations.map((automation) => {
+      const remote = remoteByAutomationId.get(automation.zernioAutomationId);
+      const post = postsByAccount
+        .get(automation.instagramAccount.zernioAccountId)
+        ?.get(automation.zernioPostId);
+      return {
+        ...toSummary(automation),
+        instagramAccountId: automation.instagramAccountId,
+        accountUsername: automation.instagramAccount.username,
+        // Prefer Zernio's own isActive over our stored copy: this project has no edit/pause
+        // endpoint, so a toggle flipped in Zernio's dashboard would otherwise never show here.
+        isActive: remote?.isActive ?? automation.isActive,
+        stats: remote?.stats ? toStats(remote.stats) : null,
+        post: post
+          ? {
+              caption: post.caption,
+              thumbnailUrl: post.thumbnailUrl,
+              permalink: post.permalink,
+            }
+          : null,
+      };
+    });
+  }
+
+  /** Zernio's automations for a profile, keyed by automation id. Empty map on any failure. */
+  private async fetchRemoteAutomations(
+    zernioProfileId: string | null,
+  ): Promise<Map<string, CommentAutomation>> {
+    if (!zernioProfileId) {
+      return new Map();
+    }
+    try {
+      const remote = await this.provider.listCommentAutomations({ zernioProfileId });
+      return new Map(remote.map((item) => [item.zernioAutomationId, item]));
+    } catch (error) {
+      console.error('[automations] could not load Zernio stats:', error);
+      return new Map();
+    }
+  }
+
+  /** Posts per account, keyed by account id then Zernio post id. Empty map on any failure. */
+  private async fetchPostsForAccounts(
+    zernioProfileId: string | null,
+    zernioAccountIds: string[],
+  ): Promise<Map<string, Map<string, InstagramPost>>> {
+    const byAccount = new Map<string, Map<string, InstagramPost>>();
+    if (!zernioProfileId) {
+      return byAccount;
+    }
+
+    await Promise.all(
+      zernioAccountIds.map(async (zernioAccountId) => {
+        try {
+          // 500 is Zernio's own max and the window getPost already relies on (~12 months).
+          const { posts } = await this.provider.listPosts({
+            zernioProfileId,
+            zernioAccountId,
+            page: 1,
+            limit: 500,
+          });
+          byAccount.set(zernioAccountId, new Map(posts.map((post) => [post.zernioPostId, post])));
+        } catch (error) {
+          console.error('[automations] could not load posts for the dashboard:', error);
+        }
+      }),
+    );
+    return byAccount;
   }
 
   async create(

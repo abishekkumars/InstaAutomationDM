@@ -15,6 +15,7 @@ import {
   type GetConnectUrlInput,
   type GetConnectUrlResult,
   type InstagramPost,
+  type ListPostsInput,
   type InstagramProvider,
   type ListPostsResult,
 } from '@automationdm/zernio';
@@ -60,8 +61,20 @@ class FakeInstagramProvider implements InstagramProvider {
     this.connectedByProfile.set(zernioProfileId, account);
   }
 
-  async listPosts(): Promise<ListPostsResult> {
-    return { posts: [], pagination: { page: 1, limit: 10, total: 0, pages: 1 } };
+  // Returns whatever posts have been registered for the account, so the dashboard's thumbnail
+  // lookup (which goes through listPosts, not getPost) has something real to resolve against.
+  private postsByAccount = new Map<string, InstagramPost[]>();
+
+  setPosts(zernioAccountId: string, posts: InstagramPost[]): void {
+    this.postsByAccount.set(zernioAccountId, posts);
+  }
+
+  async listPosts(input: ListPostsInput): Promise<ListPostsResult> {
+    const posts = this.postsByAccount.get(input.zernioAccountId) ?? [];
+    return {
+      posts,
+      pagination: { page: 1, limit: input.limit, total: posts.length, pages: 1 },
+    };
   }
 
   // Any post id resolves, and its Instagram media id is deliberately DIFFERENT from Zernio's
@@ -101,6 +114,18 @@ class FakeInstagramProvider implements InstagramProvider {
       buttons: input.buttons ?? [],
       dmMessage: input.dmMessage,
       isActive: true,
+      // Non-zero, and with trackedSends deliberately LOWER than dmsSent (which is how Zernio's
+      // real data behaves - only DMs carrying a tracked link count), so a CTR computed against
+      // the wrong denominator produces a different number and the test catches it.
+      stats: {
+        triggered: 12,
+        dmsSent: 10,
+        dmsFailed: 1,
+        uniqueContacts: 9,
+        trackedSends: 8,
+        linkClicks: 2,
+        uniqueClicks: 2,
+      },
     };
     this.remoteAutomations.push(automation);
     return automation;
@@ -113,7 +138,10 @@ class FakeInstagramProvider implements InstagramProvider {
   // directly in Zernio's own dashboard) without this app's database knowing about it.
   simulateExistingZernioAutomation(
     zernioPostId: string,
-    remote?: Partial<CommentAutomation> & { zernioAccountId: string },
+    remote?: Omit<Partial<CommentAutomation>, 'stats'> & {
+      zernioAccountId: string;
+      stats?: CommentAutomation['stats'];
+    },
   ): void {
     this.postsWithAutomation.add(zernioPostId);
     if (remote) {
@@ -125,6 +153,7 @@ class FakeInstagramProvider implements InstagramProvider {
         name: 'Made in Zernio',
         keywords: ['price'],
         matchMode: 'contains',
+        stats: null,
         commentReply: null,
         buttons: [],
         dmMessage: 'Here is the link',
@@ -134,11 +163,19 @@ class FakeInstagramProvider implements InstagramProvider {
     }
   }
 
+  /** Simulates Zernio being unreachable for the stats lookup specifically. */
+  failListCommentAutomations = false;
+
   async listCommentAutomations(): Promise<CommentAutomation[]> {
+    if (this.failListCommentAutomations) {
+      throw new ZernioApiError('GET', '/comment-automations', 503, { error: 'unavailable' });
+    }
     return this.remoteAutomations;
   }
 
   reset(): void {
+    this.failListCommentAutomations = false;
+    this.postsByAccount.clear();
     this.profileCounter = 0;
     this.connectedByProfile.clear();
     this.automationCounter = 0;
@@ -609,6 +646,88 @@ describe('GET .../organizations/:organizationId/automations', () => {
       .set('Authorization', bearerFor(user.id, user.email))
       .expect(200);
     expect(response.body).toEqual([]);
+  });
+
+  it('enriches each row with live Zernio stats and the post thumbnail', async () => {
+    const { user, organization } = await createOrgWithOwner('alice@example.com');
+    const { accountId } = await connectAndConfirmAccount(
+      app,
+      user,
+      organization,
+      'ig-acct-1',
+      'acme_ig',
+    );
+    fakeProvider.setPosts('ig-acct-1', [
+      {
+        zernioPostId: 'post-1',
+        zernioAccountId: 'ig-acct-1',
+        platformPostId: 'ig-media-post-1',
+        permalink: 'https://instagram.com/p/abc',
+        caption: 'Handmade tote reel',
+        mediaType: 'video',
+        thumbnailUrl: 'https://cdn.example.test/thumb.jpg',
+        publishedAt: null,
+      },
+    ]);
+    await request(app.getHttpServer())
+      .post(
+        `/api/organizations/${organization.id}/instagram/accounts/${accountId}/posts/post-1/automations`,
+      )
+      .set('Authorization', bearerFor(user.id, user.email))
+      .send(AUTOMATION_BODY)
+      .expect(201);
+
+    const response = await request(app.getHttpServer())
+      .get(`/api/organizations/${organization.id}/automations`)
+      .set('Authorization', bearerFor(user.id, user.email))
+      .expect(200);
+
+    expect(response.body).toHaveLength(1);
+    expect(response.body[0].stats).toEqual({
+      dmsSent: 10,
+      linkClicks: 2,
+      // 2 clicks / 8 trackedSends = 25%. Using dmsSent (10) as the denominator would give
+      // 20%, so this assertion is the guard against the wrong denominator - Zernio's own spec
+      // is explicit that trackedSends is the correct one.
+      clickThroughRate: 25,
+    });
+    expect(response.body[0].post).toEqual({
+      caption: 'Handmade tote reel',
+      thumbnailUrl: 'https://cdn.example.test/thumb.jpg',
+      permalink: 'https://instagram.com/p/abc',
+    });
+  });
+
+  it('returns null stats rather than zeros when Zernio cannot be reached', async () => {
+    // A stats fetch failure must not read as "this automation has sent nothing" - the
+    // dashboard renders a dash for null, and 0 would be a fabricated number.
+    const { user, organization } = await createOrgWithOwner('alice@example.com');
+    const { accountId } = await connectAndConfirmAccount(
+      app,
+      user,
+      organization,
+      'ig-acct-1',
+      'acme_ig',
+    );
+    await request(app.getHttpServer())
+      .post(
+        `/api/organizations/${organization.id}/instagram/accounts/${accountId}/posts/post-1/automations`,
+      )
+      .set('Authorization', bearerFor(user.id, user.email))
+      .send(AUTOMATION_BODY)
+      .expect(201);
+
+    fakeProvider.failListCommentAutomations = true;
+
+    const response = await request(app.getHttpServer())
+      .get(`/api/organizations/${organization.id}/automations`)
+      .set('Authorization', bearerFor(user.id, user.email))
+      .expect(200);
+
+    expect(response.body).toHaveLength(1);
+    expect(response.body[0].stats).toBeNull();
+    // The row itself still renders - a stats outage degrades the dashboard, never breaks it.
+    expect(response.body[0].name).toBe(AUTOMATION_BODY.name);
   });
 
   it('lists automations across every connected account in the org, newest first, scoped to that org only', async () => {
