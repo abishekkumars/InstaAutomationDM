@@ -1,6 +1,6 @@
 # Architecture
 
-Status: Phase 9 baseline, **scope simplified** — see
+Status: Phase 10 baseline, **scope simplified** — see
 `docs/ADR/0005-simplified-mvp-architecture.md`. This project is a small internal/limited-use
 tool (~3-4 users, under 1,000 API calls/month), not a general-purpose SaaS; the architecture
 below reflects that directly rather than carrying infrastructure sized for a scale this
@@ -125,7 +125,10 @@ splitting them out), `instagram` (Phase 8 — real: OAuth connect/callback endpo
 than as a separate top-level `zernio` wrapper module, since it has nothing to do yet beyond
 what `instagram.module.ts` already provides; Phase 9 added posts/reels listing to the same
 module rather than a separate `posts` module, since it's still entirely about one connected
-Instagram account), `webhooks` (Phase 11), `automations` (Phase 10-12), `health`.
+Instagram account), `automations` (Phase 10 — real: comment-automation creation, mounted
+under `organizations/:organizationId/instagram/accounts/:accountId/posts/:postId/automations`;
+imports `InstagramModule` to reuse its `INSTAGRAM_PROVIDER` binding rather than creating a
+second `ZernioInstagramProvider` instance), `webhooks` (Phase 11), `health`.
 
 Not all of these exist yet — see `docs/IMPLEMENTATION-ROADMAP.md` for which phase introduces
 which module. Creating an empty module ahead of the phase that needs it is avoided;
@@ -254,6 +257,40 @@ posts/reels are proxied live from Zernio on every request, never duplicated loca
 use case (see `docs/ZERNIO-INTEGRATION.md`'s "Listing posts/reels" section for why) - it
 searches a `listPosts` call instead, which is why it takes the same `zernioProfileId`/
 `zernioAccountId` input `listPosts` does rather than just a bare post id.
+
+## Comment automation creation (Phase 10)
+
+```
+apps/web (create-automation form on a post's detail page, server action)
+   │  POST /api/organizations/:id/instagram/accounts/:accountId/posts/:postId/automations
+   │    { name, keywords: string[], matchMode, commentReply?, dmMessage }
+   ▼
+apps/api AutomationsService
+   │  1. re-check caller's membership in :id, and that :accountId belongs to it
+   │  2. local pre-check: does an Automation already exist for (accountId, postId)?
+   │  3. InstagramProvider.createCommentAutomation
+   ▼
+ZernioInstagramProvider
+   │  POST /v1/comment-automations { profileId, accountId, platformPostId, name,
+   │    keywords, matchMode, commentReply, dmMessage }
+   ▼
+Zernio (creates the automation AND will execute it server-side - see below)
+   │
+   ▼
+PostgreSQL (automations - mirrors the created config, keyed by Zernio's own automationId)
+```
+
+**Resolved during this phase, not assumed**: Zernio's own `POST /v1/comment-automations`
+executes the entire keyword-match → public-reply → DM flow server-side once created - this
+project's code never re-implements that matching (`docs/AUTOMATION-ENGINE.md`'s "Open
+question" is now "Resolved"). `packages/automation-engine` was never built as a result.
+
+**Tenant isolation / consistency**: enforced at two layers, not just Zernio's own `409` -
+`AutomationsService.create` checks its own `Automation` table for
+`(instagramAccountId, zernioPostId)` before calling Zernio, and a database-level
+`@@unique` constraint (caught via Prisma error code `P2002`) covers the race between that
+check and the actual insert - same defense-in-depth pattern as the callback handler's live
+re-confirmation in Phase 8.
 
 ## Authentication (Phase 5)
 

@@ -1,8 +1,8 @@
 # Database Design
 
-Status: Phase 9, scope simplified per
+Status: Phase 10, scope simplified per
 `docs/ADR/0005-simplified-mvp-architecture.md`. `User`, `Organization`, `OrganizationMember`,
-`InstagramAccount` exist as real, migrated Prisma models
+`InstagramAccount`, `Automation` exist as real, migrated Prisma models
 (`packages/database/prisma/schema.prisma`). Every other table below is the (now much
 smaller) conceptual map for the remaining MVP phases — introduced only when the phase that
 needs it arrives, per this project's usual practice. Phase 9 (listing Instagram posts/reels)
@@ -183,6 +183,36 @@ callback handler, per `docs/ZERNIO-INTEGRATION.md`'s "Account connection" sectio
 - `@@index([organizationId])` — "list an organization's connected accounts," every
   account-picker UI load from Phase 8 on.
 
+## `Automation` (table added Phase 10)
+
+A comment-to-DM automation, one row per Zernio comment-automation this app created. See
+`docs/AUTOMATION-ENGINE.md`'s "Model" section for why this is a fixed shape (one org + one
+account + one post + keyword(s) + reply/DM templates), not a generic trigger/condition/action
+graph, and its "Resolved" section for why there's no local matching logic - Zernio executes
+the automation itself; this table only mirrors the config it was created with.
+
+- `id` — `cuid()`.
+- `organizationId` / `instagramAccountId` — FKs, both `onDelete: Cascade`.
+- `zernioAutomationId` — **globally unique** `String`, same reasoning as
+  `InstagramAccount.zernioAccountId`: an inbound webhook (Phase 11) identifies the automation
+  only by this id, and that lookup must have exactly one answer.
+- `zernioPostId` — Zernio's own post id (`platformPostId`) this automation is scoped to. The
+  post/reel's own content is never stored locally (per ADR 0005) — only this id.
+- `keywords` — `String[]` (Postgres text array), **not** a single `String` — Zernio's own
+  `POST /v1/comment-automations` takes an array of keywords per automation
+  (`docs/ZERNIO-INTEGRATION.md`), and this project's product model is "one keyword, or a
+  short list of keywords."
+- `matchMode` — `AutomationMatchMode` enum (`CONTAINS`, `WORD`, `EXACT`), defaults to
+  `CONTAINS` — same three values, same default, as Zernio's own `matchMode`.
+- `commentReply` — nullable `String`. Zernio's own API treats the public reply as optional;
+  a DM-only automation with no public reply is a normal, supported configuration.
+- `dmMessage` — `String`, required (Zernio requires it too).
+- `isActive` — `Boolean`, defaults `true`.
+- `@@unique([instagramAccountId, zernioPostId])` — mirrors Zernio's own "only one active
+  per-post automation" rule at our own data layer too, not just trusted from Zernio's `409`.
+- `@@index([organizationId])` — "list an organization's automations," a future Phase 12
+  dashboard/history view.
+
 ## Conceptual tables (not yet built — introduced per-phase)
 
 Per ADR 0005, this is the **complete** remaining list — not a subset of a larger planned
@@ -192,7 +222,6 @@ that scope is retired, not deferred.
 
 | Table | Introduced in | Purpose |
 |---|---|---|
-| `automations` | Phase 10 | One org + one account + one specific Zernio post/reel id + keyword(s) + public reply template + DM template + active flag. Not a generic trigger/condition/action graph — see `docs/AUTOMATION-ENGINE.md` |
 | `automation_runs` | Phase 12 | One row per trigger match, for basic status/history (MVP item 13) — shape (e.g. whether a separate `automation_run_steps` table is worth it) decided when this phase is built, not speculated now |
 | `webhook_events` | Phase 11 | Raw inbound webhook + idempotency + processing status |
 
@@ -242,6 +271,8 @@ Schema changes always go through a generated migration file committed to the rep
   `InstagramAccountStatus` enum.
 - `20260811021921_add_zernio_profile_id_to_organizations` (Phase 8) adds the nullable, unique
   `organizations.zernio_profile_id` column.
+- `20260811171420_add_automations_table` (Phase 10) creates `automations` and the
+  `AutomationMatchMode` enum.
 
 ## Prisma client
 

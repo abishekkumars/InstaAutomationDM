@@ -1,11 +1,11 @@
 # API Specification
 
-Status: Phase 9 — `apps/api` has `GET /api/health` (liveness), `GET /api/ready` (readiness,
+Status: Phase 10 — `apps/api` has `GET /api/health` (liveness), `GET /api/ready` (readiness,
 checks the database), the error/request-id foundation every endpoint sits on, its
-`organizations` endpoints (Phase 6), and its Zernio-backed `instagram` endpoints
-(connect/callback/accounts in Phase 8; posts/reels listing in Phase 9). Further business
-endpoints land with the phase that needs them: automations in Phase 10/12, webhooks in
-Phase 11, etc.
+`organizations` endpoints (Phase 6), its Zernio-backed `instagram` endpoints
+(connect/callback/accounts in Phase 8; posts/reels listing in Phase 9), and comment-automation
+creation (Phase 10). Further business endpoints land with the phase that needs them:
+automation status/history in Phase 12, webhooks in Phase 11, etc.
 
 ## Convention
 
@@ -232,6 +232,55 @@ Response (`200`): same shape as one item of the list endpoint's `posts` array ab
 
 Errors: `404` (not a member, `:accountId` not found under this organization, or `:postId` not
 found under `:accountId`).
+
+### `GET /api/organizations/:organizationId/instagram/accounts/:accountId/posts/:postId/automations`
+
+Lists the comment automation(s) for a specific post (Phase 10) — in practice `0` or `1` items,
+since Zernio only allows one active per-post automation (`docs/ZERNIO-INTEGRATION.md`).
+Requires a bearer token; same 404 checks as the posts endpoints above.
+
+Response (`200`):
+```json
+[
+  {
+    "id": "clx...",
+    "zernioPostId": "6a7988dfd0fe733d1ab80576",
+    "name": "Watch giveaway",
+    "keywords": ["LINK", "link", "price"],
+    "matchMode": "CONTAINS",
+    "commentReply": "Check your DMs!",
+    "dmMessage": "Here is the link you asked for!",
+    "isActive": true
+  }
+]
+```
+
+### `POST /api/organizations/:organizationId/instagram/accounts/:accountId/posts/:postId/automations`
+
+Creates a comment-to-DM automation for a specific post, via Zernio's real
+`POST /v1/comment-automations` (`docs/ZERNIO-INTEGRATION.md`). Requires a bearer token; same
+404 checks as above.
+
+Request:
+```json
+{
+  "name": "Watch giveaway",
+  "keywords": ["LINK", "link", "price"],
+  "matchMode": "contains",
+  "commentReply": "Check your DMs!",
+  "dmMessage": "Here is the link you asked for!"
+}
+```
+`keywords`: array of 1-50 non-empty strings, **not a single string** — matches Zernio's own
+field shape. `matchMode`: `contains` (default) | `word` | `exact`. `commentReply`: optional.
+`dmMessage`: required, ≤1000 chars.
+
+Response (`201`): same shape as one item of the list endpoint's array above.
+
+Errors: `400` (invalid input, e.g. no keywords), `404` (not a member, or `:accountId` not
+found under this organization), `409` (this post already has an automation — enforced both
+locally and by Zernio's own rule; also returned if Zernio itself already has one for this
+post that our own database didn't know about, e.g. created directly in Zernio's dashboard).
 
 Further endpoints are documented here as each is actually implemented, with full request/
 response shape, auth requirement, and example — not speculatively written ahead of the

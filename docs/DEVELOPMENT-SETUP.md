@@ -411,3 +411,32 @@ fixing `.env`. After the fix, a full live verification (real Zernio profile crea
 redirect to `instagram.com`'s login screen, and the callback path proven against a real,
 already-connected account) succeeded - see `docs/IMPLEMENTATION-ROADMAP.md`'s Phase 8 report
 for the full account.
+
+## A real "wrong Node runtime" bug, found via a user report (2026-08-11)
+
+The user reported `POST .../instagram/connect -> 500: fetch is not defined` when clicking
+"Connect Instagram" locally. `packages/zernio` uses the standard global `fetch` (available
+in Node natively since 18) - the error means whatever process was running `apps/api` had no
+built-in `fetch` at all, which on this machine means it resolved to the global Node 16
+install (confirmed via `.\scripts\doctor.ps1`: a bare `node` on this machine's normal `PATH`
+is still `v16.13.0`, unrelated to and unaffected by the project-local Node 24 every
+`scripts/*.ps1`/`scripts/pnpm.ps1` invocation correctly resolves). Reproduced directly:
+running `apps/api/dist/main.js` via the global Node 16 (`C:\Program Files\nodejs\node.exe`,
+never through the project's own scripts) throws exactly this error the first time a Zernio
+call runs; running the identical build via the project-local Node works fine. Not a code bug
+in `packages/zernio` - `fetch` is standard, supported Node 18+ API, and this project's
+documented minimum is already Node ≥ 20 (Next.js 16/NestJS 11 both require it, per this
+document's Phase 1 note above). The real problem is that `apps/api` had no way to detect
+"I'm running under an unsupported Node" until the first runtime feature that Node 16
+genuinely lacks was hit deep inside a request handler - a confusing failure mode, not a
+useful one.
+
+**Fix**: `apps/api/src/main.ts`'s `bootstrap()` now checks `process.versions.node`'s major
+version before doing anything else, and throws a clear, actionable error (naming the
+resolved Node version/executable path and pointing at `scripts/dev.ps1`/`scripts/pnpm.ps1`
+and `scripts/doctor.ps1`) if it's below 20 - fails loudly at startup instead of confusingly
+mid-request. This mirrors what `next dev` already does for `apps/web` (documented in the
+Phase 2 update below) - NestJS's own `nest build`/`nest start` have no equivalent check,
+which is the asymmetry that let this go unnoticed until a real user hit it. Verified both
+directions directly: running the built output under the global Node 16 now fails immediately
+with the new message; running it under the project-local Node 24 starts normally.

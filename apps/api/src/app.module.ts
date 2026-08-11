@@ -6,6 +6,7 @@ import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
 import { OrganizationsModule } from './organizations/organizations.module';
 import { InstagramModule } from './instagram/instagram.module';
+import { AutomationsModule } from './automations/automations.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { InstagramModule } from './instagram/instagram.module';
     HealthModule,
     OrganizationsModule,
     InstagramModule,
+    AutomationsModule,
   ],
 })
 export class AppModule {}

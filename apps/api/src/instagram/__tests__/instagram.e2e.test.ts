@@ -5,7 +5,9 @@ import request from 'supertest';
 import { prisma } from '@automationdm/database';
 import { signInternalServiceToken } from '@automationdm/shared';
 import type {
+  CommentAutomation,
   ConnectedInstagramAccount,
+  CreateCommentAutomationInput,
   EnsureProfileResult,
   FindConnectedAccountInput,
   GetConnectUrlInput,
@@ -89,6 +91,22 @@ class FakeInstagramProvider implements InstagramProvider {
 
   setPosts(zernioAccountId: string, posts: InstagramPost[]): void {
     this.postsByAccount.set(zernioAccountId, posts);
+  }
+
+  // Not exercised by this file's own tests (see automations.e2e.test.ts) - present only to
+  // satisfy InstagramProvider's contract.
+  async createCommentAutomation(input: CreateCommentAutomationInput): Promise<CommentAutomation> {
+    return {
+      zernioAutomationId: 'unused',
+      zernioAccountId: input.zernioAccountId,
+      zernioPostId: input.zernioPostId,
+      name: input.name,
+      keywords: input.keywords,
+      matchMode: input.matchMode,
+      commentReply: input.commentReply ?? null,
+      dmMessage: input.dmMessage,
+      isActive: true,
+    };
   }
 
   reset(): void {

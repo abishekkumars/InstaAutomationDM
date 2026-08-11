@@ -40,13 +40,15 @@ completed work, just a rewrite of what hadn't started yet).
 - [x] Phase 9 — List + view Instagram posts/reels (fetched live from Zernio, not stored in
   Postgres per ADR 0005; page/limit pagination, verified against Zernio's real docs, not
   assumed). See "Phase 9 report" below.
-- [ ] **Phase 10 — Comment automation creation** (`automations` table: one org + one connected
-  account + one specific Zernio post/reel + keyword(s) + public reply template + DM
-  template; create/save UI on the post/reel detail page; whether matching runs on our side
-  or Zernio's own `comment-automations` API does it end to end is decided here, against
-  Zernio's real docs, not assumed) — **next phase**
-- [ ] Phase 11 — Webhook ingestion + automation trigger (`POST /webhooks/zernio`,
-  `webhook_events` idempotency, in-process execution — no queue, per ADR 0005)
+- [x] Phase 10 — Comment automation creation (`Automation` table: one org + one connected
+  account + one specific Zernio post/reel + keyword(s) + optional public reply + DM
+  message; create form on the post/reel detail page; resolved against Zernio's real docs
+  that Zernio executes the match → reply → DM flow server-side, not this project). See
+  "Phase 10 report" below.
+- [ ] **Phase 11 — Webhook ingestion + automation trigger recording** (`POST /webhooks/zernio`,
+  `webhook_events` idempotency, in-process — no queue, per ADR 0005; records what Zernio's own
+  server-side automation execution reports, per Phase 10's finding that Zernio does the
+  matching itself) — **next phase**
 - [ ] Phase 12 — Automation status/history (run/status records + a simple list/detail UI —
   the MVP's item 13, not a general analytics pipeline)
 - [ ] Phase 13 — Security hardening (scoped to this app's actual size — tenant isolation,
@@ -1104,11 +1106,139 @@ this file.
 - The known Phase 8 limitations (no Facebook-Login connect variant, no personal-account
   warning, no Zernio rate-limit handling) are unchanged by this phase.
 
+## Phase 10 report
+
+**Re-verification against Zernio's live docs (required by `CLAUDE.md` before this phase
+started)**: fetched Zernio's live OpenAPI spec again for `POST/GET/PATCH/DELETE
+/v1/comment-automations[/{automationId}]`. This resolves `docs/AUTOMATION-ENGINE.md`'s "Open
+question" for real: the endpoint's own description is *"Set up keyword triggers on
+Instagram/Facebook so commenters automatically receive a DM"* — Zernio executes the entire
+keyword-match → public-reply → DM flow server-side once an automation is created. This
+project's code never re-implements that matching; `packages/automation-engine` (planned in
+the original design) was never built as a result — see `docs/AUTOMATION-ENGINE.md`. The spec
+also confirmed `keywords` is a real `string[]` field, matching the user's explicit
+requirement ("keywords is not a single, need to add multiple") — this was already the
+project's intended model (`docs/AUTOMATION-ENGINE.md`'s "one keyword, or a short list of
+keywords"), and Zernio's real API agrees.
+
+**What was built**
+- `packages/database`: `Automation` table (`organizationId`, `instagramAccountId`,
+  `zernioAutomationId` unique, `zernioPostId`, `name`, `keywords: String[]`, `matchMode`
+  enum, `commentReply` nullable, `dmMessage`, `isActive`,
+  `@@unique([instagramAccountId, zernioPostId])`), one migration
+  (`20260811171420_add_automations_table`).
+- `packages/validation`: `createAutomationSchema` (`keywords` array, 1-50 items, required;
+  `matchMode` enum default `contains`; `commentReply` optional; `dmMessage` required, ≤1000
+  chars).
+- `packages/zernio`: `InstagramProvider.createCommentAutomation`; `ZernioApiError` is now
+  exported (was package-private) so `apps/api` can map its `status` to the right HTTP error;
+  `ZernioInstagramProvider.createCommentAutomation` calls the real
+  `POST /v1/comment-automations`.
+- `apps/api`: new `automations` module (`AutomationsService`/`AutomationsController`) mounted
+  under `organizations/:organizationId/instagram/accounts/:accountId/posts/:postId/automations`
+  (`GET` list, `POST` create), behind `SessionGuard`, same 404-tenant-isolation pattern as
+  `instagram`. `InstagramModule` now `exports` its `INSTAGRAM_PROVIDER` binding so
+  `AutomationsModule` reuses the same `ZernioInstagramProvider` instance rather than creating
+  a second one. `create` enforces "one automation per post" at two layers: a local
+  `Automation` pre-check, and a `Prisma` `P2002` catch for the race between that check and
+  the insert (mirroring the callback handler's Phase 8 defense-in-depth) - plus Zernio's own
+  `409` mapped to the same `ConflictException` for the case where Zernio already has an
+  automation for this post that our own database never learned about (e.g. created directly
+  in Zernio's dashboard).
+- `apps/api`: 9 new Vitest + Supertest e2e tests
+  (`src/automations/__tests__/automations.e2e.test.ts`) against an in-memory
+  `FakeInstagramProvider` — no bearer token (401), non-member (404), cross-org accountId
+  (404), **creating an automation with multiple keywords and confirming they persist
+  correctly** (the specific scenario the user flagged), rejecting empty keywords (400),
+  rejecting a duplicate per-post automation via the local pre-check (409), rejecting when
+  Zernio already has one our database doesn't know about (409, and confirms nothing was
+  written locally), listing (empty array, then the created automation, 404 for non-member).
+  33/33 total with the existing `instagram`/`organizations` suites (up from 24).
+- `apps/web`: the post detail page (`src/app/instagram/posts/[postId]/page.tsx`) now fetches
+  any existing automation for the post and either displays it (name, keywords, match mode,
+  optional public reply, DM message, active status) or renders a create form; new
+  `[postId]/actions.ts`'s `createAutomationAction`. Keywords are entered as a single
+  comma-separated text field (this app has no client-side interactive form components yet —
+  every form so far is a plain server action — so a comma-separated field is the simplest way
+  to accept multiple keywords without introducing one), split into the array the API expects
+  before sending.
+- Docs: `docs/AUTOMATION-ENGINE.md` (rewritten — "Open question" replaced with "Resolved",
+  execution-flow section rewritten to describe Zernio's own server-side flow instead of a
+  local-matching design that was never needed), `docs/ZERNIO-INTEGRATION.md`
+  ("Comment-to-DM automation API" section rewritten with the real, verified endpoint
+  behavior), `docs/DATABASE.md` (`Automation` model documented, migrations list, conceptual
+  table removed), `docs/API-SPEC.md` (2 new endpoints), `docs/ARCHITECTURE.md` (new "Comment
+  automation creation" flow section, Backend modules note, status line), `apps/api/README.md`,
+  `apps/web/README.md`, `packages/zernio/README.md`, root `README.md`, this file.
+
+**A live-API investigation followed by a deliberate scope decision**: the user's explicit
+ask ("keywords is not a single, need to add multiple") was already the project's intended
+design per `docs/AUTOMATION-ENGINE.md` and is now implemented end to end as a `string[]` at
+every layer (Prisma column, validation schema, `InstagramProvider` input type, the web
+form). Full manual browser verification of the *create* path against the real live Zernio
+API (as done for every prior phase) was **not** performed this phase, deliberately: unlike
+Phases 8/9's read-only verification calls, creating a real comment-automation on the
+already-connected real Instagram account used for prior testing would start an ongoing,
+live behavior change - Zernio would begin actually replying to and DMing real commenters on
+that real account for as long as the automation stayed active. That is a materially
+different risk profile from a one-time read call, and not something to do unilaterally
+against a real third-party-facing account without explicit confirmation. Verification for
+this phase instead rests on the automated suite (33/33, including the exact multi-keyword
+creation scenario against a fake provider that exercises the real request/response mapping
+code) plus the live-verified *shape* of the real API (fetched fresh from Zernio's OpenAPI
+spec, not assumed). **If live end-to-end confirmation is wanted**, the safe way to get it is
+a scoped test: create one automation with an inert, unlikely-to-trigger keyword and a
+harmless DM message, confirm it via `GET /v1/comment-automations`, then immediately `DELETE`
+it (Zernio supports this) - not done automatically here, pending the user's go-ahead.
+
+**Commands executed and results**
+| Command | Result |
+|---|---|
+| `prisma migrate diff --from-url ... --to-schema-datamodel ...` then a hand-written migration file + `prisma migrate deploy` | `prisma migrate dev` hung waiting on an interactive migration-name prompt (a `pnpm run migrate:dev -- --name ...` passthrough quirk, not a real blocker) and was killed; the diff+deploy path (same technique as Phase 8) applied cleanly. |
+| `prisma generate` | Failed twice with `EPERM` renaming the native query-engine binary - a stale `apps/api` dev process (started earlier this session, not from this phase's own work) and, unexpectedly, the running `apps/web` dev server both had it loaded in memory. Stopped both dev processes; `generate` then succeeded. |
+| `pnpm --filter @automationdm/zernio run build` / `pnpm --filter @automationdm/validation run build` | Both `tsc`, exit 0 - needed before `apps/api`'s typecheck could see the new exports. |
+| `.\scripts\lint.ps1` (ESLint + typecheck across all 10 workspace projects + Prettier) | Clean; two rounds caught unused imports/an unused param in the new test file (fixed) and Prettier formatting on 3-4 newly-written files each round (fixed via `pnpm run format`). |
+| `.\scripts\pnpm.ps1 --filter @automationdm/api run test` | **33/33 passed** (15 instagram + 9 automations + 9 organizations). |
+| `pnpm --filter @automationdm/api run build` | `nest build`, exit 0. |
+| `node --version` / `npm --version`, fresh shell | `v16.13.0` / `8.1.0` at `C:\Program Files\nodejs` — unchanged. |
+
+**Files created**
+`packages/database/prisma/migrations/20260811171420_add_automations_table/migration.sql`;
+`packages/validation/src/automation.ts`;
+`apps/api/src/automations/{automations.service.ts,automations.controller.ts,automations.module.ts,__tests__/automations.e2e.test.ts}`;
+`apps/web/src/app/instagram/posts/[postId]/actions.ts`.
+
+**Files modified**
+`packages/database/prisma/schema.prisma`;
+`packages/validation/src/index.ts`;
+`packages/zernio/src/{instagram-provider.ts,zernio-instagram-provider.ts}`;
+`apps/api/src/{app.module.ts,instagram/instagram.module.ts,instagram/__tests__/instagram.e2e.test.ts}`;
+`apps/web/src/app/instagram/posts/[postId]/page.tsx`;
+`docs/{AUTOMATION-ENGINE.md,ZERNIO-INTEGRATION.md,DATABASE.md,API-SPEC.md,ARCHITECTURE.md}`;
+`apps/api/README.md`; `apps/web/README.md`; `packages/zernio/README.md`; root `README.md`;
+this file.
+
+**Known limitations / risks**
+- No edit/delete/toggle-active UI — Phase 10 is scoped to "comment automation **creation**"
+  per the roadmap; Zernio's `PATCH`/`DELETE /v1/comment-automations/{id}` are documented
+  (`docs/ZERNIO-INTEGRATION.md`) but not wired up. A future phase adds this if a real need
+  appears.
+- `getPost`'s `listPosts`-search fallback is bounded by Zernio's own max `limit` (500) in a
+  single call - see Phase 9's report for the same limitation (unchanged this phase, since
+  `Automation` creation itself doesn't call `getPost`/`listPosts` at all).
+- Full live end-to-end verification of the create path against the real Zernio API was
+  deliberately not performed this phase - see the risk discussion above.
+- `story_reply` trigger, DM buttons/templates, `audience`/`followGate`, delay/variation
+  fields, and account-wide (no `platformPostId`) automations are all real Zernio features
+  documented in `docs/ZERNIO-INTEGRATION.md` but not built - out of this phase's scope, not
+  silently dropped.
+
 **Next phase**
 
-Phase 10 — Comment automation creation: verify Zernio's real `comment-automations` API
-(create/list, and specifically whether registering one with Zernio means Zernio executes the
-whole match → reply → DM flow itself, or whether this project must do the keyword matching —
-`docs/AUTOMATION-ENGINE.md`'s open question) against its live docs before building anything,
-then the `automations` table + create/save UI on the post/reel detail page this phase just
-added. Will not start until the user says to proceed.
+Phase 11 — Webhook ingestion + automation trigger recording: verify Zernio's real webhook
+payload shapes (`docs/ZERNIO-INTEGRATION.md`'s "Webhooks" section is still Phase 0 research)
+against its live docs before building `POST /webhooks/zernio`, `webhook_events` idempotency,
+and the org/account resolution step. Per this phase's finding, this is a *recording* step,
+not a matching/execution one - Zernio already ran the automation; the webhook (and/or
+`GET /v1/comment-automations/{id}`'s own trigger logs) reports what happened. Will not start
+until the user says to proceed.

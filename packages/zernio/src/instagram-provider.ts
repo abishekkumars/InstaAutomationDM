@@ -86,6 +86,38 @@ export interface GetPostInput {
   zernioPostId: string;
 }
 
+export interface CreateCommentAutomationInput {
+  zernioProfileId: string;
+  zernioAccountId: string;
+  /** Zernio's own post id (`platformPostId`) - scopes the automation to this one post/reel,
+   * matching docs/AUTOMATION-ENGINE.md's fixed one-automation-per-post model. */
+  zernioPostId: string;
+  name: string;
+  keywords: string[];
+  matchMode: 'contains' | 'word' | 'exact';
+  /** Optional public reply posted on the triggering comment - Zernio's own API treats this
+   * as optional, not required. */
+  commentReply?: string;
+  dmMessage: string;
+}
+
+/** A comment-to-DM automation as Zernio's API represents it - see
+ * docs/ZERNIO-INTEGRATION.md's "Comment-to-DM automation API" section. Zernio itself executes
+ * the keyword-matching, public reply, and DM send server-side (verified live during Phase
+ * 10, resolving docs/AUTOMATION-ENGINE.md's "Open question") - this project never re-does
+ * that matching locally. */
+export interface CommentAutomation {
+  zernioAutomationId: string;
+  zernioAccountId: string | null;
+  zernioPostId: string | null;
+  name: string;
+  keywords: string[];
+  matchMode: 'contains' | 'word' | 'exact';
+  commentReply: string | null;
+  dmMessage: string;
+  isActive: boolean;
+}
+
 export interface InstagramProvider {
   /** Creates the Zernio profile for an organization that doesn't have one yet. Idempotent
    * from the caller's side: apps/api only calls this once per organization and persists the
@@ -110,4 +142,9 @@ export interface InstagramProvider {
    * profileId/source query params. Implementations must instead search a listPosts call for
    * the matching id, per docs/ZERNIO-INTEGRATION.md's "Listing posts/reels" section. */
   getPost(input: GetPostInput): Promise<InstagramPost | null>;
+
+  /** Creates a comment-to-DM automation on Zernio (Phase 10). Rejects (via a 409-status
+   * ZernioApiError) if this post already has an active per-post automation - Zernio's own
+   * rule, mirrored locally by Automation's unique(instagramAccountId, zernioPostId). */
+  createCommentAutomation(input: CreateCommentAutomationInput): Promise<CommentAutomation>;
 }

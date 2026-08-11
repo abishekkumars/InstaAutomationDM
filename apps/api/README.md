@@ -3,7 +3,9 @@
 NestJS backend (REST). Scaffolded in Phase 2 as a minimal shell; Phase 4 added a real
 database connection; Phase 6 added its first authenticated, tenant-scoped endpoints; Phase 8
 added its first Zernio-backed endpoints (Instagram account connection); Phase 9 added
-posts/reels listing. Still no Redis, no automation engine.
+posts/reels listing; Phase 10 added comment-automation creation. Still no Redis. No
+`packages/automation-engine` either — Zernio executes automations server-side, so this
+project never needed local matching logic (`docs/AUTOMATION-ENGINE.md`).
 
 ## Structure
 
@@ -36,17 +38,23 @@ posts/reels listing. Still no Redis, no automation engine.
 - `src/config/app-url.ts` (Phase 8) — `getAppUrl()`, apps/api's own view of where `apps/web`
   is reachable, used to build the Zernio OAuth `redirect_url` server-side rather than
   trusting a client-supplied one.
+- `src/automations/` (Phase 10) — `POST`/`GET .../posts/:postId/automations` under the same
+  `instagram/accounts/:accountId/posts/:postId` path, behind `SessionGuard`, same
+  404-if-not-a-member/not-owned pattern. Imports `InstagramModule` (which now `exports` its
+  `INSTAGRAM_PROVIDER` binding) rather than creating a second `ZernioInstagramProvider`
+  instance. `create` enforces "one automation per post" at two layers - a local
+  pre-check against `Automation`'s own table, and Zernio's own `409` if it already has one
+  our database didn't know about.
 - `src/common/middleware/request-id.middleware.ts` — reads/generates `X-Request-Id`,
   attaches it to the request for logging and to every error response.
 - `src/common/filters/all-exceptions.filter.ts` — catches all exceptions, responds with
   `{ error: { code, message, requestId } }` (see `docs/API-SPEC.md`/`docs/SECURITY.md`),
   logs full detail server-side only.
 
-Planned modules, introduced per `docs/IMPLEMENTATION-ROADMAP.md`: webhooks, automations,
-automation-engine. Per `docs/ADR/0005-simplified-mvp-architecture.md`, there is no
-`contacts`, `conversations`, `messages`, `analytics`, `usage`, `billing`, `notifications`, or
-`audit` module planned. (`users`/`members` are folded into `organizations` for now — see
-`docs/ARCHITECTURE.md`.)
+Planned modules, introduced per `docs/IMPLEMENTATION-ROADMAP.md`: webhooks. Per
+`docs/ADR/0005-simplified-mvp-architecture.md`, there is no `contacts`, `conversations`,
+`messages`, `analytics`, `usage`, `billing`, `notifications`, or `audit` module planned.
+(`users`/`members` are folded into `organizations` for now — see `docs/ARCHITECTURE.md`.)
 
 Requires the local database running first: `.\scripts\db.ps1 start` (see
 [docs/ADR/0003-local-postgresql-strategy.md](../../docs/ADR/0003-local-postgresql-strategy.md)),

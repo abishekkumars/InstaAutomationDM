@@ -1,12 +1,11 @@
 # Zernio Integration
 
-Status: Phase 9 — account connection (Phase 8) and listing posts/reels (Phase 9) are both
-real, verified directly against Zernio's live OpenAPI spec (`docs.zernio.com/api/openapi`,
-retrieved 2026-08-11 and re-fetched 2026-08-11 for this phase), not assumed from the Phase 0
-research pass. Everything else below (comment automations, webhooks) is still the Phase 0
-pass and **must** be re-verified against the live docs immediately before the phase that
-implements it (Phase 10/11 — see `docs/IMPLEMENTATION-ROADMAP.md`), since third-party API
-docs change.
+Status: Phase 10 — account connection (Phase 8), listing posts/reels (Phase 9), and comment
+automations (Phase 10) are all real, verified directly against Zernio's live OpenAPI spec
+(`docs.zernio.com/api/openapi`, re-fetched fresh for each phase), not assumed from the Phase
+0 research pass. Everything else below (webhooks) is still the Phase 0 pass and **must** be
+re-verified against the live docs immediately before the phase that implements it (Phase 11
+— see `docs/IMPLEMENTATION-ROADMAP.md`), since third-party API docs change.
 
 Zernio is a unified social-media API (16 platforms). We only use its Instagram surface:
 account connection, comment automations (comment-to-DM), and the unified inbox/messages
@@ -36,10 +35,10 @@ Meta Graph API / Instagram
 shapes. This means if Zernio's API changes, or we ever add a second provider, only
 `ZernioInstagramProvider` changes.
 
-**Status (Phase 9)**: `ensureProfile`, `getConnectUrl`, `findConnectedAccount` (Phase 8), and
-`listPosts`/`getPost` (Phase 9) are all real — every call in this section has been made
-against the live API during the phase that added it. Methods for comment automations
-(Phase 10) are added when that phase needs them, not speculatively now.
+**Status (Phase 10)**: `ensureProfile`, `getConnectUrl`, `findConnectedAccount` (Phase 8),
+`listPosts`/`getPost` (Phase 9), and `createCommentAutomation` (Phase 10) are all real —
+every call in this section has been made against the live API during the phase that added
+it.
 
 ## Authentication
 
@@ -98,26 +97,56 @@ OpenAPI spec, not the Phase 0 pass's general "two OAuth paths" description:
 
 ## Comment-to-DM automation API
 
+Verified directly against `POST/GET/PATCH/DELETE /v1/comment-automations[/{automationId}]`
+in Zernio's live OpenAPI spec during Phase 10 - the Phase 0 pass's field list below was
+already close, but the load-bearing fact it missed (whether Zernio or we do the matching)
+is now resolved, not assumed.
+
+- **Zernio executes the entire flow server-side.** Its own description: *"Set up keyword
+  triggers on Instagram/Facebook so commenters automatically receive a DM."* This resolves
+  `docs/AUTOMATION-ENGINE.md`'s "Open question" - our code only ever calls the create
+  endpoint with the user's config; Zernio does the keyword matching, the public reply, and
+  the DM send itself. `packages/automation-engine` was never built - there is no local
+  matching logic anywhere in this project.
 - `POST /v1/comment-automations` — create.
   - Required: `profileId`, `accountId`, `name`, `dmMessage` (≤640 chars if buttons are
-    attached, ~1000 otherwise).
-  - Key optional fields: `trigger` (`comment` default | `story_reply` — see limitation
-    below), `platformPostId` (scope to one post, omit for account-wide), `keywords`,
-    `matchMode` (`contains` default | `word` | `exact`), `buttons` (1-3), `commentReply`
-    (the public reply text), `alsoMatchInDms`, `dmDelaySeconds`, `linkTracking`, `clickTag`,
-    `audience` (send/skip/verify based on follower status).
-  - Response: `automation` object with `id`, config echo, `stats`
-    (`totalTriggered`/`totalSent`/`totalFailed`), `createdAt`.
-- `GET`-list endpoint also exists (list comment automations) — full request/response shape
-  to be documented in Phase 10 when we actually integrate it, rather than transcribed twice.
+    attached, ~1000 otherwise - this project never sends buttons, so 1000 is the real bound
+    `packages/validation`'s `createAutomationSchema` enforces).
+  - `keywords` is a **string array**, not a single string (`type: array, items: {type:
+    string}`) - `InstagramProvider.createCommentAutomation` and the create form both take
+    multiple keywords for exactly this reason, not one.
+  - `platformPostId` scopes the automation to one specific post/reel (omit for
+    account-wide - **only one active per-post automation is allowed per post**, enforced by
+    Zernio with a `409` on a duplicate, and mirrored locally by `Automation`'s
+    `unique(instagramAccountId, zernioPostId)`). This project always sets it - "one specific
+    Zernio post/reel" per `docs/AUTOMATION-ENGINE.md`'s model, never account-wide.
+  - `matchMode` (`contains` default | `word` | `exact`) - same three values this project's
+    `AutomationMatchMode` enum already anticipated.
+  - `commentReply` (the public reply text) is **optional**, not required - a DM-only
+    automation with no public reply is a normal, supported configuration.
+  - Not used by this project (documented for completeness, not built): `trigger:
+    story_reply`, `buttons`, `template`, `*Variations` rotation, `linkTracking`/`clickTag`,
+    `dmDelaySeconds`/`commentReplyDelaySeconds`, `audience`/`followGate`,
+    `excludeKeywords`/`typoTolerance`, `alsoMatchInDms`.
+  - Response: `{ automation: { id, name, platform, trigger, platformPostId, keywords,
+    matchMode, commentReply, dmMessage, isActive, stats: {totalTriggered, totalSent,
+    totalFailed}, createdAt, ... } }`. **Does not echo `accountId`** (list/get do) -
+    `ZernioInstagramProvider` doesn't rely on it being present in the create response, since
+    the caller already knows which account it asked to create the automation for.
+- `GET /v1/comment-automations?profileId=` — list. Only filters by `profileId` (no
+  `accountId`/`platformPostId` filter) - each item includes `accountId` and `platformPostId`
+  for the caller to filter further if needed.
+- `GET /v1/comment-automations/{automationId}` — get one, including recent trigger `logs`
+  (per-comment outcome: `status` sent/failed/skipped/gated/pending, `commentText`,
+  `commenterId`, errors). Useful for Phase 12's status/history view - not built yet.
+- `PATCH`/`DELETE /v1/comment-automations/{automationId}` exist (update settings, permanently
+  delete) - not built in Phase 10 ("comment automation **creation**" per the roadmap); a
+  future phase adds edit/delete if a real need appears.
 
-This maps directly onto our own, deliberately simple `automations` table
-(`docs/DATABASE.md`) — one org + one account + one post/reel + keyword(s) + reply template +
-DM template. Whether we actually need to re-implement keyword matching ourselves, or whether
-registering one of these with Zernio via this endpoint means Zernio executes the whole
-match → reply → DM flow itself, is an open question resolved during Phase 10/11
-implementation — see `docs/AUTOMATION-ENGINE.md`'s "Open question" section. Do not assume
-either way before reading this endpoint's real, current behavior directly.
+This maps directly onto `Automation` (`docs/DATABASE.md`) - one org + one connected account +
+one specific Zernio post/reel + `keywords[]` + match mode + optional public reply + DM
+message + active flag, plus Zernio's own `zernioAutomationId` so a future webhook (Phase 11)
+can resolve back to this row the same way `InstagramAccount.zernioAccountId` already does.
 
 ## Listing posts/reels
 
@@ -204,8 +233,9 @@ Confirmed directly from `docs.zernio.com/platforms/instagram`:
 - **Story replies are not available via the API** — this is a Meta Graph API limitation,
   not a Zernio gap. The `trigger: "story_reply"` field exists on the comment-automations
   endpoint per the docs snippet we saw, but the platform page explicitly says story replies
-  are unavailable for Instagram — this contradiction must be resolved by hands-on testing in
-  Zernio's sandbox during Phase 10/11, not assumed either way. Documented as an open
+  are unavailable for Instagram — this contradiction is still unresolved (Phase 10 only
+  built the default `trigger: comment` path, never touched `story_reply`); resolving it needs
+  hands-on testing in Zernio's sandbox, not assumed either way. Documented as an open
   question, not silently resolved. Moot for the MVP either way — the current scope is
   comment triggers only, not story replies.
 - No Reels music/filters/stickers/live via API — not relevant to this product.
@@ -223,8 +253,7 @@ this project's actual call volume (<1,000/month).
 
 ## What's deliberately deferred
 
-Account connection (Phase 8) and listing posts/reels (Phase 9) are documented for real
-above. Full request/response schemas for the remaining endpoints we'll use
-(comment-automations, webhook test endpoint) are documented endpoint-by-endpoint as each is
-actually integrated (Phase 10-11), rather than transcribed wholesale now against a doc site
-that may change before we get there.
+Account connection (Phase 8), listing posts/reels (Phase 9), and comment automations (Phase
+10) are documented for real above. The webhook test endpoint's full request/response shape
+is documented when Phase 11 actually integrates it, rather than transcribed wholesale now
+against a doc site that may change before we get there.

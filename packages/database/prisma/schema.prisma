@@ -82,6 +82,7 @@ model Organization {
 
   memberships OrganizationMember[]
   instagramAccounts InstagramAccount[]
+  automations Automation[]
 
   @@map("organizations")
 }
@@ -160,7 +161,70 @@ model InstagramAccount {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  automations Automation[]
+
   /// "List an organization's connected accounts" - every account-picker UI load.
   @@index([organizationId])
   @@map("instagram_accounts")
+}
+
+/// How a keyword is compared against a comment's text (Zernio's own `matchMode` values,
+/// see docs/ZERNIO-INTEGRATION.md's "Comment-to-DM automation API" section). CONTAINS matches
+/// anywhere in the text, WORD matches only as a standalone word, EXACT requires the whole
+/// comment to equal the keyword.
+enum AutomationMatchMode {
+  CONTAINS
+  WORD
+  EXACT
+}
+
+/// A comment-to-DM automation (Phase 10). One org + one connected Instagram account + one
+/// specific Zernio post/reel + keyword(s) + optional public reply + DM message - see
+/// docs/AUTOMATION-ENGINE.md's "Model" section for why this is a fixed shape, not a generic
+/// trigger/condition/action graph. Zernio's own comment-automations API executes the actual
+/// keyword-matching, public reply, and DM send server-side (verified live during this phase,
+/// resolving docs/AUTOMATION-ENGINE.md's "Open question") - this row mirrors that
+/// server-side config locally so our own tenant-isolation checks never have to trust an
+/// unscoped Zernio lookup, and so Phase 11's inbound webhook can resolve back to an
+/// organization the same way InstagramAccount.zernioAccountId already does.
+model Automation {
+  id String @id @default(cuid())
+
+  organizationId String @map("organization_id")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  instagramAccountId String @map("instagram_account_id")
+  instagramAccount   InstagramAccount @relation(fields: [instagramAccountId], references: [id], onDelete: Cascade)
+
+  /// Zernio's own comment-automation id. Globally unique for the same reason as
+  /// InstagramAccount.zernioAccountId - an inbound webhook identifies the automation only by
+  /// this id, and that lookup must be unambiguous.
+  zernioAutomationId String @unique @map("zernio_automation_id")
+
+  /// Zernio's own post id (`platformPostId`) this automation is scoped to. The post/reel's
+  /// own content is never stored locally (docs/ADR/0005) - only this id.
+  zernioPostId String @map("zernio_post_id")
+
+  name String
+
+  keywords String[]
+  matchMode AutomationMatchMode @default(CONTAINS) @map("match_mode")
+
+  /// Optional public reply posted on the triggering comment. Nullable: Zernio's own API
+  /// treats this as optional, not required (a DM-only automation with no public reply is a
+  /// normal, supported configuration).
+  commentReply String? @map("comment_reply")
+  dmMessage String @map("dm_message")
+
+  isActive Boolean @default(true) @map("is_active")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// Mirrors Zernio's own "only one active per-post automation" rule (docs/ZERNIO-INTEGRATION.md) -
+  /// enforced at our own data layer too, not just trusted from Zernio's 409.
+  @@unique([instagramAccountId, zernioPostId])
+  /// "List an organization's automations" - a future dashboard/history view (Phase 12).
+  @@index([organizationId])
+  @@map("automations")
 }

@@ -19,5 +19,6 @@ import { INSTAGRAM_PROVIDER } from './instagram-provider.token';
       useFactory: () => new ZernioInstagramProvider(process.env.ZERNIO_API_KEY ?? ''),
     },
   ],
+  exports: [INSTAGRAM_PROVIDER],
 })
 export class InstagramModule {}

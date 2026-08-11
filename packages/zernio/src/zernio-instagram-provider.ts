@@ -1,5 +1,7 @@
 import type {
+  CommentAutomation,
   ConnectedInstagramAccount,
+  CreateCommentAutomationInput,
   EnsureProfileInput,
   EnsureProfileResult,
   FindConnectedAccountInput,
@@ -24,7 +26,7 @@ interface ZernioErrorBody {
   details?: { existingProfileId?: string };
 }
 
-class ZernioApiError extends Error {
+export class ZernioApiError extends Error {
   constructor(
     method: string,
     path: string,
@@ -122,6 +124,24 @@ export class ZernioInstagramProvider implements InstagramProvider {
     return posts.find((post) => post.zernioPostId === input.zernioPostId) ?? null;
   }
 
+  async createCommentAutomation(input: CreateCommentAutomationInput): Promise<CommentAutomation> {
+    const response = await this.request<{ automation: RawCommentAutomation }>(
+      'POST',
+      '/comment-automations',
+      {
+        profileId: input.zernioProfileId,
+        accountId: input.zernioAccountId,
+        platformPostId: input.zernioPostId,
+        name: input.name,
+        keywords: input.keywords,
+        matchMode: input.matchMode,
+        commentReply: input.commentReply,
+        dmMessage: input.dmMessage,
+      },
+    );
+    return toCommentAutomation(response.automation);
+  }
+
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     if (!this.apiKey) {
       // Lazy check (not thrown at DI-construction time) so apps/api's health/readiness
@@ -181,6 +201,36 @@ interface RawPost {
 interface RawPostsListResponse {
   posts: RawPost[];
   pagination: { page: number; limit: number; total: number; pages: number };
+}
+
+// Raw shape of the comment-automations endpoints (create/list), verified against the live
+// spec during Phase 10 - see docs/ZERNIO-INTEGRATION.md's "Comment-to-DM automation API"
+// section. The create response omits `accountId` (list/get include it); callers that need it
+// already have it from their own input, so this is not treated as missing data.
+interface RawCommentAutomation {
+  id: string;
+  accountId?: string;
+  platformPostId?: string;
+  name: string;
+  keywords?: string[];
+  matchMode?: 'contains' | 'word' | 'exact';
+  commentReply?: string;
+  dmMessage: string;
+  isActive?: boolean;
+}
+
+function toCommentAutomation(automation: RawCommentAutomation): CommentAutomation {
+  return {
+    zernioAutomationId: automation.id,
+    zernioAccountId: automation.accountId ?? null,
+    zernioPostId: automation.platformPostId ?? null,
+    name: automation.name,
+    keywords: automation.keywords ?? [],
+    matchMode: automation.matchMode ?? 'contains',
+    commentReply: automation.commentReply ?? null,
+    dmMessage: automation.dmMessage,
+    isActive: automation.isActive ?? true,
+  };
 }
 
 function toInstagramPost(post: RawPost): InstagramPost {
