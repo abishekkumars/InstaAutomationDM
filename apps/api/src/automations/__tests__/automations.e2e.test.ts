@@ -9,6 +9,7 @@ import {
   type CommentAutomation,
   type ConnectedInstagramAccount,
   type CreateCommentAutomationInput,
+  type DeleteCommentAutomationInput,
   type EnsureProfileResult,
   type GetPostInput,
   type FindConnectedAccountInput,
@@ -18,6 +19,7 @@ import {
   type ListPostsInput,
   type InstagramProvider,
   type ListPostsResult,
+  type UpdateCommentAutomationInput,
 } from '@automationdm/zernio';
 import { AppModule } from '../../app.module';
 import { INSTAGRAM_PROVIDER } from '../../instagram/instagram-provider.token';
@@ -171,6 +173,44 @@ class FakeInstagramProvider implements InstagramProvider {
       throw new ZernioApiError('GET', '/comment-automations', 503, { error: 'unavailable' });
     }
     return this.remoteAutomations;
+  }
+
+  lastUpdateInput: UpdateCommentAutomationInput | undefined;
+
+  // Mutates the stored remote automation the way Zernio's own PATCH does: only the fields
+  // actually present in the request change, so a test that sends a partial body can assert
+  // the untouched fields really were left alone.
+  async updateCommentAutomation(input: UpdateCommentAutomationInput): Promise<CommentAutomation> {
+    this.lastUpdateInput = input;
+    const existing = this.remoteAutomations.find(
+      (automation) => automation.zernioAutomationId === input.zernioAutomationId,
+    );
+    if (!existing) {
+      throw new ZernioApiError('PATCH', '/comment-automations/x', 404, { error: 'not found' });
+    }
+    if (input.name !== undefined) existing.name = input.name;
+    if (input.keywords !== undefined) existing.keywords = input.keywords;
+    if (input.matchMode !== undefined) existing.matchMode = input.matchMode;
+    if (input.commentReply !== undefined) existing.commentReply = input.commentReply || null;
+    if (input.buttons !== undefined) existing.buttons = input.buttons;
+    if (input.dmMessage !== undefined) existing.dmMessage = input.dmMessage;
+    if (input.isActive !== undefined) existing.isActive = input.isActive;
+    return existing;
+  }
+
+  async deleteCommentAutomation(input: DeleteCommentAutomationInput): Promise<void> {
+    const index = this.remoteAutomations.findIndex(
+      (automation) => automation.zernioAutomationId === input.zernioAutomationId,
+    );
+    if (index === -1) {
+      throw new ZernioApiError('DELETE', '/comment-automations/x', 404, { error: 'not found' });
+    }
+    const removed = this.remoteAutomations.splice(index, 1)[0];
+    // Frees the post so a later create for the same post succeeds, matching Zernio's real
+    // behaviour (its one-active-automation-per-post rule only counts existing automations).
+    if (removed?.zernioPostId) {
+      this.postsWithAutomation.delete(removed.zernioPostId);
+    }
   }
 
   reset(): void {

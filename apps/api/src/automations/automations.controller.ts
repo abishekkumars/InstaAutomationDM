@@ -1,4 +1,14 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  Param,
+  Patch,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/authenticated-user.interface';
 import { SessionGuard } from '../auth/session.guard';
@@ -49,5 +59,28 @@ export class OrganizationAutomationsController {
     @Param('organizationId') organizationId: string,
   ): Promise<AutomationListItem[]> {
     return this.automations.listForOrganization(user.id, organizationId);
+  }
+
+  // Edit/delete live on this org-scoped route rather than the post-scoped one above: an
+  // automation's own id already identifies it uniquely, and both the dashboard table (which
+  // has no post context) and the post detail page need to call them.
+  @Patch(':automationId')
+  update(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('organizationId') organizationId: string,
+    @Param('automationId') automationId: string,
+    @Body() body: unknown,
+  ): Promise<AutomationSummary> {
+    return this.automations.update(user.id, organizationId, automationId, body);
+  }
+
+  @Delete(':automationId')
+  @HttpCode(204)
+  remove(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('organizationId') organizationId: string,
+    @Param('automationId') automationId: string,
+  ): Promise<void> {
+    return this.automations.remove(user.id, organizationId, automationId);
   }
 }
