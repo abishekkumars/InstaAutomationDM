@@ -43,14 +43,18 @@ export function FormPendingOverlay() {
 export function LoadingLink({
   href,
   className,
+  title,
+  'aria-label': ariaLabel,
   children,
 }: {
   href: string;
   className?: string;
+  title?: string;
+  'aria-label'?: string;
   children: React.ReactNode;
 }) {
   return (
-    <Link href={href} className={className}>
+    <Link href={href} className={className} title={title} aria-label={ariaLabel}>
       {children}
       <LinkPendingOverlay />
     </Link>

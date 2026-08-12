@@ -1,7 +1,9 @@
 import { LoadingLink } from '../../../loader';
 import { redirect } from 'next/navigation';
 import { ApiError, callApi } from '@/lib/api';
+import { getPrimaryOrganizationId } from '@/lib/organization';
 import { CreateAutomationModal } from './create-automation-modal';
+import { EditAutomationModal } from '@/app/edit-automation-modal';
 
 interface InstagramPostDetail {
   zernioPostId: string;
@@ -25,42 +27,58 @@ interface AutomationSummary {
   isActive: boolean;
 }
 
-async function getPrimaryOrganizationId(): Promise<string | null> {
-  const organizations = await callApi<Array<{ id: string }>>('/api/organizations');
-  return organizations[0]?.id ?? null;
-}
-
 export default async function InstagramPostDetailPage({
   params,
   searchParams,
 }: {
   params: Promise<{ postId: string }>;
-  searchParams: Promise<{ accountId?: string; automation?: string }>;
+  // `automation` is still present in the URL but read by ToastHost, not here. view/sort/size/
+  // page are the posts list's own view state, carried through so "Back to posts" restores it.
+  searchParams: Promise<{
+    accountId?: string;
+    view?: string;
+    sort?: string;
+    size?: string;
+    page?: string;
+  }>;
 }) {
   const { postId } = await params;
-  const { accountId, automation } = await searchParams;
+  const { accountId, view, sort, size, page } = await searchParams;
   if (!accountId) {
     redirect('/');
   }
+
+  // Rebuilt rather than forwarded verbatim so only the known list params come back - an
+  // arbitrary query string from the incoming URL is not echoed into an outgoing link.
+  const backParams = new URLSearchParams({ accountId });
+  if (view) backParams.set('view', view);
+  if (sort) backParams.set('sort', sort);
+  if (size) backParams.set('size', size);
+  if (page) backParams.set('page', page);
+  const backToPostsHref = `/instagram/posts?${backParams.toString()}`;
 
   const organizationId = await getPrimaryOrganizationId();
   if (!organizationId) {
     redirect('/');
   }
 
-  let post: InstagramPostDetail;
-  try {
-    post = await callApi<InstagramPostDetail>(
-      `/api/organizations/${organizationId}/instagram/accounts/${accountId}/posts/${postId}`,
-    );
-  } catch (error) {
+  // Fired together, not one after the other: both depend only on ids already in hand, and this
+  // page used to await them in sequence purely because each wanted its own catch. That cost a
+  // full round trip normally, and up to ~1.9s whenever the automations lookup falls through to
+  // reconcileFromZernio (which itself makes two Zernio calls). allSettled preserves the original
+  // asymmetry - a failed post is fatal to the page, a failed automations lookup is not.
+  const basePath = `/api/organizations/${organizationId}/instagram/accounts/${accountId}/posts/${postId}`;
+  const [postResult, automationsResult] = await Promise.allSettled([
+    callApi<InstagramPostDetail>(basePath),
+    callApi<AutomationSummary[]>(`${basePath}/automations`),
+  ]);
+
+  if (postResult.status === 'rejected') {
+    const error: unknown = postResult.reason;
     return (
       <div className="space-y-4">
-        <LoadingLink
-          href={`/instagram/posts?accountId=${accountId}`}
-          className="text-sm text-slate-500 underline"
-        >
-          Back to posts
+        <LoadingLink href={backToPostsHref} className="text-sm text-text-muted hover:text-text">
+          ← Back to posts
         </LoadingLink>
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-800">
           <p className="font-medium">Could not load this post</p>
@@ -72,36 +90,20 @@ export default async function InstagramPostDetailPage({
     );
   }
 
-  let automations: AutomationSummary[] = [];
-  try {
-    automations = await callApi<AutomationSummary[]>(
-      `/api/organizations/${organizationId}/instagram/accounts/${accountId}/posts/${postId}/automations`,
-    );
-  } catch {
-    // Non-fatal: the post itself already loaded above. Fall through with an empty list so
-    // the page still renders (worst case, the create form shows when one already exists,
-    // which the create endpoint itself would then correctly reject).
-  }
+  const post = postResult.value;
+  // Non-fatal: the post itself loaded. Fall through with an empty list so the page still renders
+  // (worst case the create form shows when one already exists, which the create endpoint then
+  // correctly rejects).
+  const automations = automationsResult.status === 'fulfilled' ? automationsResult.value : [];
   const existingAutomation = automations[0];
 
   return (
     <div className="space-y-4">
-      <LoadingLink
-        href={`/instagram/posts?accountId=${accountId}`}
-        className="text-sm text-text-muted hover:text-text"
-      >
+      <LoadingLink href={backToPostsHref} className="text-sm text-text-muted hover:text-text">
         ← Back to posts
       </LoadingLink>
-      {automation === 'created' && (
-        <div className="rounded-lg border border-success-border bg-success-bg p-3 text-sm text-success">
-          Automation created.
-        </div>
-      )}
-      {automation === 'error' && (
-        <div className="rounded-lg border border-danger/30 bg-danger-bg p-3 text-sm text-danger">
-          Could not create the automation. Please check your input and try again.
-        </div>
-      )}
+      {/* Status messages are handled globally by ToastHost (app/toast.tsx), which reads the
+          same ?automation= param the server actions redirect with. */}
       <div className="overflow-hidden rounded-xl border border-border bg-surface shadow-sm">
         {post.thumbnailUrl && (
           // Plain <img>, not next/image: this comes from Zernio/Instagram's own CDN (an
@@ -130,17 +132,26 @@ export default async function InstagramPostDetailPage({
       <div className="rounded-xl border border-border bg-surface p-5 shadow-sm">
         {existingAutomation ? (
           <>
-            <div className="flex items-center justify-between">
-              <h2 className="text-base font-semibold text-text">{existingAutomation.name}</h2>
-              <span
-                className={
-                  existingAutomation.isActive
-                    ? 'rounded-full border border-success-border bg-success-bg px-2.5 py-0.5 text-xs font-semibold text-success'
-                    : 'rounded-full bg-muted-bg px-2.5 py-0.5 text-xs font-semibold text-text-faint'
-                }
-              >
-                {existingAutomation.isActive ? 'Enabled' : 'Disabled'}
-              </span>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="min-w-0 truncate text-base font-semibold text-text">
+                {existingAutomation.name}
+              </h2>
+              <div className="flex shrink-0 items-center gap-2">
+                <span
+                  className={
+                    existingAutomation.isActive
+                      ? 'rounded-full border border-success-border bg-success-bg px-2.5 py-0.5 text-xs font-semibold text-success'
+                      : 'rounded-full bg-muted-bg px-2.5 py-0.5 text-xs font-semibold text-text-faint'
+                  }
+                >
+                  {existingAutomation.isActive ? 'Enabled' : 'Disabled'}
+                </span>
+                <EditAutomationModal
+                  organizationId={organizationId}
+                  automation={existingAutomation}
+                  redirectTo={`/instagram/posts/${postId}?${backParams.toString()}`}
+                />
+              </div>
             </div>
             <dl className="mt-3 grid grid-cols-[110px_1fr] gap-y-2 text-sm">
               <dt className="text-text-muted">Keywords</dt>
@@ -184,8 +195,8 @@ export default async function InstagramPostDetailPage({
               )}
             </dl>
             <p className="mt-4 text-xs text-text-faint">
-              Editing and pausing aren't available yet — that needs an update/delete endpoint (a
-              later phase). For now, creating an automation is one-way.
+              Edit changes this automation on Zernio immediately. Deleting it stops the replies and
+              DMs for good.
             </p>
           </>
         ) : (
@@ -199,6 +210,7 @@ export default async function InstagramPostDetailPage({
                 organizationId={organizationId}
                 accountId={accountId}
                 postId={postId}
+                postCaption={post.caption}
               />
             </div>
           </div>

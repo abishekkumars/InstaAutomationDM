@@ -175,6 +175,30 @@ export interface ListCommentAutomationsInput {
   zernioProfileId: string;
 }
 
+/** A partial update. Every field is optional - Zernio's `PATCH` only touches what is sent,
+ * leaving everything else on the automation as-is. The post binding (`platformPostId`) is
+ * deliberately not updatable here: this project's model is one automation per post
+ * (docs/AUTOMATION-ENGINE.md), so moving an automation to a different post would break the
+ * local unique(instagramAccountId, zernioPostId) pairing rather than being a normal edit. */
+export interface UpdateCommentAutomationInput {
+  zernioAutomationId: string;
+  name?: string;
+  keywords?: string[];
+  matchMode?: 'contains' | 'word' | 'exact';
+  /** Empty string clears the public reply. */
+  commentReply?: string;
+  /** Pass an empty array to clear every button - Zernio's own documented way to remove them
+   * (an omitted `buttons` key leaves the stored ones untouched instead). */
+  buttons?: DmButton[];
+  dmMessage?: string;
+  /** Pause/resume without deleting. */
+  isActive?: boolean;
+}
+
+export interface DeleteCommentAutomationInput {
+  zernioAutomationId: string;
+}
+
 export interface InstagramProvider {
   /** Resolves the Zernio profile for an organization, creating one only if it doesn't
    * already exist. Idempotent on Zernio's side, not just the caller's: implementations must
@@ -217,4 +241,14 @@ export interface InstagramProvider {
    * after the Zernio side already succeeded) by finding the real automation instead of leaving
    * the caller stuck with no way to see or reconcile it locally. */
   listCommentAutomations(input: ListCommentAutomationsInput): Promise<CommentAutomation[]>;
+
+  /** Updates an existing automation (`PATCH /v1/comment-automations/{automationId}`, verified
+   * against Zernio's live OpenAPI spec). Partial: only the fields passed are changed. Zernio
+   * enforces the same 640-char dmMessage limit whenever the automation ends up with buttons
+   * attached - including when the buttons were already stored and only the message changes. */
+  updateCommentAutomation(input: UpdateCommentAutomationInput): Promise<CommentAutomation>;
+
+  /** Permanently deletes an automation and all of its trigger logs
+   * (`DELETE /v1/comment-automations/{automationId}`). Not reversible on Zernio's side. */
+  deleteCommentAutomation(input: DeleteCommentAutomationInput): Promise<void>;
 }

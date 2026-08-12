@@ -1,6 +1,7 @@
 'use client';
 
 import { LoadingLink } from '../../loader';
+import { useUrlNumberState, useUrlState } from '@/app/use-url-state';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 export interface InstagramPostSummary {
@@ -16,7 +17,16 @@ export interface InstagramPostSummary {
 type ViewMode = 'grid' | 'list';
 type SortOrder = 'newest' | 'oldest';
 
-const PAGE_SIZE_OPTIONS = [12, 24, 48, 96];
+// Type guards for useUrlState: these values arrive from a user-editable query string, so an
+// unrecognised one must fall back to the default rather than be cast blindly.
+function isViewMode(value: string): value is ViewMode {
+  return value === 'grid' || value === 'list';
+}
+function isSortOrder(value: string): value is SortOrder {
+  return value === 'newest' || value === 'oldest';
+}
+
+const PAGE_SIZE_OPTIONS = [12, 24, 48, 96] as const;
 
 // Row geometry for the virtualizer. These are fixed heights rather than measured ones: every
 // row in a given view mode renders at the same size (a square thumbnail in grid, a fixed-height
@@ -40,11 +50,16 @@ export function PostsBrowser({
   posts: InstagramPostSummary[];
   accountId: string;
 }) {
-  const [view, setView] = useState<ViewMode>('grid');
-  const [sort, setSort] = useState<SortOrder>('newest');
+  // View mode, sort, page size and page live in the URL, not component state: opening a post
+  // unmounts this component, and plain useState meant Back always landed on grid/newest/page 1
+  // regardless of what the user had chosen. `search` stays local on purpose - a half-typed
+  // query is not view state worth restoring, and putting it in the URL would rewrite history on
+  // every keystroke.
+  const [view, setView] = useUrlState<ViewMode>('view', 'grid', isViewMode);
+  const [sort, setSort] = useUrlState<SortOrder>('sort', 'newest', isSortOrder);
+  const [pageSize, setPageSize] = useUrlNumberState('size', 24, PAGE_SIZE_OPTIONS);
+  const [page, setPage] = useUrlNumberState('page', 1);
   const [search, setSearch] = useState('');
-  const [pageSize, setPageSize] = useState(24);
-  const [page, setPage] = useState(1);
 
   // Search across every synced post, not just the visible page - that is the whole reason the
   // page fetches the account's full window up front instead of one server page at a time.
@@ -71,6 +86,18 @@ export function PostsBrowser({
     });
   }, [posts, search, sort]);
 
+  // Forwarded onto each post link so the detail page's "Back to posts" can rebuild this exact
+  // view. Only non-default values are included, keeping the common URL clean.
+  const listQuery = useMemo(() => {
+    const params = new URLSearchParams();
+    if (view !== 'grid') params.set('view', view);
+    if (sort !== 'newest') params.set('sort', sort);
+    if (pageSize !== 24) params.set('size', String(pageSize));
+    if (page !== 1) params.set('page', String(page));
+    const query = params.toString();
+    return query ? `&${query}` : '';
+  }, [view, sort, pageSize, page]);
+
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   // Clamp rather than storing a corrected page: if a search shrinks the result set below the
   // current page, this renders the last valid page without an extra render pass.
@@ -82,9 +109,24 @@ export function PostsBrowser({
 
   // Any change to the result set or page size should return to page 1 - staying on page 7 of a
   // search that now has two results is never what the user meant.
-  useEffect(() => {
-    setPage(1);
-  }, [search, sort, pageSize]);
+  //
+  // Compares against the previous values rather than using an effect. setPage is recreated on
+  // every searchParams change (it closes over them to keep sibling params), so an effect
+  // depending on it would re-run on every URL write and clobber the page the user just picked -
+  // and omitting it from the deps is exactly the stale-closure bug the lint rule warns about.
+  // A render-time comparison sidesteps both: it fires only when one of these three actually
+  // changes, and never on mount, so a page restored from the URL survives.
+  const previousInputs = useRef({ search, sort, pageSize });
+  if (
+    previousInputs.current.search !== search ||
+    previousInputs.current.sort !== sort ||
+    previousInputs.current.pageSize !== pageSize
+  ) {
+    previousInputs.current = { search, sort, pageSize };
+    if (page !== 1) {
+      setPage(1);
+    }
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
@@ -109,6 +151,7 @@ export function PostsBrowser({
         </div>
       ) : (
         <VirtualPostList
+          listQuery={listQuery}
           items={pageItems}
           view={view}
           accountId={accountId}
@@ -247,11 +290,13 @@ function VirtualPostList({
   items,
   view,
   accountId,
+  listQuery,
   resetKey,
 }: {
   items: InstagramPostSummary[];
   view: ViewMode;
   accountId: string;
+  listQuery: string;
   /** Changes exactly when the rendered slice genuinely changes (page, page size, sort, or
    * search), so the scroll-reset effect below fires then and only then. */
   resetKey: string;
@@ -335,11 +380,11 @@ function VirtualPostList({
         {visible.map((post) =>
           view === 'list' ? (
             <li key={post.zernioPostId} className="min-h-0">
-              <PostListRow post={post} accountId={accountId} />
+              <PostListRow post={post} accountId={accountId} listQuery={listQuery} />
             </li>
           ) : (
             <li key={post.zernioPostId} className="min-h-0">
-              <PostCard post={post} accountId={accountId} />
+              <PostCard post={post} accountId={accountId} listQuery={listQuery} />
             </li>
           ),
         )}
@@ -352,10 +397,19 @@ function VirtualPostList({
 // The wrapping <li> lives in VirtualPostList (it carries the fixed row geometry), so these
 // render only the card body itself. h-full makes the card fill its pinned row rather than
 // collapsing to its natural height inside it.
-function PostCard({ post, accountId }: { post: InstagramPostSummary; accountId: string }) {
+function PostCard({
+  post,
+  accountId,
+  listQuery,
+}: {
+  post: InstagramPostSummary;
+  accountId: string;
+  /** The list's own view/sort/page params, forwarded so "Back to posts" can restore them. */
+  listQuery: string;
+}) {
   return (
     <LoadingLink
-      href={`/instagram/posts/${post.zernioPostId}?accountId=${accountId}`}
+      href={`/instagram/posts/${post.zernioPostId}?accountId=${accountId}${listQuery}`}
       className="flex h-full flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-sm transition hover:border-border-strong"
     >
       {/* Fixed height, NOT aspect-square: a square thumbnail scales with column width (~231px
@@ -380,10 +434,18 @@ function PostCard({ post, accountId }: { post: InstagramPostSummary; accountId: 
   );
 }
 
-function PostListRow({ post, accountId }: { post: InstagramPostSummary; accountId: string }) {
+function PostListRow({
+  post,
+  accountId,
+  listQuery,
+}: {
+  post: InstagramPostSummary;
+  accountId: string;
+  listQuery: string;
+}) {
   return (
     <LoadingLink
-      href={`/instagram/posts/${post.zernioPostId}?accountId=${accountId}`}
+      href={`/instagram/posts/${post.zernioPostId}?accountId=${accountId}${listQuery}`}
       className="flex h-full items-center gap-3 overflow-hidden rounded-xl border border-border bg-surface p-2 shadow-sm transition hover:border-border-strong"
     >
       <Thumbnail post={post} className="h-16 w-16 shrink-0 rounded-lg object-cover" />

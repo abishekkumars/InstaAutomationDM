@@ -2,6 +2,8 @@
 
 import { useMemo, useState } from 'react';
 import { LoadingLink } from './loader';
+import { EyeIcon } from './icons';
+import { EditAutomationModal } from './edit-automation-modal';
 
 export interface AutomationStats {
   dmsSent: number;
@@ -26,6 +28,12 @@ export interface AutomationListItem {
   isActive: boolean;
   stats: AutomationStats | null;
   post: AutomationPostPreview | null;
+  // Not rendered in the table itself - these are what the edit dialog pre-fills from, so the
+  // row can open a fully populated form without a second round trip. The API's
+  // AutomationListItem has always included them; this interface simply did not declare them.
+  commentReply: string | null;
+  buttons: { title: string; url: string }[];
+  dmMessage: string;
 }
 
 const MATCH_MODE_LABEL: Record<AutomationListItem['matchMode'], string> = {
@@ -50,7 +58,23 @@ function formatCount(value: number | undefined | null): string {
   return value === undefined || value === null ? '—' : value.toLocaleString();
 }
 
-export function AutomationsBrowser({ automations }: { automations: AutomationListItem[] }) {
+const NAME_MAX_CHARS = 75;
+
+/** Caps a name at 75 characters with an ellipsis. Done in JS rather than with CSS `truncate`
+ * because the requirement is a hard character count, not "however much fits in the column" -
+ * CSS truncation varies with viewport width and would show far more text on a wide screen. The
+ * full value stays available as a `title` tooltip. */
+function truncateName(name: string): string {
+  return name.length > NAME_MAX_CHARS ? `${name.slice(0, NAME_MAX_CHARS)}...` : name;
+}
+
+export function AutomationsBrowser({
+  organizationId,
+  automations,
+}: {
+  organizationId: string;
+  automations: AutomationListItem[];
+}) {
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<SortKey>('sent-desc');
 
@@ -137,7 +161,7 @@ export function AutomationsBrowser({ automations }: { automations: AutomationLis
                 <th className="px-4 py-3 text-right">Sent</th>
                 <th className="px-4 py-3 text-right">Clicks</th>
                 <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3" />
+                <th className="px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -150,7 +174,9 @@ export function AutomationsBrowser({ automations }: { automations: AutomationLis
                     <div className="flex items-center gap-3">
                       <PostThumbnail post={automation.post} />
                       <div className="min-w-0">
-                        <div className="font-semibold text-text">{automation.name}</div>
+                        <div className="font-semibold text-text" title={automation.name}>
+                          {truncateName(automation.name)}
+                        </div>
                         <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-text-muted">
                           <span className="rounded-full bg-muted-bg px-2 py-0.5 font-medium">
                             {MATCH_MODE_LABEL[automation.matchMode]}
@@ -174,13 +200,29 @@ export function AutomationsBrowser({ automations }: { automations: AutomationLis
                   <td className="px-4 py-3">
                     <StatusPill isActive={automation.isActive} />
                   </td>
-                  <td className="px-4 py-3 text-right">
-                    <LoadingLink
-                      href={`/instagram/posts/${automation.zernioPostId}?accountId=${automation.instagramAccountId}`}
-                      className="text-accent hover:underline"
-                    >
-                      View →
-                    </LoadingLink>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center justify-end gap-1">
+                      <LoadingLink
+                        href={`/instagram/posts/${automation.zernioPostId}?accountId=${automation.instagramAccountId}`}
+                        className="rounded-md p-1.5 text-text-muted hover:bg-muted-bg hover:text-text"
+                        title="View automation"
+                        aria-label={`View ${automation.name}`}
+                      >
+                        <EyeIcon />
+                      </LoadingLink>
+                      <EditAutomationModal
+                        organizationId={organizationId}
+                        automation={automation}
+                        redirectTo="/"
+                        trigger="icon"
+                      />
+                      <EditAutomationModal
+                        organizationId={organizationId}
+                        automation={automation}
+                        redirectTo="/"
+                        trigger="delete-icon"
+                      />
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -195,7 +237,9 @@ export function AutomationsBrowser({ automations }: { automations: AutomationLis
                   <PostThumbnail post={automation.post} />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-start justify-between gap-2">
-                      <div className="font-semibold text-text">{automation.name}</div>
+                      <div className="min-w-0 font-semibold text-text" title={automation.name}>
+                        {truncateName(automation.name)}
+                      </div>
                       <StatusPill isActive={automation.isActive} />
                     </div>
                     <div className="mt-0.5 text-xs text-text-muted">
@@ -223,12 +267,28 @@ export function AutomationsBrowser({ automations }: { automations: AutomationLis
                     </span>
                   </span>
                 </div>
-                <LoadingLink
-                  href={`/instagram/posts/${automation.zernioPostId}?accountId=${automation.instagramAccountId}`}
-                  className="mt-2 inline-block text-sm text-accent hover:underline"
-                >
-                  View →
-                </LoadingLink>
+                <div className="mt-2 flex items-center gap-1">
+                  <LoadingLink
+                    href={`/instagram/posts/${automation.zernioPostId}?accountId=${automation.instagramAccountId}`}
+                    className="rounded-md p-1.5 text-text-muted hover:bg-muted-bg hover:text-text"
+                    title="View automation"
+                    aria-label={`View ${automation.name}`}
+                  >
+                    <EyeIcon />
+                  </LoadingLink>
+                  <EditAutomationModal
+                    organizationId={organizationId}
+                    automation={automation}
+                    redirectTo="/"
+                    trigger="icon"
+                  />
+                  <EditAutomationModal
+                    organizationId={organizationId}
+                    automation={automation}
+                    redirectTo="/"
+                    trigger="delete-icon"
+                  />
+                </div>
               </li>
             ))}
           </ul>

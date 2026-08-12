@@ -133,6 +133,14 @@ class FakeInstagramProvider implements InstagramProvider {
     return [];
   }
 
+  async updateCommentAutomation(): Promise<CommentAutomation> {
+    throw new Error('not used by this test file');
+  }
+
+  async deleteCommentAutomation(): Promise<void> {
+    throw new Error('not used by this test file');
+  }
+
   reset(): void {
     this.ensureProfileCallCount = 0;
     this.profileCounter = 0;

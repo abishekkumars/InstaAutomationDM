@@ -1,7 +1,9 @@
 'use server';
 
+import { revalidatePath, revalidateTag } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { callApi } from '@/lib/api';
+import { automationTags } from '@/lib/cache-tags';
 
 // Still a plain <form action={...}> + FormData, matching the style already used by
 // app/instagram/actions.ts - this action itself stays a server action either way. The two
@@ -55,6 +57,8 @@ export async function createAutomationAction(formData: FormData): Promise<void> 
             typeof commentReply === 'string' && commentReply.length > 0 ? commentReply : undefined,
           buttons: buttons.length > 0 ? buttons : undefined,
           dmMessage: formData.get('dmMessage'),
+          // Absent means "use the default" (enabled) - only an explicit 'false' disables.
+          isActive: formData.get('isActive') !== 'false',
         }),
       },
     );
@@ -64,6 +68,13 @@ export async function createAutomationAction(formData: FormData): Promise<void> 
     console.error('[automations] create failed:', error);
     redirect(`/instagram/posts/${postId}?accountId=${accountId}&automation=error`);
   }
+
+  // Without this the dashboard would keep serving its cached automations list for up to the TTL,
+  // so a just-created automation would be missing from the table the user lands back on.
+  for (const tag of automationTags(organizationId)) {
+    revalidateTag(tag, { expire: 0 });
+  }
+  revalidatePath('/');
 
   redirect(`/instagram/posts/${postId}?accountId=${accountId}&automation=created`);
 }

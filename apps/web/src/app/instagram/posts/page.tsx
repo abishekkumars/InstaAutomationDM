@@ -1,6 +1,9 @@
+import { Suspense } from 'react';
 import { LoadingLink } from '../../loader';
 import { redirect } from 'next/navigation';
 import { ApiError, callApi } from '@/lib/api';
+import { getPrimaryOrganizationId } from '@/lib/organization';
+import { PostsGridSkeleton } from '@/app/skeleton';
 import { PostsBrowser, type InstagramPostSummary } from './posts-browser';
 
 interface ListPostsResponse {
@@ -15,14 +18,6 @@ interface ListPostsResponse {
 // window ZernioInstagramProvider.getPost already relies on (~12 months of synced history).
 const FETCH_LIMIT = 500;
 
-// This app currently only ever shows the caller's first organization (same convention as
-// app/page.tsx's dashboard - there is no multi-org switcher yet), so the primary organization
-// id is looked up the same way here rather than threaded through the URL.
-async function getPrimaryOrganizationId(): Promise<string | null> {
-  const organizations = await callApi<Array<{ id: string }>>('/api/organizations');
-  return organizations[0]?.id ?? null;
-}
-
 export default async function InstagramPostsPage({
   searchParams,
 }: {
@@ -33,30 +28,11 @@ export default async function InstagramPostsPage({
     redirect('/');
   }
 
+  // Above the Suspense boundary: this decides a redirect, which is impossible once a fallback has
+  // streamed. It is one cheap API call with no Zernio fan-out.
   const organizationId = await getPrimaryOrganizationId();
   if (!organizationId) {
     redirect('/');
-  }
-
-  let result: ListPostsResponse;
-  try {
-    result = await callApi<ListPostsResponse>(
-      `/api/organizations/${organizationId}/instagram/accounts/${accountId}/posts?page=1&limit=${FETCH_LIMIT}`,
-    );
-  } catch (error) {
-    return (
-      <div className="space-y-4">
-        <LoadingLink href="/" className="text-sm text-slate-500 underline">
-          Back to dashboard
-        </LoadingLink>
-        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-800">
-          <p className="font-medium">Could not load posts</p>
-          <p className="mt-1 text-sm">
-            {error instanceof ApiError ? error.message : 'API not reachable.'}
-          </p>
-        </div>
-      </div>
-    );
   }
 
   return (
@@ -71,7 +47,37 @@ export default async function InstagramPostsPage({
         </p>
       </div>
 
-      <PostsBrowser posts={result.posts} accountId={accountId} />
+      {/* The 500-post fetch behind this boundary is the slowest call on the page (measured
+          0.66-1.73s against Zernio, 169 KB), so the heading paints first and the grid fills in. */}
+      <Suspense fallback={<PostsGridSkeleton />}>
+        <PostsSection organizationId={organizationId} accountId={accountId} />
+      </Suspense>
     </div>
   );
+}
+
+async function PostsSection({
+  organizationId,
+  accountId,
+}: {
+  organizationId: string;
+  accountId: string;
+}) {
+  let result: ListPostsResponse;
+  try {
+    result = await callApi<ListPostsResponse>(
+      `/api/organizations/${organizationId}/instagram/accounts/${accountId}/posts?page=1&limit=${FETCH_LIMIT}`,
+    );
+  } catch (error) {
+    return (
+      <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-800">
+        <p className="font-medium">Could not load posts</p>
+        <p className="mt-1 text-sm">
+          {error instanceof ApiError ? error.message : 'API not reachable.'}
+        </p>
+      </div>
+    );
+  }
+
+  return <PostsBrowser posts={result.posts} accountId={accountId} />;
 }

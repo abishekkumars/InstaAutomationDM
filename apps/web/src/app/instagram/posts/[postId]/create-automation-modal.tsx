@@ -1,7 +1,10 @@
 'use client';
 
 import { useState, type KeyboardEvent } from 'react';
+import { AUTOMATION_LIMITS } from '@automationdm/validation';
 import { FormPendingOverlay } from '../../../loader';
+import { Toggle } from '@/app/toggle';
+import { ReplySuggestions } from '@/app/reply-suggestions';
 import { createAutomationAction } from './actions';
 
 interface ButtonRow {
@@ -12,9 +15,11 @@ interface ButtonRow {
 
 type MatchMode = 'contains' | 'word' | 'exact';
 
-const MAX_BUTTONS = 3;
-const LIMIT_WITH_BUTTONS = 640;
-const LIMIT_PLAIN = 1000;
+// Re-exported from packages/validation so the form and the schema can never disagree about a
+// limit - see AUTOMATION_LIMITS for why these are centralised.
+const MAX_BUTTONS = AUTOMATION_LIMITS.buttonsMax;
+const LIMIT_WITH_BUTTONS = AUTOMATION_LIMITS.dmMessageWithButtonsMax;
+const LIMIT_PLAIN = AUTOMATION_LIMITS.dmMessageMax;
 
 const MATCH_MODES: { value: MatchMode; label: string }[] = [
   { value: 'contains', label: 'Contains' },
@@ -22,25 +27,38 @@ const MATCH_MODES: { value: MatchMode; label: string }[] = [
   { value: 'exact', label: 'Exact' },
 ];
 
-// A 3-step modal wizard (trigger -> message -> review), matching the reference mockup's
-// shape - replaces the older always-visible inline form (which folded KeywordsField and
-// DmMessageField in separately) with one client component that owns all the form state, so
-// the review step (step 3) can actually echo back what was entered in steps 1-2. Still
-// submits through the exact same createAutomationAction server action and FormData contract -
-// no backend change needed for this.
+/** Derives a sensible default automation name from the post's own caption: first line, first
+ * 75 characters, ellipsised. Falls back to a generic label for a captionless post. The user can
+ * always overwrite it - this is a starting point, not a fixed value. */
+export function defaultAutomationName(caption: string): string {
+  const firstLine = caption.split('\n')[0]?.trim() ?? '';
+  if (firstLine.length === 0) {
+    return 'Comment automation';
+  }
+  return firstLine.length > 75 ? `${firstLine.slice(0, 75)}...` : firstLine;
+}
+
+// A 3-step modal wizard (trigger -> message -> review), matching the reference mockup's shape.
+// One client component owns all the form state so the review step can echo back what steps 1-2
+// collected, and it submits through the same createAutomationAction server action the inline
+// form used - no backend change was needed for the wizard itself.
 export function CreateAutomationModal({
   organizationId,
   accountId,
   postId,
+  postCaption,
 }: {
   organizationId: string;
   accountId: string;
   postId: string;
+  /** Seeds the name field - see defaultAutomationName. */
+  postCaption: string;
 }) {
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<1 | 2 | 3>(1);
 
-  const [name, setName] = useState('');
+  const [name, setName] = useState(() => defaultAutomationName(postCaption));
+  const [isActive, setIsActive] = useState(true);
   const [keywords, setKeywords] = useState<string[]>([]);
   const [keywordDraft, setKeywordDraft] = useState('');
   const [matchMode, setMatchMode] = useState<MatchMode>('contains');
@@ -58,7 +76,8 @@ export function CreateAutomationModal({
 
   function reset() {
     setStep(1);
-    setName('');
+    setName(defaultAutomationName(postCaption));
+    setIsActive(true);
     setKeywords([]);
     setKeywordDraft('');
     setMatchMode('contains');
@@ -116,26 +135,26 @@ export function CreateAutomationModal({
       </button>
 
       {open && (
-        <div
-          className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink-950/60 p-0 sm:items-center sm:p-6"
-          onClick={close}
-        >
+        // No onClick={close} on the backdrop: a stray click outside the dialog used to discard
+        // everything typed so far with no warning and no undo. Closing is deliberate only -
+        // the ✕ button or Cancel.
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink-950/60 p-0 sm:items-center sm:p-6">
           <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Create automation"
             className="flex h-full w-full flex-col overflow-hidden bg-surface shadow-lg sm:h-auto sm:max-h-[85vh] sm:max-w-lg sm:rounded-xl sm:border sm:border-border"
-            onClick={(e) => e.stopPropagation()}
           >
-            <form action={createAutomationAction} className="flex min-h-0 flex-1 flex-col">
-              {/* Inside the form on purpose - useFormStatus only reports on its nearest parent
-                  form. This submit calls Zernio, so it is the slowest wait in the app. */}
-              <FormPendingOverlay />
-              {/* Every submitted value lives in a hidden field here, NOT in the visible
-                  step-1/step-2 inputs. Those inputs are conditionally rendered, so React
-                  unmounts them when the wizard advances - and an unmounted input is gone from
-                  the DOM, so its value never reaches FormData. Submitting on step 3 therefore
-                  used to send name/dmMessage/buttons as null, which the API rejected as
-                  "invalid input" even though the visible form looked complete. Keeping the
-                  canonical values here makes the submitted payload independent of which step
-                  happens to be on screen. */}
+            {/* Steps 1-2 are a plain <div>; only step 3 renders a real <form>. A <form
+                action={serverAction}> is submitted by React itself, and preventDefault() in an
+                onSubmit handler does NOT reliably stop the action from running - which is why
+                the earlier guard failed and step 2 still created the automation. With no form
+                element on screen before step 3, there is nothing that can submit: premature
+                creation is structurally impossible rather than merely guarded against. */}
+            <StepShell isFinalStep={step === 3}>
+              {/* Every submitted value lives in a hidden field, NOT in the visible step-1/2
+                  inputs: those are conditionally rendered, so React unmounts them as the wizard
+                  advances, and an unmounted input never reaches FormData. */}
               <input type="hidden" name="organizationId" value={organizationId} />
               <input type="hidden" name="accountId" value={accountId} />
               <input type="hidden" name="postId" value={postId} />
@@ -144,6 +163,7 @@ export function CreateAutomationModal({
               <input type="hidden" name="matchMode" value={matchMode} />
               <input type="hidden" name="commentReply" value={replyEnabled ? commentReply : ''} />
               <input type="hidden" name="dmMessage" value={dmMessage} />
+              <input type="hidden" name="isActive" value={isActive ? 'true' : 'false'} />
               {buttons
                 .filter((button) => button.title.trim() && button.url.trim())
                 .map((button) => (
@@ -184,13 +204,23 @@ export function CreateAutomationModal({
                       </label>
                       {/* No `name` attribute: the hidden field above is the single source of
                           truth for what gets submitted (see the comment there). */}
+                      {/* maxLength stops the over-limit input at the source rather than letting
+                          the API reject it after a round trip - the caption prefill can easily
+                          exceed 200 characters on a long post. The counter appears only near the
+                          limit so it is not noise on a short name. */}
                       <input
                         id="automation-name"
                         type="text"
                         value={name}
+                        maxLength={AUTOMATION_LIMITS.nameMax}
                         onChange={(e) => setName(e.target.value)}
                         className="mt-1 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
                       />
+                      {name.length > AUTOMATION_LIMITS.nameMax - 40 && (
+                        <p className="mt-1 text-right text-xs text-text-faint">
+                          {name.length} / {AUTOMATION_LIMITS.nameMax}
+                        </p>
+                      )}
                     </div>
 
                     <div>
@@ -265,38 +295,44 @@ export function CreateAutomationModal({
                         <span className="text-sm font-medium text-text">
                           Public reply on the comment (optional)
                         </span>
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={replyEnabled}
-                          onClick={() => setReplyEnabled(!replyEnabled)}
-                          className={
-                            replyEnabled
-                              ? 'relative h-5 w-9 rounded-full bg-accent transition'
-                              : 'relative h-5 w-9 rounded-full bg-muted-bg transition'
-                          }
-                        >
-                          <span
-                            className={
-                              replyEnabled
-                                ? 'absolute left-4 top-0.5 h-4 w-4 rounded-full bg-accent-ink transition'
-                                : 'absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-surface transition'
-                            }
-                          />
-                        </button>
+                        <Toggle
+                          checked={replyEnabled}
+                          onChange={() => setReplyEnabled(!replyEnabled)}
+                          label="Enable public reply"
+                        />
                       </div>
                       {replyEnabled && (
-                        <textarea
-                          rows={2}
-                          value={commentReply}
-                          onChange={(e) => setCommentReply(e.target.value)}
-                          placeholder="Thanks! Sent you a DM 🙌"
-                          className="mt-2 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
-                        />
+                        <>
+                          <textarea
+                            rows={2}
+                            value={commentReply}
+                            maxLength={AUTOMATION_LIMITS.commentReplyMax}
+                            onChange={(e) => setCommentReply(e.target.value)}
+                            placeholder="Thanks! Sent you a DM 🙌"
+                            className="mt-2 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
+                          />
+                          <ReplySuggestions value={commentReply} onAppend={setCommentReply} />
+                        </>
                       )}
                       <p className="mt-1 text-xs text-text-muted">
                         Posted publicly under the triggering comment. Leave the toggle off to skip a
                         public reply.
+                      </p>
+                    </div>
+
+                    <div className="border-t border-border pt-4">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-medium text-text">Enabled</span>
+                        <Toggle
+                          checked={isActive}
+                          onChange={() => setIsActive(!isActive)}
+                          label="Enable automation"
+                        />
+                      </div>
+                      <p className="mt-1 text-xs text-text-muted">
+                        {isActive
+                          ? 'Starts replying to matching comments as soon as it is created.'
+                          : 'Created but paused - it will not reply until you enable it.'}
                       </p>
                     </div>
                   </div>
@@ -307,10 +343,15 @@ export function CreateAutomationModal({
                     <label htmlFor="dmMessage" className="block text-sm font-medium text-text">
                       DM message
                     </label>
+                    {/* Capped at the *plain* limit, not `limit`: lowering maxLength to 640 while
+                        text longer than that is already in the box would leave the field in a
+                        state the user cannot see the end of. The counter turns red and Next
+                        disables instead, which is recoverable. */}
                     <textarea
                       id="dmMessage"
                       rows={3}
                       value={dmMessage}
+                      maxLength={AUTOMATION_LIMITS.dmMessageMax}
                       onChange={(e) => setDmMessage(e.target.value)}
                       className="mt-1 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
                     />
@@ -335,7 +376,7 @@ export function CreateAutomationModal({
                               type="text"
                               value={row.title}
                               onChange={(e) => updateButton(row.key, 'title', e.target.value)}
-                              maxLength={20}
+                              maxLength={AUTOMATION_LIMITS.buttonTitleMax}
                               placeholder="Label (max 20 chars)"
                               className="w-32 rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-text"
                             />
@@ -373,9 +414,14 @@ export function CreateAutomationModal({
                     </p>
 
                     {(dmMessage || buttons.length > 0) && (
-                      <div className="mt-4 rounded-lg border border-border bg-muted-bg p-3">
+                      <div className="mt-4 overflow-hidden rounded-lg border border-border bg-muted-bg p-3">
                         <p className="mb-2 text-xs text-text-faint">Preview</p>
-                        <div className="rounded-2xl bg-surface px-3 py-2 text-sm text-text shadow-sm">
+                        {/* whitespace-pre-wrap keeps the user's own line breaks; break-words
+                            splits a long unbroken run (a pasted URL, a word with no spaces)
+                            that would otherwise render as one line wider than the bubble and
+                            overflow the modal. min-w-0 lets the bubble actually shrink inside
+                            its flex/grid parent instead of being sized by its content. */}
+                        <div className="min-w-0 whitespace-pre-wrap break-words rounded-2xl bg-surface px-3 py-2 text-sm text-text shadow-sm">
                           {dmMessage || '(your DM message)'}
                         </div>
                         {buttons.some((b) => b.title) && (
@@ -385,7 +431,7 @@ export function CreateAutomationModal({
                               .map((b) => (
                                 <span
                                   key={b.key}
-                                  className="rounded-full border border-border-strong px-2.5 py-1 text-xs font-medium text-text"
+                                  className="max-w-full truncate rounded-full border border-border-strong px-2.5 py-1 text-xs font-medium text-text"
                                 >
                                   {b.title}
                                 </span>
@@ -417,13 +463,15 @@ export function CreateAutomationModal({
                     </ReviewRow>
                     {replyEnabled && commentReply && (
                       <ReviewRow label="reply publicly with">
-                        <p className="rounded-lg bg-muted-bg px-3 py-2 text-text">
+                        <p className="whitespace-pre-wrap break-words rounded-lg bg-muted-bg px-3 py-2 text-text">
                           &quot;{commentReply}&quot;
                         </p>
                       </ReviewRow>
                     )}
                     <ReviewRow label="and send this DM">
-                      <p className="rounded-lg bg-muted-bg px-3 py-2 text-text">{dmMessage}</p>
+                      <p className="whitespace-pre-wrap break-words rounded-lg bg-muted-bg px-3 py-2 text-text">
+                        {dmMessage}
+                      </p>
                       {buttons.some((b) => b.title) && (
                         <div className="mt-1.5 flex flex-wrap gap-1.5">
                           {buttons
@@ -431,7 +479,7 @@ export function CreateAutomationModal({
                             .map((b) => (
                               <span
                                 key={b.key}
-                                className="rounded-full border border-border-strong px-2.5 py-1 text-xs font-medium text-text"
+                                className="max-w-full truncate rounded-full border border-border-strong px-2.5 py-1 text-xs font-medium text-text"
                               >
                                 {b.title}
                               </span>
@@ -447,6 +495,17 @@ export function CreateAutomationModal({
                         </p>
                       </ReviewRow>
                     )}
+                    <ReviewRow label="and it starts">
+                      <span
+                        className={
+                          isActive
+                            ? 'inline-block rounded-full border border-success-border bg-success-bg px-2.5 py-0.5 text-xs font-semibold text-success'
+                            : 'inline-block rounded-full bg-muted-bg px-2.5 py-0.5 text-xs font-semibold text-text-faint'
+                        }
+                      >
+                        {isActive ? 'Enabled' : 'Disabled'}
+                      </span>
+                    </ReviewRow>
                   </div>
                 )}
               </div>
@@ -454,14 +513,25 @@ export function CreateAutomationModal({
               <div className="flex items-center justify-between border-t border-border px-4 py-3">
                 <span className="text-xs text-text-faint">Step {step} of 3</span>
                 <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setStep((step - 1) as 1 | 2 | 3)}
-                    disabled={step === 1}
-                    className="rounded-md border border-border-strong px-3 py-1.5 text-sm font-medium text-text-muted disabled:opacity-40"
-                  >
-                    Back
-                  </button>
+                  {step === 1 ? (
+                    // The backdrop no longer closes the dialog, so step 1 needs an explicit
+                    // way out that is not just the small corner ✕.
+                    <button
+                      type="button"
+                      onClick={close}
+                      className="rounded-md border border-border-strong px-3 py-1.5 text-sm font-medium text-text-muted hover:bg-surface-2"
+                    >
+                      Cancel
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setStep((step - 1) as 1 | 2 | 3)}
+                      className="rounded-md border border-border-strong px-3 py-1.5 text-sm font-medium text-text-muted hover:bg-surface-2"
+                    >
+                      Back
+                    </button>
+                  )}
                   {step < 3 ? (
                     <button
                       type="button"
@@ -472,16 +542,19 @@ export function CreateAutomationModal({
                       Next
                     </button>
                   ) : (
+                    // data-confirm is what onSubmit looks for: the only control permitted to
+                    // actually submit the form.
                     <button
                       type="submit"
+                      data-confirm="true"
                       className="rounded-md bg-ink-950 px-4 py-1.5 text-sm font-medium text-white"
                     >
-                      Confirm & create
+                      Confirm &amp; create
                     </button>
                   )}
                 </div>
               </div>
-            </form>
+            </StepShell>
           </div>
         </div>
       )}
@@ -489,11 +562,30 @@ export function CreateAutomationModal({
   );
 }
 
+/** Wraps the wizard body in a real <form action={createAutomationAction}> ONLY on the final
+ * step. Before that it is an inert <div>, so there is no form element on the page that could
+ * submit - by Enter, by an implicit submission, or by React's own action handling. */
+function StepShell({ isFinalStep, children }: { isFinalStep: boolean; children: React.ReactNode }) {
+  if (!isFinalStep) {
+    return <div className="flex min-h-0 flex-1 flex-col">{children}</div>;
+  }
+  return (
+    <form action={createAutomationAction} className="flex min-h-0 flex-1 flex-col">
+      {/* Inside the form on purpose - useFormStatus only reports on its nearest parent form. */}
+      <FormPendingOverlay />
+      {children}
+    </form>
+  );
+}
+
 function ReviewRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex gap-2">
-      <span className="text-text-faint">↳</span>
-      <div className="flex-1">
+      <span className="shrink-0 text-text-faint">↳</span>
+      {/* min-w-0: a flex item's default min-width is auto, meaning it refuses to shrink below
+          its content's intrinsic width. Long DM text then forces this column wider than the
+          modal instead of wrapping inside it. */}
+      <div className="min-w-0 flex-1">
         <p className="text-xs text-text-muted">{label}</p>
         <div className="mt-1">{children}</div>
       </div>

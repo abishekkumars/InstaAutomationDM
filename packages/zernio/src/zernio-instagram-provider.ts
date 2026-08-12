@@ -2,6 +2,7 @@ import type {
   CommentAutomation,
   ConnectedInstagramAccount,
   CreateCommentAutomationInput,
+  DeleteCommentAutomationInput,
   DmButton,
   EnsureProfileInput,
   EnsureProfileResult,
@@ -14,12 +15,18 @@ import type {
   ListCommentAutomationsInput,
   ListPostsInput,
   ListPostsResult,
+  UpdateCommentAutomationInput,
 } from './instagram-provider';
 
 // Base URL + auth scheme, and every endpoint shape below, verified directly against Zernio's
 // live OpenAPI spec (docs.zernio.com/api/openapi) during Phase 8 - see
 // docs/ZERNIO-INTEGRATION.md's "Account connection" section, not invented here per CLAUDE.md.
 export const ZERNIO_BASE_URL = 'https://zernio.com/api/v1';
+
+/** Per-request deadline. Chosen against measured Zernio latency: a normal response is 0.3-1.7s,
+ * and the slowest observed (a 500-post, 169 KB list) was 1.73s, so 10s is comfortably above the
+ * real p100 while still failing fast enough to keep a page render alive. */
+const REQUEST_TIMEOUT_MS = 10_000;
 
 interface ZernioErrorBody {
   error?: string;
@@ -194,6 +201,34 @@ export class ZernioInstagramProvider implements InstagramProvider {
     return response.automations.map(toCommentAutomation);
   }
 
+  async updateCommentAutomation(input: UpdateCommentAutomationInput): Promise<CommentAutomation> {
+    const response = await this.request<{ automation: RawCommentAutomation }>(
+      'PATCH',
+      `/comment-automations/${encodeURIComponent(input.zernioAutomationId)}`,
+      {
+        // Every key is conditionally included: JSON.stringify drops undefined, and Zernio's
+        // PATCH treats an absent key as "leave this alone". `buttons: []` is meaningful (it
+        // clears them), so it must survive - hence the explicit undefined check rather than
+        // the `?.length ? ... : undefined` shape createCommentAutomation uses.
+        name: input.name,
+        keywords: input.keywords,
+        matchMode: input.matchMode,
+        commentReply: input.commentReply,
+        buttons: input.buttons === undefined ? undefined : input.buttons.map(toRawDmButton),
+        dmMessage: input.dmMessage,
+        isActive: input.isActive,
+      },
+    );
+    return toCommentAutomation(response.automation);
+  }
+
+  async deleteCommentAutomation(input: DeleteCommentAutomationInput): Promise<void> {
+    await this.request<unknown>(
+      'DELETE',
+      `/comment-automations/${encodeURIComponent(input.zernioAutomationId)}`,
+    );
+  }
+
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     if (!this.apiKey) {
       // Lazy check (not thrown at DI-construction time) so apps/api's health/readiness
@@ -202,14 +237,32 @@ export class ZernioInstagramProvider implements InstagramProvider {
       throw new Error('ZERNIO_API_KEY is not configured.');
     }
 
-    const response = await fetch(`${ZERNIO_BASE_URL}${path}`, {
-      method,
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    // Bounded, because these calls are on the critical path of a user-facing page render and
+    // Zernio's own latency is the dominant cost there (measured 0.4-1.7s for a normal response).
+    // Without a deadline a single hung upstream request would hold a serverless invocation open
+    // until the platform's own much longer timeout, turning one slow call into a dead page.
+    let response: Response;
+    try {
+      response = await fetch(`${ZERNIO_BASE_URL}${path}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    } catch (error) {
+      // A timeout surfaces as a DOMException named TimeoutError. Re-thrown as a ZernioApiError with
+      // a 504 so callers that already branch on `status` (the 404/409 recovery paths) keep working
+      // and do not have to learn a second error shape.
+      if (error instanceof Error && error.name === 'TimeoutError') {
+        throw new ZernioApiError(method, path, 504, {
+          error: `Zernio did not respond within ${REQUEST_TIMEOUT_MS}ms.`,
+        });
+      }
+      throw error;
+    }
 
     if (!response.ok) {
       const errorBody = (await response.json().catch(() => undefined)) as
@@ -217,7 +270,17 @@ export class ZernioInstagramProvider implements InstagramProvider {
       throw new ZernioApiError(method, path, response.status, errorBody);
     }
 
-    return (await response.json()) as T;
+    // DELETE responds 200 with no JSON body; parsing it unconditionally would throw on the
+    // empty payload and turn a successful delete into an error. Callers that expect nothing
+    // back (deleteCommentAutomation) request `unknown` and ignore the result.
+    if (response.status === 204) {
+      return undefined as T;
+    }
+    const text = await response.text();
+    if (text.length === 0) {
+      return undefined as T;
+    }
+    return JSON.parse(text) as T;
   }
 }
 

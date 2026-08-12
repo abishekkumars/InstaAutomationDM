@@ -1,9 +1,10 @@
 import type { Metadata, Viewport } from 'next';
-import type { ReactNode } from 'react';
-import { auth } from '@/auth';
+import { Suspense, type ReactNode } from 'react';
+import { getSession } from '@/lib/session';
 import { signOutAction } from './(auth)/actions';
 import { FormPendingOverlay, LoadingLink } from './loader';
 import { ThemeScript, ThemeToggle } from './theme-toggle';
+import { ToastHost } from './toast';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -25,7 +26,7 @@ const NAV_ITEMS = [
 ];
 
 export default async function RootLayout({ children }: { children: ReactNode }) {
-  const session = await auth();
+  const session = await getSession();
 
   if (!session?.user) {
     return (
@@ -47,6 +48,12 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
               <div className="w-full max-w-sm">{children}</div>
             </main>
           </div>
+          {/* Also mounted here, not just on the signed-in shell: no signed-out flow redirects
+              with a status param today, but omitting it would make the first one that does fail
+              silently. */}
+          <Suspense fallback={null}>
+            <ToastHost />
+          </Suspense>
         </body>
       </html>
     );
@@ -119,6 +126,12 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             </div>
           </main>
         </div>
+        {/* Suspense boundary is required: ToastHost reads useSearchParams(), which opts its
+            subtree into client-side rendering and would otherwise force the whole layout to
+            bail out of static rendering. */}
+        <Suspense fallback={null}>
+          <ToastHost />
+        </Suspense>
       </body>
     </html>
   );
