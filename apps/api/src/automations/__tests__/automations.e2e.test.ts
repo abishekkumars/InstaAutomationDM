@@ -222,6 +222,7 @@ class FakeInstagramProvider implements InstagramProvider {
     this.postsWithAutomation.clear();
     this.remoteAutomations = [];
     this.lastCreateInput = undefined;
+    this.lastUpdateInput = undefined;
   }
 }
 
@@ -827,5 +828,266 @@ describe('GET .../organizations/:organizationId/automations', () => {
       zernioPostId: 'post-1',
       instagramAccountId: accountA,
     });
+  });
+});
+
+// Creates one automation and returns everything the edit/delete routes need to address it.
+// Both routes are org-scoped (`/organizations/:organizationId/automations/:automationId`) rather
+// than post-scoped, because the automation's own id already identifies it uniquely and the
+// dashboard table has no post in its route.
+async function createAutomation(
+  email: string,
+  zernioAccountId = 'ig-acct-1',
+  body: Record<string, unknown> = AUTOMATION_BODY,
+) {
+  const { user, organization } = await createOrgWithOwner(email);
+  const { accountId } = await connectAndConfirmAccount(
+    app,
+    user,
+    organization,
+    zernioAccountId,
+    'acme_ig',
+  );
+  const response = await request(app.getHttpServer())
+    .post(
+      `/api/organizations/${organization.id}/instagram/accounts/${accountId}/posts/post-1/automations`,
+    )
+    .set('Authorization', bearerFor(user.id, user.email))
+    .send(body)
+    .expect(201);
+  return {
+    user,
+    organization,
+    accountId,
+    automationId: response.body.id as string,
+  };
+}
+
+describe('PATCH /organizations/:organizationId/automations/:automationId', () => {
+  it('rejects a request with no bearer token', async () => {
+    const { organization, automationId } = await createAutomation('alice@example.com');
+    await request(app.getHttpServer())
+      .patch(`/api/organizations/${organization.id}/automations/${automationId}`)
+      .send({ name: 'Renamed' })
+      .expect(401);
+  });
+
+  it('404s for a caller who is not a member of the organization', async () => {
+    const { organization, automationId } = await createAutomation('alice@example.com');
+    const bob = await prisma.user.create({ data: { email: 'bob@example.com' } });
+
+    await request(app.getHttpServer())
+      .patch(`/api/organizations/${organization.id}/automations/${automationId}`)
+      .set('Authorization', bearerFor(bob.id, bob.email))
+      .send({ name: 'Renamed' })
+      .expect(404);
+  });
+
+  it('404s for an automationId that belongs to a different organization', async () => {
+    // The tenant-isolation guard: the id comes from the client, so owning it is never assumed
+    // from the id alone - it is re-checked against the organization the session resolves to.
+    // 404 rather than 403, so an outsider cannot use the response to confirm the id exists.
+    const { automationId: aliceAutomationId } = await createAutomation(
+      'alice@example.com',
+      'ig-acct-alice',
+    );
+    const { user: bob, organization: bobOrg } = await createOrgWithOwner('bob@example.com');
+
+    await request(app.getHttpServer())
+      .patch(`/api/organizations/${bobOrg.id}/automations/${aliceAutomationId}`)
+      .set('Authorization', bearerFor(bob.id, bob.email))
+      .send({ name: 'Stolen' })
+      .expect(404);
+
+    const stored = await prisma.automation.findUnique({ where: { id: aliceAutomationId } });
+    expect(stored?.name).toBe(AUTOMATION_BODY.name);
+  });
+
+  it('applies a partial update and leaves unsent fields untouched', async () => {
+    const { user, organization, automationId } = await createAutomation('alice@example.com');
+
+    const response = await request(app.getHttpServer())
+      .patch(`/api/organizations/${organization.id}/automations/${automationId}`)
+      .set('Authorization', bearerFor(user.id, user.email))
+      .send({ name: 'Renamed', isActive: false })
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      name: 'Renamed',
+      isActive: false,
+      // Untouched by this request, so they must survive it - Zernio's PATCH leaves absent keys
+      // alone, and the local write-back must not flatten them to defaults.
+      keywords: AUTOMATION_BODY.keywords,
+      dmMessage: AUTOMATION_BODY.dmMessage,
+      commentReply: AUTOMATION_BODY.commentReply,
+    });
+    expect(fakeProvider.lastUpdateInput?.keywords).toBeUndefined();
+
+    const stored = await prisma.automation.findUnique({ where: { id: automationId } });
+    expect(stored).toMatchObject({ name: 'Renamed', isActive: false });
+    expect(stored?.dmMessage).toBe(AUTOMATION_BODY.dmMessage);
+  });
+
+  it('rejects an empty body rather than making a no-op round trip to Zernio', async () => {
+    const { user, organization, automationId } = await createAutomation('alice@example.com');
+
+    await request(app.getHttpServer())
+      .patch(`/api/organizations/${organization.id}/automations/${automationId}`)
+      .set('Authorization', bearerFor(user.id, user.email))
+      .send({})
+      .expect(400);
+
+    expect(fakeProvider.lastUpdateInput).toBeUndefined();
+  });
+
+  it('clears every button when sent an empty array', async () => {
+    // The regression guard for using Prisma.DbNull rather than undefined on the write-back.
+    // `undefined` means "leave this column alone" to Prisma, so clearing the buttons would have
+    // succeeded on Zernio and silently done nothing locally - the row would keep rendering
+    // buttons the automation no longer has.
+    const { user, organization, automationId } = await createAutomation(
+      'alice@example.com',
+      'ig-acct-1',
+      { ...AUTOMATION_BODY, buttons: [{ title: 'Shop now', url: 'https://example.com/shop' }] },
+    );
+    const before = await prisma.automation.findUnique({ where: { id: automationId } });
+    expect(before?.buttons).toEqual([{ title: 'Shop now', url: 'https://example.com/shop' }]);
+
+    const response = await request(app.getHttpServer())
+      .patch(`/api/organizations/${organization.id}/automations/${automationId}`)
+      .set('Authorization', bearerFor(user.id, user.email))
+      .send({ buttons: [] })
+      .expect(200);
+
+    expect(response.body.buttons).toEqual([]);
+    // `[]` must reach Zernio as an explicit value - dropping it as "empty" would mean the
+    // buttons are never actually removed upstream either.
+    expect(fakeProvider.lastUpdateInput?.buttons).toEqual([]);
+
+    const stored = await prisma.automation.findUnique({ where: { id: automationId } });
+    expect(stored?.buttons ?? null).toBeNull();
+  });
+
+  it('rejects a 641-character dmMessage against buttons that are only in the stored row', async () => {
+    // updateAutomationSchema cannot catch this on its own: a partial update need not send
+    // `buttons` and `dmMessage` together, so with only dmMessage present the schema sees no
+    // buttons and lets it through. The service re-checks against the stored row, which is the
+    // only place the post-patch picture exists. Without that check this reaches Zernio and
+    // comes back as an opaque 400.
+    const { user, organization, automationId } = await createAutomation(
+      'alice@example.com',
+      'ig-acct-1',
+      { ...AUTOMATION_BODY, buttons: [{ title: 'Shop now', url: 'https://example.com/shop' }] },
+    );
+
+    await request(app.getHttpServer())
+      .patch(`/api/organizations/${organization.id}/automations/${automationId}`)
+      .set('Authorization', bearerFor(user.id, user.email))
+      .send({ dmMessage: 'x'.repeat(641) })
+      .expect(400);
+
+    expect(fakeProvider.lastUpdateInput).toBeUndefined();
+  });
+
+  it('allows a 641-character dmMessage once the buttons are removed in the same request', async () => {
+    // The mirror of the test above: the same message length is fine when the patch itself
+    // clears the buttons, proving the check reads the post-patch state rather than just the
+    // stored row.
+    const { user, organization, automationId } = await createAutomation(
+      'alice@example.com',
+      'ig-acct-1',
+      { ...AUTOMATION_BODY, buttons: [{ title: 'Shop now', url: 'https://example.com/shop' }] },
+    );
+
+    await request(app.getHttpServer())
+      .patch(`/api/organizations/${organization.id}/automations/${automationId}`)
+      .set('Authorization', bearerFor(user.id, user.email))
+      .send({ dmMessage: 'x'.repeat(641), buttons: [] })
+      .expect(200);
+  });
+
+  it('404s without deleting the local row when Zernio no longer has the automation', async () => {
+    const { user, organization, automationId } = await createAutomation('alice@example.com');
+    const stored = await prisma.automation.findUniqueOrThrow({ where: { id: automationId } });
+    // Deleted directly in Zernio's own dashboard, leaving our row pointing at nothing.
+    await fakeProvider.deleteCommentAutomation({
+      zernioAutomationId: stored.zernioAutomationId,
+    });
+
+    await request(app.getHttpServer())
+      .patch(`/api/organizations/${organization.id}/automations/${automationId}`)
+      .set('Authorization', bearerFor(user.id, user.email))
+      .send({ name: 'Renamed' })
+      .expect(404);
+
+    // Deliberately NOT self-healed by deleting the row: dropping a user's configuration as a
+    // side effect of a failed edit is worse than a stale row, which reconciliation can resolve.
+    expect(await prisma.automation.count()).toBe(1);
+  });
+});
+
+describe('DELETE /organizations/:organizationId/automations/:automationId', () => {
+  it('rejects a request with no bearer token', async () => {
+    const { organization, automationId } = await createAutomation('alice@example.com');
+    await request(app.getHttpServer())
+      .delete(`/api/organizations/${organization.id}/automations/${automationId}`)
+      .expect(401);
+    expect(await prisma.automation.count()).toBe(1);
+  });
+
+  it('404s for an automationId that belongs to a different organization', async () => {
+    const { automationId: aliceAutomationId } = await createAutomation(
+      'alice@example.com',
+      'ig-acct-alice',
+    );
+    const { user: bob, organization: bobOrg } = await createOrgWithOwner('bob@example.com');
+
+    await request(app.getHttpServer())
+      .delete(`/api/organizations/${bobOrg.id}/automations/${aliceAutomationId}`)
+      .set('Authorization', bearerFor(bob.id, bob.email))
+      .expect(404);
+
+    expect(await prisma.automation.count()).toBe(1);
+  });
+
+  it('deletes on Zernio and locally, and frees the post for a new automation', async () => {
+    const { user, organization, accountId, automationId } =
+      await createAutomation('alice@example.com');
+
+    await request(app.getHttpServer())
+      .delete(`/api/organizations/${organization.id}/automations/${automationId}`)
+      .set('Authorization', bearerFor(user.id, user.email))
+      .expect(204);
+
+    expect(await prisma.automation.count()).toBe(0);
+    // Gone upstream too, not just locally - otherwise the automation would keep firing while
+    // appearing deleted, and creating a replacement would 409 forever.
+    expect(await fakeProvider.listCommentAutomations()).toHaveLength(0);
+    await request(app.getHttpServer())
+      .post(
+        `/api/organizations/${organization.id}/instagram/accounts/${accountId}/posts/post-1/automations`,
+      )
+      .set('Authorization', bearerFor(user.id, user.email))
+      .send(AUTOMATION_BODY)
+      .expect(201);
+  });
+
+  it('still removes the local row when Zernio reports the automation is already gone', async () => {
+    // The opposite call from update's 404 handling, and deliberately so: here removing the row
+    // is exactly what the user asked for, so Zernio having none means the desired end state is
+    // already half-reached - not that the request is bad. Failing would leave a row the user
+    // can see but can never delete.
+    const { user, organization, automationId } = await createAutomation('alice@example.com');
+    const stored = await prisma.automation.findUniqueOrThrow({ where: { id: automationId } });
+    await fakeProvider.deleteCommentAutomation({
+      zernioAutomationId: stored.zernioAutomationId,
+    });
+
+    await request(app.getHttpServer())
+      .delete(`/api/organizations/${organization.id}/automations/${automationId}`)
+      .set('Authorization', bearerFor(user.id, user.email))
+      .expect(204);
+
+    expect(await prisma.automation.count()).toBe(0);
   });
 });

@@ -8,6 +8,8 @@
     "emitDecoratorMetadata": true,
     "allowSyntheticDefaultImports": true,
     "noEmit": false,
+    "sourceMap": true,
+    "inlineSources": true,
     "rootDir": "src",
     "outDir": "dist"
   },

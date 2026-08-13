@@ -4,11 +4,13 @@ import { ApiError } from '@/lib/api';
 import { AutomationsBrowser } from './automations-browser';
 import {
   getAutomations,
+  getAutomationsWithMeta,
   getInstagramAccounts,
   getMembers,
   getOrganizations,
   sumStats,
 } from './dashboard-data';
+import { DataAge } from './freshness';
 import { connectInstagramAction } from './instagram/actions';
 import { FormPendingOverlay, LoadingLink } from './loader';
 import { AutomationsTableSkeleton, CardSkeleton, StatCardsSkeleton } from './skeleton';
@@ -53,7 +55,15 @@ export default async function HomePage() {
             {organization.name} — comment-triggered DMs across your connected accounts.
           </p>
         </div>
-        <SyncButton organizationId={organization.id} />
+        <div className="flex items-center gap-3">
+          {/* Its own boundary with no fallback: the label depends on the slow automations fetch,
+              and an empty gap that fills in later is better here than either delaying the header
+              or reserving space for a skeleton on a secondary piece of text. */}
+          <Suspense fallback={null}>
+            <DataFreshness organizationId={organization.id} />
+          </Suspense>
+          <SyncButton organizationId={organization.id} />
+        </div>
       </div>
 
       {/* Three independent boundaries rather than one, because the underlying calls differ by an
@@ -82,6 +92,29 @@ export default async function HomePage() {
       </Suspense>
     </div>
   );
+}
+
+/** Computes the age of the cached automations data server-side and hands it to the client label.
+ *
+ * The age is derived here, where both the fetch timestamp and "now" come from the same clock, so
+ * what crosses to the browser is a plain number of seconds rather than two timestamps it would
+ * have to reconcile. `getAutomationsWithMeta` is the same memoized call the sections below use -
+ * the label costs no extra request. */
+async function DataFreshness({ organizationId }: { organizationId: string }) {
+  const [accounts, automations] = await Promise.all([
+    getInstagramAccounts(organizationId),
+    getAutomationsWithMeta(organizationId),
+  ]);
+  // Nothing connected means no Zernio data behind the label, so there is no freshness to report.
+  if (accounts.length === 0) {
+    return null;
+  }
+
+  const ageSeconds = Math.max(
+    0,
+    Math.round((Date.now() - Date.parse(automations.fetchedAt)) / 1000),
+  );
+  return <DataAge initialAgeSeconds={ageSeconds} />;
 }
 
 async function StatsSection({ organizationId }: { organizationId: string }) {

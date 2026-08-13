@@ -7,6 +7,8 @@
     "jsx": "preserve",
     "allowJs": true,
     "incremental": true,
+    "sourceMap": true,
+    "inlineSources": true,
     "plugins": [{ "name": "next" }],
     "paths": {
       "@/*": ["./src/*"]

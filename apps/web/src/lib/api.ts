@@ -90,6 +90,18 @@ class DegradedResponse<T> extends Error {
   }
 }
 
+/** A cached payload plus when it was actually fetched.
+ *
+ * `fetchedAt` is stamped INSIDE the cache boundary, so it dates the upstream fetch rather than the
+ * render that read it. Stamping it outside would make every cache hit claim to be brand new, which
+ * is precisely the thing the dashboard's freshness label exists to disprove. */
+export interface CachedResult<T> {
+  data: T;
+  /** ISO 8601. Compare against the server clock only - see app/freshness.tsx for why the age, not
+   * the wall-clock time, is what reaches the browser. */
+  fetchedAt: string;
+}
+
 export interface CachedCallOptions<T> {
   /** Cache tags for invalidation. See lib/cache-tags.ts. */
   tags: string[];
@@ -122,20 +134,34 @@ export interface CachedCallOptions<T> {
  * instance and does not persist across requests on serverless, so it would not help here.
  */
 export async function callApiCached<T>(path: string, options: CachedCallOptions<T>): Promise<T> {
+  return (await callApiCachedWithMeta(path, options)).data;
+}
+
+/** As `callApiCached`, but also reports when the returned data was fetched. Shares the cache entry
+ * with `callApiCached` for the same path, so asking for the timestamp never costs an extra call. */
+export async function callApiCachedWithMeta<T>(
+  path: string,
+  options: CachedCallOptions<T>,
+): Promise<CachedResult<T>> {
   const caller = await currentCaller();
 
   // Built per call because `tags` and `revalidate` are fixed when the wrapper is created and vary
   // by call site. The cache key comes from keyParts plus the arguments, not from function
   // identity, so rebuilding the wrapper does not weaken or fragment the cache.
+  //
+  // The 'v2' part versions the stored SHAPE. Entries written before `fetchedAt` existed are bare
+  // payloads, and the data cache outlives a deployment, so without this bump the first request
+  // after deploying would read an array where it expects an envelope.
   const load = unstable_cache(
-    async (targetPath: string, forCaller: ApiCaller): Promise<T> => {
+    async (targetPath: string, forCaller: ApiCaller): Promise<CachedResult<T>> => {
       const data = await rawGet<T>(targetPath, forCaller);
+      const result: CachedResult<T> = { data, fetchedAt: new Date().toISOString() };
       if (options.isDegraded?.(data)) {
-        throw new DegradedResponse(data);
+        throw new DegradedResponse(result);
       }
-      return data;
+      return result;
     },
-    ['callApiCached', path],
+    ['callApiCached', 'v2', path],
     { tags: options.tags, revalidate: options.revalidate ?? 60 },
   );
 
@@ -143,7 +169,7 @@ export async function callApiCached<T>(path: string, options: CachedCallOptions<
     return await load(path, caller);
   } catch (error) {
     if (error instanceof DegradedResponse) {
-      return error.payload as T;
+      return error.payload as CachedResult<T>;
     }
     throw error;
   }

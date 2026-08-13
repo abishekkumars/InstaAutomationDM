@@ -8,6 +8,12 @@ on:
 jobs:
   lint-and-typecheck:
     runs-on: ubuntu-latest
+    env:
+      # Placeholders only - nothing in this job opens a connection. They exist because Prisma
+      # validates the whole datasource block (including every env() reference) before it will
+      # generate, so an unset DIRECT_URL fails with P1012 rather than being ignored.
+      DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
+      DIRECT_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
     steps:
       - uses: actions/checkout@v4
 
@@ -20,6 +26,14 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # Required before typecheck, not just before tests: `Prisma.PrismaClientKnownRequestError`
+      # and every model type live in the GENERATED client, and there is no postinstall hook, so
+      # `pnpm install` alone leaves @prisma/client as an un-generated stub. Without this the
+      # typecheck fails on types that resolve perfectly well on a developer machine, where
+      # generate has already run at some point.
+      - name: Prisma generate
+        run: pnpm --filter @automationdm/database run generate
 
       - name: ESLint
         run: pnpm run eslint
@@ -52,6 +66,11 @@ jobs:
           --health-retries=10
     env:
       DATABASE_URL: postgresql://automationdm:automationdm@localhost:5432/automationdm
+      # Same value as DATABASE_URL on purpose: schema.prisma declares `directUrl` for Supabase's
+      # pooler split, where migrations must bypass the transaction pooler. The service container
+      # above has no pooler in front of it, so there is nothing to bypass - but the variable must
+      # still be set, or `prisma migrate deploy` fails validation with P1012 before it connects.
+      DIRECT_URL: postgresql://automationdm:automationdm@localhost:5432/automationdm
       # A throwaway value that only needs to exist for the lifetime of this CI run (apps/api's
       # tests sign/verify their own internal tokens with it) - not a real secret, same as the
       # fixed Postgres credentials above. Never used outside this job.

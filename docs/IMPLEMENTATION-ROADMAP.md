@@ -65,6 +65,11 @@ completed work, just a rewrite of what hadn't started yet).
 - [x] Phase 10.3 — live send/click stats on the dashboard (Zernio's `stats.dmsSent`/
   `linkClicks` from the list endpoint's richer stats shape), plus post thumbnails, search and
   sort on the automations table, and four summary stat cards. See "Phase 10.3 report" below.
+- [x] Phase 10.4 — performance: streaming (Suspense + skeletons + error boundary), a parallelized
+  post-detail fetch, request-scoped memoization of `auth()`, durable tag-invalidated response
+  caching with a 60s TTL, a freshness label, and a bounded Zernio request timeout. Also completes
+  the update/delete automation endpoints, whose service methods were missing. See ADR 0006 and
+  "Phase 10.4 report" below.
 - [ ] **Phase 11 — Webhook ingestion + automation trigger recording** (`POST /webhooks/zernio`,
   `webhook_events` idempotency, in-process — no queue, per ADR 0005; records what Zernio's own
   server-side automation execution reports, per Phase 10's finding that Zernio does the
@@ -74,8 +79,11 @@ completed work, just a rewrite of what hadn't started yet).
   MVP's item 13, not a general analytics pipeline)
 - [ ] Phase 13 — Security hardening (scoped to this app's actual size — tenant isolation,
   secret hygiene, dependency audit; not enterprise-scale rate limiting/WAF work)
-- [ ] Phase 14 — Production deployment (whatever the actual hosting target needs when this
-  is reached; no Docker/Nginx/Cloudflare requirement per ADR 0005)
+- [ ] Phase 14 — Production deployment. **Partly done ahead of schedule**: the hosting target is
+  decided and live (Vercel, two projects, region `bom1`; Supabase PostgreSQL in `ap-south-1`), and
+  `docs/DEPLOYMENT.md` now documents the real topology instead of a placeholder. What remains is
+  the operational half — DNS, backup/restore, a rollback runbook, and a secret-rotation
+  procedure. No Docker/Nginx/Cloudflare requirement, per ADR 0005.
 
 **Retired (not deferred — see `docs/ADR/0005-simplified-mvp-architecture.md` for why)**:
 Redis + BullMQ queue wiring, a generic trigger/condition/action automation engine, contact
@@ -1793,3 +1801,113 @@ read-path discipline as Phase 10.2b's reconciliation.
   worth caching if account counts ever grow.
 - Search/sort are client-side over the org's own automations, which is correct at this scale -
   the full list is already loaded for the table.
+
+## Phase 10.4 report
+
+Performance work, triggered by the user's report that "every API call takes 5 to 8 seconds".
+
+**Diagnosis came before any code.** Every layer was measured against the live deployments rather
+than guessed at, and the result redirected the work twice. The database turned out to contribute
+~20 ms and was not a factor at all; Redis - the user's own hypothesis - would have been the wrong
+fix. Two infrastructure causes were addressed first (Vercel functions and Supabase were in
+different regions; both are now in Mumbai), which removed most of the 5-8 s. The remaining
+latency was external Zernio calls plus a render that streamed nothing. The full measurement table
+lives in `docs/ADR/0006-response-caching-and-freshness.md`.
+
+**What was built**
+
+- **Phase 0 (enabling).** `apps/web/src/lib/api.ts` set `cache: 'no-store'` *after* `...init`, so
+  no caller could ever opt into caching - fixed by moving it above the spread. `auth()` was being
+  called once per `callApi` (four JWE decrypts per dashboard render); it is now memoized in
+  `lib/session.ts`, as is the duplicated org lookup in `lib/organization.ts`.
+- **Phase 1a.** The post detail page awaited its post and its automations sequentially, purely
+  because each wanted its own `try`/`catch`. `Promise.allSettled` parallelizes them while
+  preserving the original asymmetry - a failed post is fatal to the page, a failed automations
+  lookup is not.
+- **Phase 1b (streaming).** The dashboard and posts pages now split their awaits into child
+  server components behind `<Suspense>` with per-section skeletons (`app/skeleton.tsx`), plus a
+  route `error.tsx`. The organization lookup that gates `redirect('/onboarding')` stays **above**
+  every boundary: `redirect()` cannot change a response that has already begun streaming, so once
+  a fallback flushes it degrades to a client-side redirect.
+- **Phase 2 (caching).** `callApiCached` wraps `unstable_cache` with a 60s TTL and tags from a
+  single registry (`lib/cache-tags.ts`). Every mutating server action expires the tags it affects.
+  Degraded responses - `200` with `stats: null` when Zernio is unreachable - are returned but
+  never stored. A freshness label reports how old the figures are. Full rationale in ADR 0006.
+- **Bounded Zernio calls.** `ZernioInstagramProvider.request` had no timeout; it now uses
+  `AbortSignal.timeout(10_000)`, converting a `TimeoutError` into a 504 `ZernioApiError` so
+  existing 404/409 branching is unaffected. 10 s was chosen against measured Zernio latency
+  (0.3-1.7 s normal, 1.73 s slowest observed).
+- **Completed the update/delete endpoints.** `AutomationsService.update` and `.remove` did not
+  exist, while `automations.controller.ts` called both - see "the typecheck failure" below.
+
+**Two plan-level errors caught by reading the docs rather than trusting the plan**
+
+- The plan specified `updateTag()` for invalidation. The installed Next 16.3.0 docs name
+  `revalidateTag`/`revalidatePath` as `unstable_cache`'s invalidation path; `updateTag` is
+  documented for `fetch`-tagged and `'use cache'` entries, which these are not. Using it would
+  have failed **silently**: the write succeeds, the page re-renders, the user still sees old
+  numbers. Implemented as `revalidateTag(tag, { expire: 0 })`.
+- The plan proposed storing post captions and thumbnails in Postgres as "the biggest single win".
+  It is not: the saving is 0.23-0.79 s rather than ~1.7 s (the stats call runs in parallel, so
+  removing the posts call only shaves the slower leg down to the faster one), and Instagram
+  thumbnail URLs are signed and expiring, so a stored URL rots into a broken image. Dropped from
+  the plan rather than built on a bad premise.
+
+**The typecheck failure this phase surfaced**
+
+The first `scripts/lint.ps1` run failed with two errors in `apps/api`:
+`automations.controller.ts` called `AutomationsService.update` and `.remove`, neither of which
+existed. `git diff HEAD` on that directory was empty - commit `ff1cf67` ("add update and delete
+endpoints for organization automations") had landed the controller, the validation schema, the
+Zernio provider methods and the web-side actions, but not the service methods joining them. The
+test suite was green throughout, because vitest does not typecheck. At runtime the dashboard's
+edit and delete buttons would have thrown on `undefined`.
+
+Both methods were implemented. Three details worth recording:
+
+- `requireOwnAutomation` re-checks the client-supplied `automationId` against the session-derived
+  `organizationId`, returning 404 (not 403) for another org's row - the same tenant-isolation
+  discipline as `requireOwnAccount`.
+- The conditional 640-char DM limit is **re-checked against the stored row**. `updateAutomationSchema`
+  cannot enforce it alone, because a partial update need not send `buttons` and `dmMessage`
+  together; patching only `dmMessage` on an automation that already has buttons stored would
+  otherwise pass validation and come back from Zernio as an opaque 400.
+- Buttons write `Prisma.DbNull`, not `undefined`, when empty. `create` uses `undefined` correctly
+  (there is nothing to clear), but on update `undefined` means "leave this column alone" - so
+  removing every button would have succeeded on Zernio and silently done nothing locally.
+
+**Commands executed and results**
+
+| Command | Result |
+|---|---|
+| `scripts/pnpm.ps1 --filter @automationdm/web typecheck` | Done, exit 0 |
+| `scripts/lint.ps1` (1st) | **2 typecheck errors** in `apps/api` (missing service methods, pre-existing at HEAD) + Prettier flagged 3 files, also pre-existing |
+| `scripts/pnpm.ps1 --filter @automationdm/api typecheck` (after fix) | Done, exit 0 (both `tsconfig.json` and `tsconfig.serverless.json`) |
+| `scripts/lint.ps1` (2nd) | ESLint 0, typecheck 8/8 Done, Prettier all pass. Exit 0. |
+| `scripts/test.ps1` | **62/62 passed** (14 database + 48 api) |
+| `scripts/pnpm.ps1 --recursive --if-present run build` | All 8 workspaces, exit 0; `next build` compiled in 17.7 s |
+
+**Known limitations / risks**
+
+- **The caching layer has not been verified at runtime.** Everything above is verified by the
+  suite, the builds and the type system. The plan's runtime verification is **outstanding**: TTFB
+  and before/after timings, `NEXT_PRIVATE_DEBUG_CACHE=1` hit/miss confirmation, that pressing Sync
+  actually serves fresh data on Vercel (Next's docs warn tag invalidation is per-instance by
+  default and platform-coordinated, so this must be confirmed empirically rather than assumed),
+  that a stats-degraded response is genuinely not cached, and the drop in Zernio calls per
+  dashboard load. Until that is done, the latency improvement is *expected*, not *measured*.
+- **`update`/`remove` have no test coverage**, and neither PATCH nor DELETE has ever run against
+  live Zernio - the provider methods existed but were unreachable until this phase. Needed cases:
+  cross-org 404, the stored-row 640-char check, `buttons: []` genuinely nulling the column, a
+  Zernio 404 on update surfacing as NotFound without deleting the local row, and a Zernio 404 on
+  delete still removing it.
+- **The Vercel Data Cache survives deployments**, so the stored entry shape is versioned in the
+  key (`['callApiCached', 'v2', path]`). Any future change to what is stored must bump it.
+- `syncAutomationsAction` changed signature from `()` to `(formData: FormData)`, and `SyncButton`
+  now requires an `organizationId` prop.
+- `.env.example` still lists `REDIS_URL`, `S3_*` and `SENTRY_DSN` from the pre-ADR-0005 scope. No
+  code reads them; they are stale and should be removed.
+- Phase 3 of the performance plan (an aggregate `/api/me/dashboard`, or moving the organization id
+  into the Auth.js JWT, to remove the ~0.2 s `/api/organizations` call that still blocks above
+  every Suspense boundary) is deliberately **not** built - the plan gates it on the measurements
+  above showing it is still needed.

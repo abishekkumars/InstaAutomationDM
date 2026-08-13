@@ -1,6 +1,6 @@
 import { cache } from 'react';
 import type { OrganizationRole } from '@automationdm/database';
-import { callApi, callApiCached } from '@/lib/api';
+import { callApi, callApiCached, callApiCachedWithMeta } from '@/lib/api';
 import { cacheTags } from '@/lib/cache-tags';
 import type { AutomationListItem } from './automations-browser';
 
@@ -58,9 +58,13 @@ export const getInstagramAccounts = cache((organizationId: string) =>
 );
 
 /** The slow one: apps/api enriches each row with live Zernio stats and post thumbnails, measured
- * at 0.4-1.7s. This is the call both the Suspense split and the cache exist for. */
-export const getAutomations = cache((organizationId: string) =>
-  callApiCached<AutomationListItem[]>(`/api/organizations/${organizationId}/automations`, {
+ * at 0.4-1.7s. This is the call both the Suspense split and the cache exist for.
+ *
+ * Returns the fetch timestamp alongside the rows so the header can say how old the numbers are.
+ * `getAutomations` below is the plain-data view of this same memoized call - the freshness label
+ * and the four sections that render the rows all share one request. */
+export const getAutomationsWithMeta = cache((organizationId: string) =>
+  callApiCachedWithMeta<AutomationListItem[]>(`/api/organizations/${organizationId}/automations`, {
     tags: [cacheTags.automations(organizationId)],
     // apps/api answers 200 with `stats: null` on every row when the Zernio stats call fails,
     // rather than failing the request. Caching that would pin "stats unavailable" for the whole
@@ -71,6 +75,10 @@ export const getAutomations = cache((organizationId: string) =>
       automations.length > 0 && automations.every((automation) => automation.stats === null),
   }),
 );
+
+export async function getAutomations(organizationId: string): Promise<AutomationListItem[]> {
+  return (await getAutomationsWithMeta(organizationId)).data;
+}
 
 /** Org-wide totals for the stat cards. `hasStats` is false when Zernio returned no stats for any
  * automation (unreachable, or none have stats yet) - the cards then show a dash instead of a

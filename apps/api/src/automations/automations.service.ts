@@ -7,7 +7,11 @@ import {
 } from '@nestjs/common';
 import { z } from 'zod';
 import { AutomationMatchMode, Prisma } from '@automationdm/database';
-import { createAutomationSchema } from '@automationdm/validation';
+import {
+  AUTOMATION_LIMITS,
+  createAutomationSchema,
+  updateAutomationSchema,
+} from '@automationdm/validation';
 import {
   type CommentAutomation,
   type CommentAutomationStats,
@@ -442,6 +446,124 @@ export class AutomationsService {
       }
       throw error;
     }
+  }
+
+  /** Loads an automation and proves the caller's organization owns it.
+   *
+   * The id arrives from the client, so it is never trusted on its own - the row is re-checked
+   * against the organizationId derived from the session. 404 (not 403) for a row belonging to
+   * another org, so an outsider cannot use the response to confirm the id exists. */
+  private async requireOwnAutomation(userId: string, organizationId: string, automationId: string) {
+    await this.requireMembership(userId, organizationId);
+    const automation = await this.prisma.client.automation.findUnique({
+      where: { id: automationId },
+    });
+    if (!automation || automation.organizationId !== organizationId) {
+      throw new NotFoundException('Automation not found.');
+    }
+    return automation;
+  }
+
+  async update(
+    userId: string,
+    organizationId: string,
+    automationId: string,
+    input: unknown,
+  ): Promise<AutomationSummary> {
+    const automation = await this.requireOwnAutomation(userId, organizationId, automationId);
+
+    let parsed;
+    try {
+      parsed = updateAutomationSchema.parse(input);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        throw new BadRequestException(error.issues[0]?.message ?? 'Invalid input.');
+      }
+      throw error;
+    }
+
+    // The conditional 640-char rule spans two fields that a partial update need not send
+    // together, so updateAutomationSchema can only check it when both arrive in the same
+    // request. This is the only place the full picture exists: what the automation will look
+    // like AFTER the patch is the stored row overlaid with whichever fields were sent. Without
+    // this, changing only dmMessage on an automation that already has buttons stored would sail
+    // past validation and be rejected by Zernio instead, as an opaque 400.
+    const effectiveButtons = parsed.buttons ?? toButtons(automation.buttons);
+    const effectiveDmMessage = parsed.dmMessage ?? automation.dmMessage;
+    if (
+      effectiveButtons.length > 0 &&
+      effectiveDmMessage.length > AUTOMATION_LIMITS.dmMessageWithButtonsMax
+    ) {
+      throw new BadRequestException(
+        `DM message must be ${AUTOMATION_LIMITS.dmMessageWithButtonsMax} characters or fewer when buttons are added.`,
+      );
+    }
+
+    let updated: CommentAutomation;
+    try {
+      updated = await this.provider.updateCommentAutomation({
+        zernioAutomationId: automation.zernioAutomationId,
+        name: parsed.name,
+        keywords: parsed.keywords,
+        matchMode: parsed.matchMode,
+        commentReply: parsed.commentReply,
+        buttons: parsed.buttons,
+        dmMessage: parsed.dmMessage,
+        isActive: parsed.isActive,
+      });
+    } catch (error) {
+      // The local row points at an automation Zernio no longer has (deleted directly in Zernio's
+      // own dashboard). Reported rather than self-healed by deleting the row: dropping a user's
+      // configuration as a side effect of a failed edit is a worse outcome than a stale row,
+      // which the dashboard's next reconcile pass can resolve.
+      if (error instanceof ZernioApiError && error.status === 404) {
+        throw new NotFoundException('This automation no longer exists on Zernio.');
+      }
+      throw error;
+    }
+
+    // Written back from Zernio's response, not from `parsed`: Zernio is the source of truth and
+    // may normalize what it stores, so echoing the request would let the two drift.
+    const saved = await this.prisma.client.automation.update({
+      where: { id: automationId },
+      data: {
+        name: updated.name,
+        keywords: updated.keywords,
+        matchMode: toMatchMode(updated.matchMode),
+        commentReply: updated.commentReply,
+        // DbNull, not undefined: on update, "no buttons" has to be able to CLEAR the stored ones.
+        // `undefined` means "leave this column alone" to Prisma, which is exactly the bug -
+        // removing every button would appear to succeed on Zernio and silently do nothing here.
+        buttons: updated.buttons.length
+          ? (updated.buttons as unknown as Prisma.InputJsonValue)
+          : Prisma.DbNull,
+        dmMessage: updated.dmMessage,
+        isActive: updated.isActive,
+      },
+    });
+    return toSummary(saved);
+  }
+
+  async remove(userId: string, organizationId: string, automationId: string): Promise<void> {
+    const automation = await this.requireOwnAutomation(userId, organizationId, automationId);
+
+    try {
+      await this.provider.deleteCommentAutomation({
+        zernioAutomationId: automation.zernioAutomationId,
+      });
+    } catch (error) {
+      // Already gone on Zernio's side - fall through to the local delete rather than failing.
+      // Here (unlike update) removing the local row is precisely what the user asked for, so a
+      // 404 means the desired end state is already half-achieved, not that the request is bad.
+      if (!(error instanceof ZernioApiError && error.status === 404)) {
+        throw error;
+      }
+      console.error('[automations] automation already absent from Zernio, deleting locally:', {
+        automationId,
+      });
+    }
+
+    await this.prisma.client.automation.delete({ where: { id: automationId } });
   }
 }
 
