@@ -1,0 +1,31 @@
+name: Keep Supabase Alive
+
+# Supabase free-tier projects pause after 7 days with no database activity. This workflow
+# pings apps/api's /ready endpoint on a schedule, which runs `SELECT 1` against Prisma
+# (apps/api/src/health/readiness.controller.ts) - a real external request that touches the
+# database, not just a static page load. See docs/DEPLOYMENT.md.
+
+on:
+  schedule:
+    # Daily at 06:00 UTC. GitHub may delay scheduled runs by a few minutes under load, and
+    # auto-disables schedules if the repo itself has no other activity for 60 days - not a
+    # concern for an actively developed repo, but worth knowing if this repo ever goes quiet.
+    - cron: '0 6 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  ping-ready:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping apps/api /ready
+        run: |
+          if [ -z "${{ vars.API_READY_URL }}" ]; then
+            echo "::error::Repository variable API_READY_URL is not set. See docs/DEPLOYMENT.md."
+            exit 1
+          fi
+          status=$(curl -s -o /dev/null -w "%{http_code}" "${{ vars.API_READY_URL }}")
+          echo "GET ${{ vars.API_READY_URL }} -> $status"
+          if [ "$status" -ne 200 ]; then
+            echo "::error::Readiness check failed with status $status"
+            exit 1
+          fi

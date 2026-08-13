@@ -92,6 +92,16 @@ Vercel keeps previous deployments; promoting an earlier one is the rollback path
 Database migrations are **not** covered by that — a migration that drops or rewrites data has no
 automatic inverse, which is why step 2 is explicit and reviewed rather than automatic.
 
+## Keep-alive (Supabase free-tier pausing)
+
+Supabase's free tier pauses a project after 7 days with no database activity.
+`.github/workflows/keep-alive.yml` pings `apps/api`'s `/ready` endpoint (which runs `SELECT 1`
+via Prisma) once a day to prevent that. It reads the deployed `apps/api` URL from the
+repository variable `API_READY_URL` (Settings -> Secrets and variables -> Actions -> Variables
+tab - a plain variable, not a secret, since it's just a public URL) set to
+`https://<your-api-project>.vercel.app/ready`. Not needed once/if the Supabase project is on a
+paid plan, since paid projects are never auto-paused.
+
 ## What this document still does not cover
 
 Custom DNS records, a backup/restore procedure, and an incident runbook. Deferred to
