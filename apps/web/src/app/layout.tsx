@@ -3,6 +3,7 @@ import { Suspense, type ReactNode } from 'react';
 import { getSession } from '@/lib/session';
 import { signOutAction } from './(auth)/actions';
 import { FormPendingOverlay, LoadingLink } from './loader';
+import { MobileNav } from './mobile-nav';
 import { ThemeScript, ThemeToggle } from './theme-toggle';
 import { ToastHost } from './toast';
 import './globals.css';
@@ -71,46 +72,15 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
           Previously the whole document scrolled, which carried the sidebar off-screen. */}
       <body className="h-screen overflow-hidden bg-canvas text-text antialiased">
         <div className="flex h-full flex-col md:flex-row">
-          <aside className="flex shrink-0 items-center gap-3 overflow-x-auto bg-ink-950 px-4 py-3 text-white md:h-full md:w-60 md:flex-col md:items-stretch md:gap-4 md:overflow-x-visible md:overflow-y-auto md:px-3.5 md:py-4">
-            <div className="flex shrink-0 items-center gap-2 md:px-1.5 md:pb-1">
-              <span className="flex h-[26px] w-[26px] items-center justify-center rounded-lg bg-gradient-to-br from-[#5b6dff] to-accent text-[13px] font-bold">
-                A
-              </span>
-              <span className="text-[15px] font-bold whitespace-nowrap">
-                Automation<span className="text-[#8f9bff]">DM</span>
-              </span>
-            </div>
-
-            <nav className="flex shrink-0 gap-1.5 md:flex-col md:gap-0.5">
-              {NAV_ITEMS.map((item) => (
-                <LoadingLink
-                  key={item.href}
-                  href={item.href}
-                  className="relative rounded-md px-2.5 py-1.5 text-[13px] whitespace-nowrap text-[#c3c5e2] hover:bg-ink-800 hover:text-white md:px-2.5"
-                >
-                  {item.label}
-                </LoadingLink>
-              ))}
-            </nav>
-
-            <div className="flex shrink-0 items-center gap-2 md:mt-auto md:border-t md:border-white/10 md:pt-3">
-              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#333a5c] text-[12px] font-semibold text-[#d7d9f2]">
-                {initial}
-              </span>
-              <span className="hidden min-w-0 flex-1 text-[12.5px] text-[#d7d9f2] md:block">
-                <span className="block truncate">{session.user.name ?? session.user.email}</span>
-              </span>
-              <form action={signOutAction}>
-                <FormPendingOverlay />
-                <button
-                  type="submit"
-                  className="shrink-0 rounded-md px-2 py-1 text-[12px] font-medium text-[#9497c2] hover:text-white"
-                >
-                  Sign out
-                </button>
-              </form>
-            </div>
+          {/* Desktop sidebar: md and up only. Below that the same content lives in MobileNav's
+              drawer, so the two must never both be visible. */}
+          <aside className="hidden shrink-0 bg-ink-950 text-white md:flex md:h-full md:w-60 md:flex-col md:gap-4 md:overflow-y-auto md:px-3.5 md:py-4">
+            <SidebarContent initial={initial} userLabel={session.user.name ?? session.user.email} />
           </aside>
+
+          <MobileNav>
+            <SidebarContent initial={initial} userLabel={session.user.name ?? session.user.email} />
+          </MobileNav>
 
           {/* min-h-0 is required: a flex child defaults to min-height:auto, which refuses to
               shrink below its content and would push the scrollbar back onto the page. */}
@@ -134,5 +104,67 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
         </Suspense>
       </body>
     </html>
+  );
+}
+
+/** The sidebar's brand/nav/user block, rendered identically by the desktop `<aside>` and the
+ * mobile drawer so there is one definition of what the nav contains.
+ *
+ * Stays a server component: it renders `signOutAction` (a server action) and `LoadingLink`, and
+ * putting it here rather than inside MobileNav keeps that out of the client bundle. It is passed
+ * to MobileNav as children, which React renders on the server and streams in as already-rendered
+ * markup.
+ */
+function SidebarContent({
+  initial,
+  userLabel,
+}: {
+  initial: string;
+  userLabel: string | null | undefined;
+}) {
+  return (
+    <>
+      {/* Hidden in the drawer, which has the brand in its own top bar already. */}
+      <div className="hidden items-center gap-2 md:flex md:px-1.5 md:pb-1">
+        <span className="flex h-[26px] w-[26px] items-center justify-center rounded-lg bg-gradient-to-br from-[#5b6dff] to-accent text-[13px] font-bold">
+          A
+        </span>
+        <span className="text-[15px] font-bold whitespace-nowrap">
+          Automation<span className="text-[#8f9bff]">DM</span>
+        </span>
+      </div>
+
+      <nav className="flex shrink-0 flex-col gap-0.5">
+        {NAV_ITEMS.map((item) => (
+          <LoadingLink
+            key={item.href}
+            href={item.href}
+            className="relative rounded-md px-2.5 py-2 text-[13px] whitespace-nowrap text-[#c3c5e2] hover:bg-ink-800 hover:text-white md:py-1.5"
+          >
+            {item.label}
+          </LoadingLink>
+        ))}
+      </nav>
+
+      <div className="mt-auto flex shrink-0 items-center gap-2 border-t border-white/10 pt-3">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#333a5c] text-[12px] font-semibold text-[#d7d9f2]">
+          {initial}
+        </span>
+        {/* Visible in the drawer too: the old horizontal strip had no room for it, which is why
+            it used to be md-only. The drawer does. */}
+        <span className="min-w-0 flex-1 text-[12.5px] text-[#d7d9f2]">
+          <span className="block truncate">{userLabel}</span>
+        </span>
+        <form action={signOutAction}>
+          <FormPendingOverlay />
+          <button
+            type="submit"
+            className="shrink-0 rounded-md px-2 py-1 text-[12px] font-medium text-[#9497c2] hover:text-white"
+          >
+            Sign out
+          </button>
+        </form>
+      </div>
+    </>
   );
 }

@@ -70,6 +70,10 @@ completed work, just a rewrite of what hadn't started yet).
   caching with a 60s TTL, a freshness label, and a bounded Zernio request timeout. Also completes
   the update/delete automation endpoints, whose service methods were missing. See ADR 0006 and
   "Phase 10.4 report" below.
+- [x] Phase 10.5 — mobile navigation drawer (three-line hamburger below `md`, replacing the
+  horizontally-scrolling sidebar strip; desktop layout unchanged) plus whole-row click-to-edit on
+  the dashboard's automations list, on both the desktop table and the mobile cards, with the
+  existing eye/pencil/trash icons left untouched. See "Phase 10.5 report" below.
 - [ ] **Phase 11 — Webhook ingestion + automation trigger recording** (`POST /webhooks/zernio`,
   `webhook_events` idempotency, in-process — no queue, per ADR 0005; records what Zernio's own
   server-side automation execution reports, per Phase 10's finding that Zernio does the
@@ -1911,3 +1915,74 @@ Both methods were implemented. Three details worth recording:
   into the Auth.js JWT, to remove the ~0.2 s `/api/organizations` call that still blocks above
   every Suspense boundary) is deliberately **not** built - the plan gates it on the measurements
   above showing it is still needed.
+
+## Phase 10.5 report
+
+UI-only change, no API/schema/Zernio work: a mobile navigation drawer, and whole-row
+click-to-edit on the dashboard's automations list.
+
+**What changed**
+
+- `apps/web/src/app/mobile-nav.tsx` (new) - client component holding only the drawer's
+  open/closed state. Below `md` it renders a slim bar with a three-line hamburger button; tapping
+  it slides the sidebar in from the left over a dimmed backdrop. Closes on backdrop click, on the
+  ✕, on `Escape`, and on any pathname change (so a nav link, the back button, or the sign-out
+  redirect all dismiss it). Renders nothing at `md` and up.
+- `apps/web/src/app/layout.tsx` - the signed-in sidebar's brand/nav/user block is extracted into a
+  new `SidebarContent` server component, rendered by both the desktop `<aside>` and the mobile
+  drawer so there is one definition of what the nav contains. It stays a *server* component and is
+  passed to `MobileNav` as `children`, which keeps `signOutAction` and `LoadingLink` out of the
+  client bundle. The desktop `<aside>` is now `hidden ... md:flex`; **the `md`-and-up rendering is
+  unchanged**. The previous sub-`md` behaviour - the sidebar collapsing into a horizontally
+  scrolling strip pinned above the content - is gone, replaced by the drawer. The user
+  name/email label, previously `md:block` (hidden on mobile because the strip had no room for
+  it), is now always shown since the drawer does have room.
+- `apps/web/src/app/icons.tsx` - added `MenuIcon` (three lines, 1.25em/strokeWidth 2 since it is a
+  standalone tap target rather than an inline glyph).
+- `apps/web/src/app/automations-browser.tsx` - each `<tr>` (desktop table) and `<li>` (mobile
+  card) is now `role="button"`/`tabIndex={0}` with click and Enter/Space handlers that open the
+  edit dialog, plus `cursor-pointer` and a hover tint. A single `EditAutomationModal` instance is
+  rendered for the whole list, `key`ed by automation id so switching rows remounts it and the form
+  re-initialises from the newly selected row's values. The selected id is resolved against
+  `automations`, not the filtered `visible` list, so a rename that drops the row out of the active
+  search cannot make the open dialog vanish mid-edit.
+- `apps/web/src/app/edit-automation-modal.tsx` - new `openExternally` / `onExternalClose` props.
+  In that mode the component renders **no trigger of its own**, because the clickable surface is
+  the row. This exists rather than a `trigger="row"` wrapper because a `<div>` is not valid
+  between `<tbody>` and `<tr>`, so the row must own the click while the component owns the dialog.
+  The four existing triggers (`button`/`link`/`icon`/`delete-icon`) are untouched.
+
+**The icons are deliberately untouched**, as required. Rather than adding `stopPropagation` to
+each one, the row's handler ignores any click whose target has an `a,button,input,select,textarea`
+ancestor - so the eye/pencil/trash icons keep their existing markup and behaviour, and clicking
+one never also opens the row's dialog. The keyboard handler likewise ignores events that did not
+originate on the row itself, so Tab-ing to an icon and pressing Enter activates that icon only.
+
+**Commands executed and results**
+
+| Command | Result |
+|---|---|
+| `scripts/pnpm.ps1 --filter @automationdm/web run typecheck` | Done, exit 0 |
+| `scripts/pnpm.ps1 run eslint` | 0 errors |
+| `scripts/lint.ps1` typecheck leg | 9/9 workspaces Done |
+| `prettier --check` on the 5 changed files | All pass |
+| `scripts/pnpm.ps1 --filter @automationdm/web run build` | `next build` exit 0, same route list as Phase 10.4 |
+| `scripts/test.ps1` | **75/75 passed** (14 database + 61 api) |
+| Browser check, signed-out `/sign-in` | No hamburger and no nav rendered - correct, the signed-out shell has no sidebar |
+| Browser check, signed-in `/` | Hamburger present with `md:hidden`; desktop `<aside>` present with `hidden ... md:flex`; the old `overflow-x-auto` strip absent. Nav/sign-out/user label present, and the RSC payload carries the drawer's copy so it is not empty when opened |
+| Browser check, dashboard with 51 real automations | 51 `<tr role="button">` + 51 `<li role="button">`, all `tabindex="0"` + `cursor-pointer`; eye/pencil/trash icons render 102 each (51 x 2 layouts) - unchanged counts; 0 stray `>Edit<` buttons from the new mode; edit dialog correctly absent from the initial HTML |
+
+**Verification method / limitation**
+
+The dashboard was loaded over real HTTP against the running dev server with an authenticated
+session, and the served markup asserted against. This confirms what renders, the responsive
+visibility classes, the ARIA/keyboard attributes, and that the icons are unchanged. It does **not**
+exercise the click handlers themselves - `apps/web` has no test runner, jsdom, or React testing
+library, and adding all three is a larger dependency decision than this UI change, so it was not
+taken unilaterally. **The drawer actually sliding open on tap, and a row actually opening the
+populated dialog, still want one manual pass in a real browser** (or a `@testing-library/react`
+setup, if that dependency is wanted - flagging, not assuming).
+
+Local DB fixtures created for the signed-in check (a `uicheck@example.com` user, a throwaway org,
+and one membership) were removed afterwards; the pre-existing 51 automations, 1 Instagram account,
+and 2 real users were confirmed untouched.

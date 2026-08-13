@@ -38,7 +38,9 @@ const MATCH_MODES: { value: MatchMode; label: string }[] = [
   { value: 'exact', label: 'Exact' },
 ];
 
-const TRIGGER_CLASS: Record<'button' | 'link' | 'icon' | 'delete-icon', string> = {
+type TriggerKind = 'button' | 'link' | 'icon' | 'delete-icon';
+
+const TRIGGER_CLASS: Record<TriggerKind, string> = {
   button:
     'rounded-md border border-border-strong px-3 py-1.5 text-sm font-medium text-text-muted hover:bg-surface-2',
   link: 'text-xs font-medium text-text-muted hover:text-text hover:underline',
@@ -59,6 +61,8 @@ export function EditAutomationModal({
   automation,
   redirectTo,
   trigger = 'button',
+  openExternally = false,
+  onExternalClose,
 }: {
   organizationId: string;
   automation: EditableAutomation;
@@ -67,10 +71,18 @@ export function EditAutomationModal({
   /** How the opener renders: a bordered Edit button, a compact text link, a pencil icon, or a
    * trash icon that jumps straight to the delete confirmation. All four open the same dialog -
    * 'delete-icon' simply lands on the confirm step, so deleting never needs a detour through
-   * the edit form. */
-  trigger?: 'button' | 'link' | 'icon' | 'delete-icon';
+   * the edit form. Ignored entirely when `openExternally` is used, which renders no trigger. */
+  trigger?: TriggerKind;
+  /** Opens the dialog from a parent-owned click instead of this component's own trigger, and
+   * renders no trigger button at all. Used by the dashboard, where the clickable surface is the
+   * table row / list item itself - a `<tr>` cannot be wrapped in this component's own element,
+   * so the row owns the click and this owns the dialog. `onExternalClose` must clear whatever
+   * parent state set it, or the dialog cannot be dismissed. */
+  openExternally?: boolean;
+  onExternalClose?: () => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [selfOpen, setSelfOpen] = useState(false);
+  const open = openExternally || selfOpen;
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   // The trash-icon trigger is delete-only: it never shows the edit form at all.
   const deleteOnly = trigger === 'delete-icon';
@@ -97,7 +109,8 @@ export function EditAutomationModal({
   // Restores the fields to what the server currently has, so cancelling genuinely discards
   // edits rather than leaving them staged for the next time the dialog opens.
   function close() {
-    setOpen(false);
+    setSelfOpen(false);
+    onExternalClose?.();
     setConfirmingDelete(false);
     setName(automation.name);
     setKeywords(automation.keywords);
@@ -139,15 +152,19 @@ export function EditAutomationModal({
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        title={deleteOnly ? 'Delete automation' : 'Edit automation'}
-        aria-label={deleteOnly ? `Delete ${automation.name}` : `Edit ${automation.name}`}
-        className={TRIGGER_CLASS[trigger]}
-      >
-        {trigger === 'delete-icon' ? <TrashIcon /> : trigger === 'icon' ? <PencilIcon /> : 'Edit'}
-      </button>
+      {/* No trigger of its own in externally-opened mode - the parent owns the clickable
+          surface. */}
+      {!openExternally && (
+        <button
+          type="button"
+          onClick={() => setSelfOpen(true)}
+          title={deleteOnly ? 'Delete automation' : 'Edit automation'}
+          aria-label={deleteOnly ? `Delete ${automation.name}` : `Edit ${automation.name}`}
+          className={TRIGGER_CLASS[trigger]}
+        >
+          {trigger === 'delete-icon' ? <TrashIcon /> : trigger === 'icon' ? <PencilIcon /> : 'Edit'}
+        </button>
+      )}
 
       {open && (
         // No backdrop click-to-close, same reasoning as the create wizard: a stray click must

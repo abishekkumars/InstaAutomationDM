@@ -77,6 +77,10 @@ export function AutomationsBrowser({
 }) {
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<SortKey>('sent-desc');
+  // Which automation's edit dialog a row click opened, by id. Held here rather than inside each
+  // row's EditAutomationModal because the clickable surface is the <tr>/<li> itself, which cannot
+  // be nested inside that component - see its `openExternally` prop.
+  const [editing, setEditing] = useState<string | null>(null);
 
   const visible = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -104,6 +108,10 @@ export function AutomationsBrowser({
       }
     });
   }, [automations, search, sort]);
+
+  // Resolved from the source list, not `visible`: a save that changes the name could drop the row
+  // out of the current search filter, and the open dialog must not vanish mid-edit because of it.
+  const editingAutomation = editing ? (automations.find((a) => a.id === editing) ?? null) : null;
 
   if (automations.length === 0) {
     return (
@@ -168,7 +176,29 @@ export function AutomationsBrowser({
               {visible.map((automation) => (
                 <tr
                   key={automation.id}
-                  className="border-b border-border last:border-0 hover:bg-surface-2"
+                  // Whole row opens the edit dialog. Not wrapped in EditAutomationModal's
+                  // trigger="row" div, because a <div> is not valid between <tbody> and <tr> -
+                  // so the row hosts the same click/keyboard behaviour itself and drives the
+                  // dialog through openEditFor below.
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Edit ${automation.name}`}
+                  onClick={(event) => {
+                    // Clicks that land on the row's own icons must not also open the dialog. The
+                    // icons keep their existing markup and handlers untouched.
+                    if ((event.target as HTMLElement).closest('a,button,input,select,textarea')) {
+                      return;
+                    }
+                    setEditing(automation.id);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.target !== event.currentTarget) return;
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      setEditing(automation.id);
+                    }
+                  }}
+                  className="cursor-pointer border-b border-border last:border-0 hover:bg-surface-2"
                 >
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
@@ -232,7 +262,27 @@ export function AutomationsBrowser({
           {/* Stacked cards on narrow screens - same data, no sideways scrolling */}
           <ul className="divide-y divide-border md:hidden">
             {visible.map((automation) => (
-              <li key={automation.id} className="p-4">
+              <li
+                key={automation.id}
+                // Same whole-row-opens-edit behaviour as the desktop table above.
+                role="button"
+                tabIndex={0}
+                aria-label={`Edit ${automation.name}`}
+                onClick={(event) => {
+                  if ((event.target as HTMLElement).closest('a,button,input,select,textarea')) {
+                    return;
+                  }
+                  setEditing(automation.id);
+                }}
+                onKeyDown={(event) => {
+                  if (event.target !== event.currentTarget) return;
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    setEditing(automation.id);
+                  }
+                }}
+                className="cursor-pointer p-4 hover:bg-surface-2"
+              >
                 <div className="flex items-start gap-3">
                   <PostThumbnail post={automation.post} />
                   <div className="min-w-0 flex-1">
@@ -293,6 +343,22 @@ export function AutomationsBrowser({
             ))}
           </ul>
         </div>
+      )}
+
+      {/* One instance for the whole list, keyed by id so switching rows remounts it and the form
+          re-initialises from the newly selected automation's values. Rendering it here rather than
+          per row keeps a single dialog in the tree regardless of how many rows are visible.
+          `key` is what makes the remount happen - without it the useState initialisers would keep
+          the first-opened automation's data. */}
+      {editingAutomation && (
+        <EditAutomationModal
+          key={editingAutomation.id}
+          organizationId={organizationId}
+          automation={editingAutomation}
+          redirectTo="/"
+          openExternally
+          onExternalClose={() => setEditing(null)}
+        />
       )}
     </div>
   );

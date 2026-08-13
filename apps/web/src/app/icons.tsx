@@ -43,6 +43,18 @@ export function SyncIcon() {
   );
 }
 
+/** Three-line hamburger, mobile nav only. Slightly larger than BASE_PROPS' 1.05em because it is
+ * a standalone tap target rather than an inline glyph next to text. */
+export function MenuIcon() {
+  return (
+    <svg {...BASE_PROPS} width="1.25em" height="1.25em" strokeWidth={2}>
+      <path d="M3 6h18" />
+      <path d="M3 12h18" />
+      <path d="M3 18h18" />
+    </svg>
+  );
+}
+
 export function TrashIcon() {
   return (
     <svg {...BASE_PROPS}>
