@@ -35,6 +35,16 @@ jobs:
       - name: Prisma generate
         run: pnpm --filter @automationdm/database run generate
 
+      # Every workspace package resolves through "main": "dist/index.js" / "types":
+      # "dist/index.d.ts", so apps/api's typecheck cannot see @automationdm/zernio, /shared,
+      # /validation or /database until they have been compiled. Without this the typecheck fails
+      # with a wall of TS2307 "cannot find module" errors plus the implicit-any noise that
+      # follows from them - none of which reproduce on a developer machine, where dist/ has been
+      # sitting there since the last build. --if-present skips packages/automation-engine, which
+      # is an inert placeholder with no build script (ADR 0005).
+      - name: Build workspace packages
+        run: pnpm --filter "./packages/**" --if-present run build
+
       - name: ESLint
         run: pnpm run eslint
 
@@ -97,11 +107,12 @@ jobs:
       - name: Database tests
         run: pnpm --filter @automationdm/database run test
 
-      - name: Build packages consumed by apps/api (database, shared, validation)
-        run: |
-          pnpm --filter @automationdm/database run build
-          pnpm --filter @automationdm/shared run build
-          pnpm --filter @automationdm/validation run build
+      # A glob rather than a hand-listed set: the previous explicit list named database, shared
+      # and validation but omitted zernio, so apps/api's tests died on "Failed to resolve entry
+      # for package @automationdm/zernio". pnpm runs these in dependency order, and a package
+      # added later is picked up automatically instead of silently missing.
+      - name: Build workspace packages
+        run: pnpm --filter "./packages/**" --if-present run build
 
       - name: API tests
         run: pnpm --filter @automationdm/api run test
