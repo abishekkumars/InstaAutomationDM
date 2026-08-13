@@ -3,6 +3,7 @@ import { LoadingLink } from '../../loader';
 import { redirect } from 'next/navigation';
 import { ApiError, callApi } from '@/lib/api';
 import { getPrimaryOrganizationId } from '@/lib/organization';
+import { getAutomations } from '@/app/dashboard-data';
 import { PostsGridSkeleton } from '@/app/skeleton';
 import { PostsBrowser, type InstagramPostSummary } from './posts-browser';
 
@@ -63,12 +64,21 @@ async function PostsSection({
   organizationId: string;
   accountId: string;
 }) {
-  let result: ListPostsResponse;
-  try {
-    result = await callApi<ListPostsResponse>(
+  // Fired together: the posts fetch is the slow one (0.66-1.73s against Zernio) and the
+  // automations list is already cached and memoized by the dashboard's own fetcher, so pairing
+  // them costs no extra round trip in the common case.
+  //
+  // allSettled, not all: which posts have automations is decoration. If that lookup fails the
+  // posts must still list - just without badges - whereas a failed posts fetch is fatal here.
+  const [postsResult, automationsResult] = await Promise.allSettled([
+    callApi<ListPostsResponse>(
       `/api/organizations/${organizationId}/instagram/accounts/${accountId}/posts?page=1&limit=${FETCH_LIMIT}`,
-    );
-  } catch (error) {
+    ),
+    getAutomations(organizationId),
+  ]);
+
+  if (postsResult.status === 'rejected') {
+    const error: unknown = postsResult.reason;
     return (
       <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-800">
         <p className="font-medium">Could not load posts</p>
@@ -79,5 +89,26 @@ async function PostsSection({
     );
   }
 
-  return <PostsBrowser posts={result.posts} accountId={accountId} />;
+  // Maps zernioPostId -> whether that post's automation is currently enabled, so the badge can
+  // distinguish an active automation from a paused one. Scoped to this account's automations:
+  // the org-wide list covers every connected account, and a post id from another account could
+  // otherwise badge a post it has nothing to do with.
+  const automationsByPostId: Record<string, boolean> = {};
+  if (automationsResult.status === 'fulfilled') {
+    for (const automation of automationsResult.value) {
+      if (automation.instagramAccountId !== accountId) continue;
+      // Enabled wins if a post somehow has more than one: the badge answers "is this post
+      // automated right now?", and one active automation makes that a yes.
+      automationsByPostId[automation.zernioPostId] =
+        automationsByPostId[automation.zernioPostId] || automation.isActive;
+    }
+  }
+
+  return (
+    <PostsBrowser
+      posts={postsResult.value.posts}
+      accountId={accountId}
+      automationsByPostId={automationsByPostId}
+    />
+  );
 }

@@ -1,9 +1,10 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { LoadingLink } from './loader';
 import { EyeIcon } from './icons';
 import { EditAutomationModal } from './edit-automation-modal';
+import { Pagination } from './pagination';
 
 export interface AutomationStats {
   dmsSent: number;
@@ -58,6 +59,12 @@ function formatCount(value: number | undefined | null): string {
   return value === undefined || value === null ? '—' : value.toLocaleString();
 }
 
+// Same option set as the posts browser, so the two lists' controls read alike. 10 leads here
+// rather than 12 because a table row is much taller than a post card, so a smaller first page
+// still fills the viewport.
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100] as const;
+const DEFAULT_PAGE_SIZE = 25;
+
 const NAME_MAX_CHARS = 75;
 
 /** Caps a name at 75 characters with an ellipsis. Done in JS rather than with CSS `truncate`
@@ -81,6 +88,14 @@ export function AutomationsBrowser({
   // row's EditAutomationModal because the clickable surface is the <tr>/<li> itself, which cannot
   // be nested inside that component - see its `openExternally` prop.
   const [editing, setEditing] = useState<string | null>(null);
+  // Page and page size, matching the posts browser's controls. Plain useState rather than the
+  // posts browser's useUrlState: that page puts view state in the URL because opening a post
+  // unmounts the list and Back had to restore it. The dashboard's rows open a dialog in place and
+  // never unmount, so there is nothing to restore - and writing to the URL here would also mean
+  // this component could no longer render inside the dashboard's Suspense boundary without
+  // pulling useSearchParams into it.
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
 
   const visible = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -108,6 +123,31 @@ export function AutomationsBrowser({
       }
     });
   }, [automations, search, sort]);
+
+  const totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
+  // Clamp rather than storing a corrected page: if a search shrinks the result set below the
+  // current page, this renders the last valid page without an extra render pass.
+  const currentPage = Math.min(page, totalPages);
+  const pageItems = useMemo(
+    () => visible.slice((currentPage - 1) * pageSize, currentPage * pageSize),
+    [visible, currentPage, pageSize],
+  );
+
+  // Searching, re-sorting or changing the page size returns to page 1 - staying on page 7 of a
+  // search that now has two results is never what the user meant. Compared at render time rather
+  // than in an effect for the same reason the posts browser does it: an effect would need setPage
+  // in its deps and re-run on unrelated updates.
+  const previousInputs = useRef({ search, sort, pageSize });
+  if (
+    previousInputs.current.search !== search ||
+    previousInputs.current.sort !== sort ||
+    previousInputs.current.pageSize !== pageSize
+  ) {
+    previousInputs.current = { search, sort, pageSize };
+    if (page !== 1) {
+      setPage(1);
+    }
+  }
 
   // Resolved from the source list, not `visible`: a save that changes the name could drop the row
   // out of the current search filter, and the open dialog must not vanish mid-edit because of it.
@@ -152,6 +192,25 @@ export function AutomationsBrowser({
             ))}
           </select>
         </label>
+
+        <select
+          value={pageSize}
+          onChange={(event) => setPageSize(Number(event.target.value))}
+          aria-label="Automations per page"
+          className="rounded-lg border border-border-strong bg-surface px-2 py-2 text-sm text-text"
+        >
+          {PAGE_SIZE_OPTIONS.map((size) => (
+            <option key={size} value={size}>
+              {size} / page
+            </option>
+          ))}
+        </select>
+
+        <span className="w-full text-xs text-text-faint sm:w-auto">
+          {visible.length === automations.length
+            ? `${automations.length} automation${automations.length === 1 ? '' : 's'}`
+            : `${visible.length} of ${automations.length}`}
+        </span>
       </div>
 
       {visible.length === 0 ? (
@@ -173,7 +232,7 @@ export function AutomationsBrowser({
               </tr>
             </thead>
             <tbody>
-              {visible.map((automation) => (
+              {pageItems.map((automation) => (
                 <tr
                   key={automation.id}
                   // Whole row opens the edit dialog. Not wrapped in EditAutomationModal's
@@ -261,7 +320,7 @@ export function AutomationsBrowser({
 
           {/* Stacked cards on narrow screens - same data, no sideways scrolling */}
           <ul className="divide-y divide-border md:hidden">
-            {visible.map((automation) => (
+            {pageItems.map((automation) => (
               <li
                 key={automation.id}
                 // Same whole-row-opens-edit behaviour as the desktop table above.
@@ -344,6 +403,8 @@ export function AutomationsBrowser({
           </ul>
         </div>
       )}
+
+      <Pagination page={currentPage} totalPages={totalPages} onPageChange={setPage} />
 
       {/* One instance for the whole list, keyed by id so switching rows remounts it and the form
           re-initialises from the newly selected automation's values. Rendering it here rather than

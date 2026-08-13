@@ -43,6 +43,17 @@ export function SyncIcon() {
   );
 }
 
+/** Lightning bolt, marking a post that already has a comment automation. Chosen over a gear or a
+ * robot because it reads as "this fires automatically" at badge size, where finer detail is
+ * illegible. */
+export function BoltIcon() {
+  return (
+    <svg {...BASE_PROPS} fill="currentColor" strokeWidth={0}>
+      <path d="M13 2 4.5 13.2c-.4.5 0 1.3.7 1.3H10l-1.2 7.2c-.1.7.8 1.1 1.2.5L19.5 10.8c.4-.5 0-1.3-.7-1.3H14l1.2-7C15.3 1.8 14.4 1.4 13 2Z" />
+    </svg>
+  );
+}
+
 /** Three-line hamburger, mobile nav only. Slightly larger than BASE_PROPS' 1.05em because it is
  * a standalone tap target rather than an inline glyph next to text. */
 export function MenuIcon() {

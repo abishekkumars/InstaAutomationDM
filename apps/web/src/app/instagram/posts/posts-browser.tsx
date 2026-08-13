@@ -1,6 +1,8 @@
 'use client';
 
 import { LoadingLink } from '../../loader';
+import { BoltIcon } from '@/app/icons';
+import { Pagination } from '@/app/pagination';
 import { useUrlNumberState, useUrlState } from '@/app/use-url-state';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
@@ -16,6 +18,7 @@ export interface InstagramPostSummary {
 
 type ViewMode = 'grid' | 'list';
 type SortOrder = 'newest' | 'oldest';
+type AutomationFilter = 'all' | 'automated' | 'none';
 
 // Type guards for useUrlState: these values arrive from a user-editable query string, so an
 // unrecognised one must fall back to the default rather than be cast blindly.
@@ -24,6 +27,9 @@ function isViewMode(value: string): value is ViewMode {
 }
 function isSortOrder(value: string): value is SortOrder {
   return value === 'newest' || value === 'oldest';
+}
+function isAutomationFilter(value: string): value is AutomationFilter {
+  return value === 'all' || value === 'automated' || value === 'none';
 }
 
 const PAGE_SIZE_OPTIONS = [12, 24, 48, 96] as const;
@@ -46,9 +52,14 @@ const OVERSCAN = 4;
 export function PostsBrowser({
   posts,
   accountId,
+  automationsByPostId,
 }: {
   posts: InstagramPostSummary[];
   accountId: string;
+  /** zernioPostId -> is that post's automation enabled. A missing key means the post has no
+   * automation at all, which is why this is a lookup rather than a boolean on each post: the
+   * automations come from a separate call that is allowed to fail without failing the page. */
+  automationsByPostId: Record<string, boolean>;
 }) {
   // View mode, sort, page size and page live in the URL, not component state: opening a post
   // unmounts this component, and plain useState meant Back always landed on grid/newest/page 1
@@ -59,19 +70,34 @@ export function PostsBrowser({
   const [sort, setSort] = useUrlState<SortOrder>('sort', 'newest', isSortOrder);
   const [pageSize, setPageSize] = useUrlNumberState('size', 24, PAGE_SIZE_OPTIONS);
   const [page, setPage] = useUrlNumberState('page', 1);
+  // Deliberately NOT named `automation`: ToastHost (app/toast.tsx) reads `?automation=` globally
+  // as a create/update/delete status and would render a stray error toast for a filter value.
+  const [automationFilter, setAutomationFilter] = useUrlState<AutomationFilter>(
+    'automated',
+    'all',
+    isAutomationFilter,
+  );
   const [search, setSearch] = useState('');
 
   // Search across every synced post, not just the visible page - that is the whole reason the
   // page fetches the account's full window up front instead of one server page at a time.
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
-    const matched = query
+    const searched = query
       ? posts.filter(
           (post) =>
             post.caption.toLowerCase().includes(query) ||
             (post.mediaType ?? '').toLowerCase().includes(query),
         )
       : posts;
+
+    const matched =
+      automationFilter === 'all'
+        ? searched
+        : searched.filter((post) => {
+            const hasAutomation = post.zernioPostId in automationsByPostId;
+            return automationFilter === 'automated' ? hasAutomation : !hasAutomation;
+          });
 
     // Copy before sorting: Array.prototype.sort mutates, and `posts` is props.
     return [...matched].sort((a, b) => {
@@ -84,7 +110,7 @@ export function PostsBrowser({
       if (bTime === null) return -1;
       return sort === 'newest' ? bTime - aTime : aTime - bTime;
     });
-  }, [posts, search, sort]);
+  }, [posts, search, sort, automationFilter, automationsByPostId]);
 
   // Forwarded onto each post link so the detail page's "Back to posts" can rebuild this exact
   // view. Only non-default values are included, keeping the common URL clean.
@@ -94,9 +120,10 @@ export function PostsBrowser({
     if (sort !== 'newest') params.set('sort', sort);
     if (pageSize !== 24) params.set('size', String(pageSize));
     if (page !== 1) params.set('page', String(page));
+    if (automationFilter !== 'all') params.set('automated', automationFilter);
     const query = params.toString();
     return query ? `&${query}` : '';
-  }, [view, sort, pageSize, page]);
+  }, [view, sort, pageSize, page, automationFilter]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   // Clamp rather than storing a corrected page: if a search shrinks the result set below the
@@ -116,13 +143,14 @@ export function PostsBrowser({
   // and omitting it from the deps is exactly the stale-closure bug the lint rule warns about.
   // A render-time comparison sidesteps both: it fires only when one of these three actually
   // changes, and never on mount, so a page restored from the URL survives.
-  const previousInputs = useRef({ search, sort, pageSize });
+  const previousInputs = useRef({ search, sort, pageSize, automationFilter });
   if (
     previousInputs.current.search !== search ||
     previousInputs.current.sort !== sort ||
-    previousInputs.current.pageSize !== pageSize
+    previousInputs.current.pageSize !== pageSize ||
+    previousInputs.current.automationFilter !== automationFilter
   ) {
-    previousInputs.current = { search, sort, pageSize };
+    previousInputs.current = { search, sort, pageSize, automationFilter };
     if (page !== 1) {
       setPage(1);
     }
@@ -139,6 +167,8 @@ export function PostsBrowser({
         onSearchChange={setSearch}
         pageSize={pageSize}
         onPageSizeChange={setPageSize}
+        automationFilter={automationFilter}
+        onAutomationFilterChange={setAutomationFilter}
         resultCount={filtered.length}
         totalCount={posts.length}
       />
@@ -147,7 +177,13 @@ export function PostsBrowser({
         <div className="rounded-xl border border-border bg-surface p-6 text-center text-sm text-text-muted shadow-sm">
           {posts.length === 0
             ? 'No posts found for this account yet.'
-            : `No posts match "${search}".`}
+            : search.trim()
+              ? `No posts match "${search}".`
+              : automationFilter === 'automated'
+                ? 'None of this account’s posts have an automation yet.'
+                : automationFilter === 'none'
+                  ? 'Every post on this account already has an automation.'
+                  : 'No posts match the current filters.'}
         </div>
       ) : (
         <VirtualPostList
@@ -155,7 +191,8 @@ export function PostsBrowser({
           items={pageItems}
           view={view}
           accountId={accountId}
-          resetKey={`${currentPage}|${pageSize}|${sort}|${search}`}
+          automationsByPostId={automationsByPostId}
+          resetKey={`${currentPage}|${pageSize}|${sort}|${search}|${automationFilter}`}
         />
       )}
 
@@ -173,6 +210,8 @@ function Toolbar({
   onSearchChange,
   pageSize,
   onPageSizeChange,
+  automationFilter,
+  onAutomationFilterChange,
   resultCount,
   totalCount,
 }: {
@@ -184,6 +223,8 @@ function Toolbar({
   onSearchChange: (value: string) => void;
   pageSize: number;
   onPageSizeChange: (value: number) => void;
+  automationFilter: AutomationFilter;
+  onAutomationFilterChange: (value: AutomationFilter) => void;
   resultCount: number;
   totalCount: number;
 }) {
@@ -211,6 +252,17 @@ function Toolbar({
       >
         <option value="newest">Newest first</option>
         <option value="oldest">Oldest first</option>
+      </select>
+
+      <select
+        value={automationFilter}
+        onChange={(event) => onAutomationFilterChange(event.target.value as AutomationFilter)}
+        aria-label="Filter by automation"
+        className="rounded-lg border border-border-strong bg-surface px-2 py-1.5 text-sm text-text"
+      >
+        <option value="all">All posts</option>
+        <option value="automated">With automation</option>
+        <option value="none">Without automation</option>
       </select>
 
       <select
@@ -291,12 +343,14 @@ function VirtualPostList({
   view,
   accountId,
   listQuery,
+  automationsByPostId,
   resetKey,
 }: {
   items: InstagramPostSummary[];
   view: ViewMode;
   accountId: string;
   listQuery: string;
+  automationsByPostId: Record<string, boolean>;
   /** Changes exactly when the rendered slice genuinely changes (page, page size, sort, or
    * search), so the scroll-reset effect below fires then and only then. */
   resetKey: string;
@@ -377,17 +431,30 @@ function VirtualPostList({
           gap: `${ROW_GAP}px`,
         }}
       >
-        {visible.map((post) =>
-          view === 'list' ? (
+        {visible.map((post) => {
+          // `undefined` (key absent) means no automation; true/false means one exists and is
+          // enabled/paused. All three states render differently.
+          const automationActive = automationsByPostId[post.zernioPostId];
+          return view === 'list' ? (
             <li key={post.zernioPostId} className="min-h-0">
-              <PostListRow post={post} accountId={accountId} listQuery={listQuery} />
+              <PostListRow
+                post={post}
+                accountId={accountId}
+                listQuery={listQuery}
+                automationActive={automationActive}
+              />
             </li>
           ) : (
             <li key={post.zernioPostId} className="min-h-0">
-              <PostCard post={post} accountId={accountId} listQuery={listQuery} />
+              <PostCard
+                post={post}
+                accountId={accountId}
+                listQuery={listQuery}
+                automationActive={automationActive}
+              />
             </li>
-          ),
-        )}
+          );
+        })}
       </ul>
       <div style={{ height: Math.max(0, (rowCount - lastRow) * rowHeight) }} />
     </div>
@@ -397,30 +464,84 @@ function VirtualPostList({
 // The wrapping <li> lives in VirtualPostList (it carries the fixed row geometry), so these
 // render only the card body itself. h-full makes the card fill its pinned row rather than
 // collapsing to its natural height inside it.
+/** Marks a post that already has a comment automation.
+ *
+ * Three states, not two: no badge at all when the post has no automation, an accent bolt when it
+ * has an enabled one, and a muted bolt when it has one that is paused. Collapsing the last two
+ * would make a disabled automation look like it is running.
+ */
+function AutomationBadge({
+  active,
+  variant,
+}: {
+  /** undefined when the post has no automation - the badge then renders nothing. */
+  active: boolean | undefined;
+  /** 'overlay' floats on a thumbnail (grid cards), 'inline' sits in a text row (list rows). */
+  variant: 'overlay' | 'inline';
+}) {
+  if (active === undefined) {
+    return null;
+  }
+
+  const label = active ? 'Has an enabled automation' : 'Has a paused automation';
+  const tone = active
+    ? 'border-success-border bg-success-bg text-success'
+    : 'border-border-strong bg-muted-bg text-text-faint';
+
+  if (variant === 'overlay') {
+    return (
+      <span
+        title={label}
+        aria-label={label}
+        className={`absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full border shadow-sm ${tone}`}
+      >
+        <BoltIcon />
+      </span>
+    );
+  }
+
+  return (
+    <span
+      title={label}
+      aria-label={label}
+      className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-[11px] font-semibold ${tone}`}
+    >
+      <BoltIcon />
+      {active ? 'Automated' : 'Paused'}
+    </span>
+  );
+}
+
 function PostCard({
   post,
   accountId,
   listQuery,
+  automationActive,
 }: {
   post: InstagramPostSummary;
   accountId: string;
   /** The list's own view/sort/page params, forwarded so "Back to posts" can restore them. */
   listQuery: string;
+  automationActive: boolean | undefined;
 }) {
   return (
     <LoadingLink
       href={`/instagram/posts/${post.zernioPostId}?accountId=${accountId}${listQuery}`}
       className="flex h-full flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-sm transition hover:border-border-strong"
     >
-      {/* Fixed height, NOT aspect-square: a square thumbnail scales with column width (~231px
-          in a 4-column grid), which ate the whole fixed-height row and clipped the caption out
-          of existence. A fixed image height leaves the caption block a guaranteed share of the
-          row at every column count. */}
-      <Thumbnail
-        post={post}
-        className="w-full shrink-0 object-cover"
-        style={{ height: GRID_THUMB_HEIGHT }}
-      />
+      {/* relative so the badge can sit over the thumbnail's top-right corner. */}
+      <div className="relative shrink-0">
+        {/* Fixed height, NOT aspect-square: a square thumbnail scales with column width (~231px
+            in a 4-column grid), which ate the whole fixed-height row and clipped the caption out
+            of existence. A fixed image height leaves the caption block a guaranteed share of the
+            row at every column count. */}
+        <Thumbnail
+          post={post}
+          className="w-full object-cover"
+          style={{ height: GRID_THUMB_HEIGHT }}
+        />
+        <AutomationBadge active={automationActive} variant="overlay" />
+      </div>
       <div className="flex min-h-0 flex-1 flex-col justify-center px-3 py-2">
         <p className="line-clamp-2 text-sm leading-snug text-text">
           {post.caption || '(no caption)'}
@@ -438,10 +559,12 @@ function PostListRow({
   post,
   accountId,
   listQuery,
+  automationActive,
 }: {
   post: InstagramPostSummary;
   accountId: string;
   listQuery: string;
+  automationActive: boolean | undefined;
 }) {
   return (
     <LoadingLink
@@ -451,10 +574,13 @@ function PostListRow({
       <Thumbnail post={post} className="h-16 w-16 shrink-0 rounded-lg object-cover" />
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm text-text">{post.caption || '(no caption)'}</p>
-        <p className="mt-1 text-xs text-text-faint">
-          {post.mediaType ?? 'unknown'}
-          {post.publishedAt && ` · ${new Date(post.publishedAt).toLocaleDateString()}`}
-        </p>
+        <div className="mt-1 flex items-center gap-2 text-xs text-text-faint">
+          <span className="truncate">
+            {post.mediaType ?? 'unknown'}
+            {post.publishedAt && ` · ${new Date(post.publishedAt).toLocaleDateString()}`}
+          </span>
+          <AutomationBadge active={automationActive} variant="inline" />
+        </div>
       </div>
       <span className="shrink-0 text-text-faint">›</span>
     </LoadingLink>
@@ -489,102 +615,5 @@ function Thumbnail({
   );
 }
 
-/** Numbered pagination with first/last jumps and an ellipsis window, so any page is reachable
- * directly rather than only one step at a time. */
-function Pagination({
-  page,
-  totalPages,
-  onPageChange,
-}: {
-  page: number;
-  totalPages: number;
-  onPageChange: (page: number) => void;
-}) {
-  if (totalPages <= 1) {
-    return null;
-  }
-
-  return (
-    <nav className="flex flex-wrap items-center justify-center gap-1" aria-label="Pagination">
-      <PageButton disabled={page === 1} onClick={() => onPageChange(page - 1)} label="Previous">
-        ←
-      </PageButton>
-      {buildPageList(page, totalPages).map((entry, index) =>
-        entry === 'gap' ? (
-          <span key={`gap-${index}`} className="px-1 text-sm text-text-faint">
-            …
-          </span>
-        ) : (
-          <PageButton
-            key={entry}
-            active={entry === page}
-            onClick={() => onPageChange(entry)}
-            label={`Page ${entry}`}
-          >
-            {entry}
-          </PageButton>
-        ),
-      )}
-      <PageButton
-        disabled={page === totalPages}
-        onClick={() => onPageChange(page + 1)}
-        label="Next"
-      >
-        →
-      </PageButton>
-    </nav>
-  );
-}
-
-/** First page, last page, and a window around the current one, with 'gap' markers where pages
- * are skipped. Keeps the control a fixed width regardless of how many pages exist. */
-function buildPageList(page: number, totalPages: number): (number | 'gap')[] {
-  const pages = new Set<number>([1, totalPages, page]);
-  for (let offset = 1; offset <= 2; offset += 1) {
-    if (page - offset > 1) pages.add(page - offset);
-    if (page + offset < totalPages) pages.add(page + offset);
-  }
-
-  const sorted = [...pages].sort((a, b) => a - b);
-  const result: (number | 'gap')[] = [];
-  let previous = 0;
-  for (const value of sorted) {
-    if (previous && value - previous > 1) {
-      result.push('gap');
-    }
-    result.push(value);
-    previous = value;
-  }
-  return result;
-}
-
-function PageButton({
-  children,
-  onClick,
-  active,
-  disabled,
-  label,
-}: {
-  children: React.ReactNode;
-  onClick: () => void;
-  active?: boolean;
-  disabled?: boolean;
-  label: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      aria-label={label}
-      aria-current={active ? 'page' : undefined}
-      className={
-        active
-          ? 'min-w-[32px] rounded-md bg-accent px-2 py-1 text-sm font-medium text-accent-ink'
-          : 'min-w-[32px] rounded-md border border-border px-2 py-1 text-sm text-text-muted hover:bg-muted-bg hover:text-text disabled:opacity-40 disabled:hover:bg-transparent'
-      }
-    >
-      {children}
-    </button>
-  );
-}
+// Pagination, buildPageList and PageButton now live in app/pagination.tsx, shared with the
+// dashboard's automations table.

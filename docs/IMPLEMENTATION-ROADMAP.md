@@ -74,6 +74,11 @@ completed work, just a rewrite of what hadn't started yet).
   horizontally-scrolling sidebar strip; desktop layout unchanged) plus whole-row click-to-edit on
   the dashboard's automations list, on both the desktop table and the mobile cards, with the
   existing eye/pencil/trash icons left untouched. See "Phase 10.5 report" below.
+- [x] Phase 10.6 — dashboard automations pagination (shared `Pagination` extracted from the posts
+  browser, plus a page-size selector and result count; deliberately no card/list view switch) and
+  an automation indicator on the posts list (bolt badge on posts that already have an automation,
+  in both grid and list views, plus a with/without-automation filter). See "Phase 10.6 report"
+  below.
 - [ ] **Phase 11 — Webhook ingestion + automation trigger recording** (`POST /webhooks/zernio`,
   `webhook_events` idempotency, in-process — no queue, per ADR 0005; records what Zernio's own
   server-side automation execution reports, per Phase 10's finding that Zernio does the
@@ -1986,3 +1991,82 @@ setup, if that dependency is wanted - flagging, not assuming).
 Local DB fixtures created for the signed-in check (a `uicheck@example.com` user, a throwaway org,
 and one membership) were removed afterwards; the pre-existing 51 automations, 1 Instagram account,
 and 2 real users were confirmed untouched.
+
+## Phase 10.6 report
+
+UI-only change, no API/schema/Zernio work: pagination on the dashboard's automations list, and an
+automation indicator on the posts list.
+
+**What changed**
+
+- `apps/web/src/app/pagination.tsx` (new) - `Pagination`, `buildPageList` and `PageButton` moved
+  here verbatim from `instagram/posts/posts-browser.tsx`, which now imports them. Extracted rather
+  than copied so the dashboard and the posts list cannot drift apart; the posts list's rendering is
+  byte-for-byte unchanged.
+- `apps/web/src/app/automations-browser.tsx` - page + page-size state, a `PAGE_SIZE_OPTIONS`
+  selector (10/25/50/100, default 25), a result-count label ("41 automations" / "3 of 41"), and the
+  shared `Pagination` below the list. Both the desktop table and the mobile card list render the
+  same `pageItems` slice. Searching, re-sorting or changing page size resets to page 1, compared at
+  render time using the same `useRef` pattern the posts browser documents. **No card/list view
+  switch was added** - the request explicitly excluded it, and the table/card split here is
+  responsive (`md:`), not user-selectable.
+  - Page state is plain `useState`, not the posts browser's `useUrlState`. That page puts view
+    state in the URL because opening a post unmounts the list and Back had to restore it; the
+    dashboard's rows open a dialog in place and never unmount, so there is nothing to restore -
+    and a URL write here would pull `useSearchParams` into a component that renders inside the
+    dashboard's Suspense boundary.
+- `apps/web/src/app/icons.tsx` - added `BoltIcon` (filled lightning bolt; reads as "fires
+  automatically" at badge size where finer detail is illegible).
+- `apps/web/src/app/instagram/posts/page.tsx` - now also fetches the org's automations via the
+  dashboard's own memoized+cached `getAutomations`, and passes down a
+  `zernioPostId -> isActive` map. Paired with the posts fetch in `Promise.allSettled`, not `all`:
+  the badge is decoration, so a failed automations lookup must still list the posts, whereas a
+  failed posts fetch stays fatal. The map is filtered to the account being viewed - the org-wide
+  list spans every connected account, and a post id from another account could otherwise badge a
+  post it has nothing to do with.
+- `apps/web/src/app/instagram/posts/posts-browser.tsx` - new `AutomationBadge` with **three**
+  states, not two: no badge when the post has no automation, an accent bolt when it has an enabled
+  one, and a muted "Paused" bolt when it has a disabled one (collapsing the last two would make a
+  paused automation look like it is running). Rendered as a corner overlay on grid cards and inline
+  next to the metadata line in list rows. Also a with/without-automation filter, included in
+  `listQuery` so "Back to posts" restores it, and folded into the page-1 reset and the empty-state
+  message.
+
+**A real collision found and avoided while building the filter**: the obvious query-param name for
+the filter is `automation`, but `ToastHost` (`app/toast.tsx`) reads `?automation=` globally as a
+create/update/delete *status* and would have rendered a stray error toast for the filter value
+`automated`. The param is named `automated` instead, and the page was checked with
+`?automated=automated` to confirm no toast appears.
+
+**Commands executed and results**
+
+| Command | Result |
+|---|---|
+| `scripts/pnpm.ps1 --filter @automationdm/web run typecheck` | Done, exit 0 |
+| `scripts/pnpm.ps1 run eslint` | 0 errors |
+| `prettier --check` on the 5 changed/added files | All pass |
+| `scripts/pnpm.ps1 --filter @automationdm/web run build` | `next build` exit 0, same route list |
+| `scripts/test.ps1` | **75/75 passed** (14 database + 61 api) |
+| Direct `GET /api/organizations/:id/automations` with a minted internal token | 200, 41 rows; confirms every row carries the `zernioPostId` + `instagramAccountId` the badge lookup depends on |
+| Dashboard with 41 automations, browser, page 1 | 25 `<tr role="button">` **and** 25 `<li role="button">` (one page slice, both layouts); label reads "41 automations"; pagination nav renders Previous(disabled) / 1(`aria-current="page"`) / 2 / Next |
+| Same, page-size select | All four options render (10/25/50/100) with 25 selected |
+| Same, view-mode switch | **Absent** - confirms no card/list switch was added |
+| Posts list, grid + list view | Badge renders on exactly 1 of the posts (the one automated post), as an `absolute right-1.5 top-1.5` overlay after the thumbnail `<img>` in grid, and inline beside `video · 9/8/2026` in list |
+| Posts list, `?automated=all` / `=automated` / `=none` | 11 rows / **1 row** / 11 rows respectively, badge counts 1 / 1 / 0, and each option renders `selected` - the filter and its URL round-trip both work |
+| Posts list, `?automated=automated` | No create/delete toast text present - confirms the param-name collision above is avoided |
+
+**Verification method / limitation**
+
+Same approach and same limitation as Phase 10.5: pages were loaded over real HTTP against the
+running dev server with an authenticated session and the served markup asserted against, which
+covers what renders, the responsive classes and the ARIA attributes. Clicking a page number or
+changing the filter dropdown *in a real browser* is still unexercised by an automated test, because
+`apps/web` has no test runner or React testing library - the URL-param cases above are the closest
+substitute, and they do prove the filter's own logic end to end. The pagination buttons' `onClick`
+is the one path verified only by construction.
+
+Local DB fixtures (a `uicheck2@example.com` user, one membership, and 40 `UICHECK-`-prefixed mock
+automations seeded to get a second page) were all removed afterwards; the pre-existing automation,
+Instagram account, organization and two real users were confirmed untouched. Note the 51 mock rows
+mentioned in the Phase 10.5 report are gone - `scripts/test.ps1` wipes those tables by design (see
+the Phase 6 report), which is why this phase re-seeded its own.
