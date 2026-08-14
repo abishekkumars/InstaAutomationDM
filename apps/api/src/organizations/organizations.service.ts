@@ -1,12 +1,5 @@
-import {
-  BadRequestException,
-  ConflictException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
-import { z } from 'zod';
-import { Prisma, type OrganizationRole } from '@automationdm/database';
-import { createOrganizationSchema } from '@automationdm/validation';
+import { Injectable, NotFoundException } from '@nestjs/common';
+import type { OrganizationRole } from '@automationdm/database';
 import { PrismaService } from '../database/prisma.service';
 
 export interface OrganizationSummary {
@@ -25,40 +18,6 @@ export interface OrganizationMemberSummary {
 @Injectable()
 export class OrganizationsService {
   constructor(private readonly prisma: PrismaService) {}
-
-  async create(userId: string, input: unknown): Promise<OrganizationSummary> {
-    let name: string;
-    let slug: string;
-    try {
-      ({ name, slug } = createOrganizationSchema.parse(input));
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        throw new BadRequestException(error.issues[0]?.message ?? 'Invalid input.');
-      }
-      throw error;
-    }
-
-    try {
-      const organization = await this.prisma.client.organization.create({
-        data: {
-          name,
-          slug,
-          memberships: { create: { userId, role: 'OWNER' } },
-        },
-      });
-      return {
-        id: organization.id,
-        name: organization.name,
-        slug: organization.slug,
-        role: 'OWNER',
-      };
-    } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-        throw new ConflictException('An organization with that slug already exists.');
-      }
-      throw error;
-    }
-  }
 
   async listForUser(userId: string): Promise<OrganizationSummary[]> {
     const memberships = await this.prisma.client.organizationMember.findMany({

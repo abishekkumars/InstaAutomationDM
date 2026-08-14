@@ -35,6 +35,13 @@ export async function createAutomationAction(formData: FormData): Promise<void> 
       : [];
   const commentReply = formData.get('commentReply');
 
+  // Up to 5 alternates, one hidden field each (Phase 16.2, requirement 13). Same repeated-field
+  // convention as the buttons below.
+  const commentReplyVariations = formData
+    .getAll('commentReplyVariation')
+    .map((reply) => String(reply).trim())
+    .filter((reply) => reply.length > 0);
+
   // DmMessageField renders each button as two same-named inputs (buttonTitle/buttonUrl),
   // one pair per row, in the same order - getAll() preserves DOM order, so pairing by index
   // reconstructs each row without needing indexed field names.
@@ -51,10 +58,15 @@ export async function createAutomationAction(formData: FormData): Promise<void> 
         method: 'POST',
         body: JSON.stringify({
           name: formData.get('name'),
+          // Sent even when empty - an empty array is the "Any comments" trigger (requirement
+          // 12), not a missing value, so it must not be collapsed to undefined.
           keywords,
           matchMode: formData.get('matchMode'),
+          audience: formData.get('audience') ?? 'any',
           commentReply:
             typeof commentReply === 'string' && commentReply.length > 0 ? commentReply : undefined,
+          commentReplyVariations:
+            commentReplyVariations.length > 0 ? commentReplyVariations : undefined,
           buttons: buttons.length > 0 ? buttons : undefined,
           dmMessage: formData.get('dmMessage'),
           // Absent means "use the default" (enabled) - only an explicit 'false' disables.

@@ -7,9 +7,13 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
   },
   "dependencies": {
     "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.0"
   }
 }

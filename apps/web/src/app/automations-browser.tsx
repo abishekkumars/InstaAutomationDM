@@ -24,8 +24,10 @@ export interface AutomationListItem {
   instagramAccountId: string;
   accountUsername: string | null;
   name: string;
+  /** Empty means the automation triggers on any comment (Phase 16.2, requirement 12). */
   keywords: string[];
   matchMode: 'CONTAINS' | 'WORD' | 'EXACT';
+  audience: 'ANY' | 'FOLLOWER' | 'NON_FOLLOWER';
   isActive: boolean;
   stats: AutomationStats | null;
   post: AutomationPostPreview | null;
@@ -33,6 +35,7 @@ export interface AutomationListItem {
   // row can open a fully populated form without a second round trip. The API's
   // AutomationListItem has always included them; this interface simply did not declare them.
   commentReply: string | null;
+  commentReplyVariations: string[];
   buttons: { title: string; url: string }[];
   dmMessage: string;
 }

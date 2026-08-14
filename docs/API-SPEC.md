@@ -88,26 +88,43 @@ Response (`503`, database unreachable):
 }
 ```
 
-### `POST /api/organizations`
+### `GET /api/me`
 
-Creates an organization and makes the caller its `OWNER`. Requires a bearer token (see
-Convention above).
+The caller's own identity as `apps/api` resolved it (Phase 15.1). Requires a bearer token.
 
-Request:
+Response (`200`):
 ```json
-{ "name": "Acme Inc", "slug": "acme" }
-```
-`slug`: lowercase letters, numbers, and hyphens only (validated by
-`packages/validation`'s `createOrganizationSchema`, shared with `apps/web`'s
-create-organization form).
-
-Response (`201`):
-```json
-{ "id": "clx...", "name": "Acme Inc", "slug": "acme", "role": "OWNER" }
+{ "id": "clx...", "email": "alice@example.com", "role": "NORMAL_USER" }
 ```
 
-Errors: `400` (invalid name/slug), `409` (slug already taken — standard error shape, e.g.
-`{"error":{"code":"ConflictException","message":"An organization with that slug already exists.","requestId":"..."}}`).
+`role` is the **global** role (`ADMIN` | `NORMAL_USER`), not an organization role — see
+`docs/SECURITY.md`'s "Global user roles" section for why the two are separate. Three
+properties of this endpoint are deliberate and covered by tests:
+
+- **`role` and `email` both come from the `users` row**, not from the bearer token's claims.
+  A token carrying `role: "ADMIN"` for a `NORMAL_USER` account still returns `NORMAL_USER`,
+  and a token carrying someone else's `email` returns the real one.
+- **Granting or revoking admin takes effect on the very next request**, with no need to wait
+  for the caller's token to expire or for them to sign in again.
+- **Nothing beyond `id`/`email`/`role` is returned** — never `passwordHash`.
+
+Errors: `401` (missing/invalid token, or a structurally valid token whose user has since been
+deleted).
+
+Consumed by `apps/web` to decide whether to render the Administration nav item. Note that this
+endpoint is for *display*: any check that actually gates an action is enforced in `apps/api` at
+that action's own route, never by trusting the client to have hidden a button.
+
+### ~~`POST /api/organizations`~~ — removed in Phase 15.3
+
+Self-service organization creation is gone. It let any authenticated user create an
+organization and make themselves its `OWNER`, which was correct while `/onboarding` was the way
+in — and became a hole once organization membership became the access gate (requirement 16):
+a user waiting to be admitted could admit themselves.
+
+Creating organizations now lives at **`POST /api/admin/organizations`**, behind `AdminGuard`.
+The route no longer exists at all (`404`), which is asserted by a test rather than assumed. See
+`docs/ADR/0007-global-user-roles-and-administration.md`.
 
 ### `GET /api/organizations`
 
@@ -264,7 +281,9 @@ Response (`200`):
     "name": "Watch giveaway",
     "keywords": ["LINK", "link", "price"],
     "matchMode": "CONTAINS",
+    "audience": "ANY",
     "commentReply": "Check your DMs!",
+    "commentReplyVariations": ["On its way!"],
     "buttons": [{ "title": "Shop now", "url": "https://example.com/shop" }],
     "dmMessage": "Here is the link you asked for!",
     "isActive": true
@@ -285,13 +304,32 @@ Request:
   "name": "Watch giveaway",
   "keywords": ["LINK", "link", "price"],
   "matchMode": "contains",
+  "audience": "follower",
   "commentReply": "Check your DMs!",
+  "commentReplyVariations": ["On its way!", "Just DMed you."],
   "buttons": [{ "title": "Shop now", "url": "https://example.com/shop" }],
   "dmMessage": "Here is the link you asked for!"
 }
 ```
-`keywords`: array of 1-50 non-empty strings, **not a single string** — matches Zernio's own
-field shape. `matchMode`: `contains` (default) | `word` | `exact`. `commentReply`: optional.
+`keywords`: array of up to 50 non-empty strings, **not a single string** — matches Zernio's own
+field shape. **An empty array is valid and means "any comment on this post triggers"** (Phase
+16.2, requirement 12) — Zernio's own semantics for an empty keyword list, and what the create
+wizard's "Any comments" tab sends. It must be sent as `[]` rather than omitted; the two are not
+interchangeable. `matchMode` is ignored when `keywords` is empty, since there is nothing to
+match against.
+
+`audience` (Phase 16.2, requirement 11): `any` (default) | `follower` | `non_follower` —
+restricts who gets answered, via Zernio's `audience.followerStatus`. **Best-effort**: Instagram
+only reveals the follow relationship for people who have messaged the account before, and
+anyone whose status cannot be determined is still sent to (Zernio's `whenUnknown` default,
+which this project does not override). Returned in the enum's stored casing (`ANY` /
+`FOLLOWER` / `NON_FOLLOWER`), accepted in Zernio's lowercase form.
+
+`commentReply`: optional. `commentReplyVariations` (Phase 16.2, requirement 13): optional, up
+to **5** alternate public replies. **Zernio picks one at random per triggering comment** from
+`[commentReply, ...commentReplyVariations]` — it does not post all of them. Requires a
+`commentReply` to rotate against; variations without one are a `400`.
+
 `buttons`: optional, up to 3, each `{title (≤20 chars), url}` — only `type: "url"` buttons are
 supported (see `docs/ZERNIO-INTEGRATION.md` for why `postback`/`phone` aren't). `dmMessage`:
 required, ≤1000 chars normally, **≤640 once any `buttons` are present** (Zernio's own limit —
@@ -299,7 +337,9 @@ a request with `buttons` and a longer `dmMessage` is a `400`, not silently trunc
 
 Response (`201`): same shape as one item of the list endpoint's array above.
 
-Errors: `400` (invalid input, e.g. no keywords), `404` (not a member, or `:accountId` not
+Errors: `400` (invalid input — e.g. more than 5 reply variations, or variations with no
+`commentReply`; note that an *empty* `keywords` array is **not** an error as of Phase 16.2),
+`404` (not a member, or `:accountId` not
 found under this organization), `409` (this post already has an automation — enforced both
 locally and by Zernio's own rule; also returned if Zernio itself already has one for this
 post that our own database didn't know about, e.g. created directly in Zernio's dashboard).
@@ -323,7 +363,9 @@ Response (`200`):
     "name": "Watch giveaway",
     "keywords": ["LINK", "link", "price"],
     "matchMode": "CONTAINS",
+    "audience": "ANY",
     "commentReply": "Check your DMs!",
+    "commentReplyVariations": ["On its way!"],
     "buttons": [{ "title": "Shop now", "url": "https://example.com/shop" }],
     "dmMessage": "Here is the link you asked for!",
     "isActive": true,
@@ -356,6 +398,111 @@ stored locally (per `docs/ADR/0005`):
 
 Errors: `401` (no/invalid bearer token), `404` (not a member of `:organizationId`). A Zernio
 outage does **not** produce an error here — it degrades to `stats: null` / `post: null`.
+
+## Administration (`/api/admin/*`, Phase 15.2)
+
+Every route below requires a bearer token **and** the caller's global role to be `ADMIN`.
+Enforced by `SessionGuard` followed by `AdminGuard`, in that order — the first resolves the
+role from the `users` table, the second acts on it. Non-admin callers get `403`
+(`"Administrator access is required."`), not `404`: unlike tenant-owned resources, the
+existence of these routes is not a secret worth hiding, and a `404` would make a legitimate
+administrator's misconfiguration look like a broken deployment.
+
+**These endpoints grant no tenant data access.** They manage *who belongs where* — never an
+organization's automations, Instagram accounts, or posts. An administrator who needs to see an
+organization's data takes a membership in it, and is then bound by exactly the same isolation
+rules as any other member. See `docs/ADR/0007-global-user-roles-and-administration.md`.
+
+### `GET /api/admin/users`
+
+Every user, newest first (the screen exists mainly to admit people who just signed up).
+
+```json
+[
+  {
+    "id": "clx...",
+    "email": "john@example.com",
+    "name": null,
+    "role": "NORMAL_USER",
+    "createdAt": "2026-08-14T14:43:17.398Z",
+    "organizations": [
+      { "organizationId": "clx...", "name": "Acme Inc", "slug": "acme", "role": "OWNER" }
+    ],
+    "suggestedSlug": "john"
+  }
+]
+```
+
+`suggestedSlug` (requirement 5) is derived server-side from the email's local part and stepped
+past any slug already taken (`john` → `john-2`). It is a **prefill hint, nothing more** — it is
+not reserved, and it can go stale between rendering a form and submitting it, at which point
+`POST /api/admin/organizations` returns `409`. The uniqueness guarantee lives in the
+`organizations.slug` database constraint, not here. That matters more than it looks: the Zernio
+profile name derives from the slug, and `ensureProfile` reuses a profile it finds by name, so
+two organizations sharing a slug would share one Zernio profile.
+
+`passwordHash` is never included.
+
+### `GET /api/admin/organizations`
+
+```json
+[{ "id": "clx...", "name": "Acme Inc", "slug": "acme", "memberCount": 2 }]
+```
+
+### `POST /api/admin/organizations`
+
+Creates an organization. `ownerUserId` is optional; when given, that user is added as `OWNER`
+in the same transaction, so "create this org and put this user in it" cannot half-succeed.
+
+Request: `{ "name": "Acme Inc", "slug": "acme", "ownerUserId": "clx..." }`
+
+Response (`201`): `{ "id": "clx...", "name": "Acme Inc", "slug": "acme", "memberCount": 1 }`
+
+Errors: `400` (invalid name/slug — `packages/validation`'s `createOrganizationSchema`: a slug is
+lowercase letters, numbers and hyphens only, no leading/trailing/double hyphens, ≤50 chars),
+`404` (unknown
+`ownerUserId`; nothing is created), `409` (slug taken).
+
+### `POST /api/admin/users/:userId/memberships`
+
+Grants a user access to an organization. **This is the access gate** — a user with no
+membership can reach no tenant data and connect no Instagram account (requirement 16).
+
+Request: `{ "organizationId": "clx...", "role": "OWNER" }`
+
+`role` is the *organization* role and defaults to `OWNER`, since the common case is admitting a
+new user to their own organization. Pass `MEMBER` explicitly when adding a second person to an
+existing one.
+
+Response (`201`): `{ "organizationId": "clx...", "name": "Acme Inc", "slug": "acme", "role": "OWNER" }`
+
+Errors: `400` (missing `organizationId`), `404` (unknown user or organization), `409` (already
+a member).
+
+### `DELETE /api/admin/users/:userId/memberships/:organizationId`
+
+Revokes that user's access. `204` on success. The organization itself is **not** deleted —
+removing one person's access must never destroy everyone else's data.
+
+Errors: `404` (no such membership).
+
+### `PATCH /api/admin/users/:userId/role`
+
+Grants or revokes the global `ADMIN` role.
+
+Request: `{ "role": "ADMIN" }` or `{ "role": "NORMAL_USER" }`
+
+Response (`200`): the updated user, in the same shape `GET /api/admin/users` returns.
+
+Errors: `400` (role not one of the two values), `404` (unknown user), `409` (**revoking the
+last remaining administrator**).
+
+That `409` is a deliberate lockout guard: without it the final administrator could revoke
+themselves and leave this entire surface permanently unreachable, with nobody left able to grant
+it back. An administrator *may* step down while another remains — self-demotion is allowed, it
+is only being the last one that is refused. `ADMIN_EMAIL` would recover such a lockout on next
+sign-in, but only if it happens to be set and to point at a real account, which is too thin a
+thread to rely on.
 
 Further endpoints are documented here as each is actually implemented, with full request/
 response shape, auth requirement, and example — not speculatively written ahead of the

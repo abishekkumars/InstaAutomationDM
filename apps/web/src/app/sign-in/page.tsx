@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { GoogleButton } from '../(auth)/google-button';
 import { SignInForm } from '../(auth)/sign-in-form';
 
 export default function SignInPage() {
@@ -15,6 +16,7 @@ export default function SignInPage() {
         </p>
       </div>
       <SignInForm />
+      <GoogleButton label="Continue with Google" />
     </div>
   );
 }

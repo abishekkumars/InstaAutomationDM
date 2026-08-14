@@ -36,6 +36,19 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+/// A user's role across the whole application, as opposed to `OrganizationRole`, which says
+/// what they may do *inside one organization*. The two are deliberately separate and neither
+/// implies the other: an organization OWNER is not an application ADMIN, and an ADMIN holds no
+/// membership anywhere by virtue of being one.
+///
+/// ADMIN reaches the Administration surface (Phase 15.2) - listing users, assigning them to
+/// organizations, and granting/revoking this role. NORMAL_USER is everyone else, and is the
+/// default for every account ever created. See docs/SECURITY.md's "Global user roles" section.
+enum UserRole {
+  ADMIN
+  NORMAL_USER
+}
+
 /// A human account. `authProviderId`/`authProvider` (Auth.js, Phase 5 — see
 /// docs/ADR/0004-authentication-provider.md) name which provider owns this identity;
 /// `passwordHash` exists only because the `Credentials` provider was chosen over an OAuth
@@ -44,6 +57,14 @@ model User {
   id String @id @default(cuid())
 
   email String @unique
+
+  /// Global application role (Phase 15.1). Defaults to NORMAL_USER, and is only ever written
+  /// server-side: at registration, by the ADMIN_EMAIL bootstrap, or by an existing admin's
+  /// explicit action. It is never read from an API request body, and never read from the
+  /// apps/web -> apps/api bearer token either - `SessionGuard` re-reads it from this column on
+  /// every single request, so a revoked admin loses access immediately rather than at the end
+  /// of their token's life. See docs/SECURITY.md.
+  role UserRole @default(NORMAL_USER)
 
   /// Display name. Nullable: not every provider hands us one immediately.
   name String?
@@ -193,6 +214,20 @@ enum AutomationMatchMode {
   EXACT
 }
 
+/// Which commenters an automation is allowed to answer (Phase 16.2, requirement 11). Maps onto
+/// Zernio's `audience.followerStatus` (`any` | `follower` | `non_follower`).
+///
+/// Instagram only reveals the follow relationship for people who have messaged the account
+/// before, so this is not a guarantee Zernio can always evaluate - see
+/// docs/ZERNIO-INTEGRATION.md for how `audience.whenUnknown` decides what happens for everyone
+/// else. Only the follower-status axis is stored: Zernio's `minFollowerCount` and the
+/// `followGate` copy are real but out of this project's scope.
+enum AutomationAudience {
+  ANY
+  FOLLOWER
+  NON_FOLLOWER
+}
+
 /// A comment-to-DM automation (Phase 10). One org + one connected Instagram account + one
 /// specific Zernio post/reel + keyword(s) + optional public reply + DM message - see
 /// docs/AUTOMATION-ENGINE.md's "Model" section for why this is a fixed shape, not a generic
@@ -222,13 +257,29 @@ model Automation {
 
   name String
 
+  /// Trigger keywords. **An empty array means "any comment triggers this automation"** - that is
+  /// Zernio's own documented semantics for an empty `keywords` list, not a local convention
+  /// (verified against the live OpenAPI spec, Phase 16.2 - see docs/ZERNIO-INTEGRATION.md). The
+  /// create wizard's "Any comments" tab is exactly this, and `matchMode` is meaningless when the
+  /// list is empty since there is nothing to match against.
   keywords String[]
   matchMode AutomationMatchMode @default(CONTAINS) @map("match_mode")
+
+  /// Who the automation is allowed to answer (Phase 16.2, requirement 11). Mirrors Zernio's
+  /// `audience.followerStatus`. ANY is the default and the behaviour every automation had before
+  /// this field existed, so existing rows are correct without a data migration.
+  audience AutomationAudience @default(ANY)
 
   /// Optional public reply posted on the triggering comment. Nullable: Zernio's own API
   /// treats this as optional, not required (a DM-only automation with no public reply is a
   /// normal, supported configuration).
   commentReply String? @map("comment_reply")
+
+  /// Up to 5 alternate public replies (Phase 16.2, requirement 13). Zernio picks ONE at random
+  /// per triggering comment from `[commentReply, ...commentReplyVariations]` - it does not post
+  /// all of them. Rotation exists so repeat commenters on the same post do not all receive a
+  /// visibly identical reply. Empty when the automation has a single fixed reply.
+  commentReplyVariations String[] @map("comment_reply_variations")
   dmMessage String @map("dm_message")
 
   /// Up to 3 inline DM buttons, `[{ title, url }]`. Zernio's own `buttons` field supports

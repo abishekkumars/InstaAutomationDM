@@ -56,12 +56,75 @@ values.
 | `API_INTERNAL_SECRET` | Must match the `apps/api` project exactly, or every API call 401s. |
 | `NEXT_PUBLIC_API_URL` | Base URL of the deployed `apps/api` project. |
 | `NEXT_PUBLIC_APP_URL` | Public base URL of `apps/web`. |
+| `ADMIN_EMAIL` | Phase 15.1. The account with this address is promoted to the global `ADMIN` role on registration and re-promoted at each sign-in. **Only ever promotes, never demotes** — see `docs/SECURITY.md`. Not a credential; the holder still has to authenticate. Read by `apps/web` (which owns registration and sign-in), not `apps/api`. |
+| `GOOGLE_CLIENT_ID` | Phase 15.5. OAuth 2.0 **Web application** client from Google Cloud Console. |
+| `GOOGLE_CLIENT_SECRET` | Phase 15.5. Its secret. |
 
 Copy both Supabase connection strings verbatim from Supabase's "Connect" dialog — do not
 hand-assemble them.
 
+**Google sign-in is all-or-nothing.** Both `GOOGLE_*` variables must be set or the provider is
+not registered and the button is hidden — Auth.js throws at import time on a provider missing
+its credentials, which would break password sign-in too, so this fails closed deliberately
+(`docs/ADR/0008-google-signin-and-session-lifetime.md`). The consequence worth knowing at
+deploy time: **a missing variable presents as "the feature was never built", not as an error.**
+
+Register these exact redirect URIs with the Google OAuth client:
+
+```
+http://localhost:3000/api/auth/callback/google
+https://<your-web-domain>/api/auth/callback/google
+```
+
 > `.env.example` still lists `REDIS_URL`, `S3_*`, and `SENTRY_DSN` from the pre-ADR-0005 scope.
-> No code reads them and they are not set in production. They are stale and should be removed.
+> No code reads them and they are not set in production. `REDIS_URL` and `S3_*` are now labelled
+> as retired scope in that file; they should still eventually be removed outright.
+
+## Database backups (GitHub Actions)
+
+`.github/workflows/database-backup.yml` runs `pg_dump` against Supabase daily at 06:30 UTC
+(12:00 IST) and uploads the gzipped dump to Google Drive via
+`scripts/upload-backup-to-drive.mjs`. Repository secrets required:
+`SUPABASE_DATABASE_URL`, `GOOGLE_SERVICE_ACCOUNT_JSON`, `GOOGLE_DRIVE_FOLDER_ID`.
+
+**Each dump is a full restore point, not a data-only export** — schema *and* data, scoped to
+`--schema=public` (where all of this project's data lives; Supabase's managed schemas are not
+ours to back up, and the connecting role cannot fully read them). The workflow's verify step
+asserts the dump really contains the expected `CREATE TABLE` and `CREATE TYPE` statements, so a
+dump that would restore into an empty database fails the run instead of reaching Drive.
+**How to restore, and what a restore does not bring back:
+[`docs/RUNBOOKS/restore-database.md`](RUNBOOKS/restore-database.md).**
+
+**Retention: 90 days** (`BACKUP_RETENTION_DAYS` in the workflow; set `0` to keep everything).
+Expired backups are moved to Drive's trash, not permanently deleted. Two properties make the
+cleanup safe to leave unattended:
+
+- It runs **only after a successful upload**, so a failed backup run can never delete an older
+  good one.
+- The **7 newest backups are always kept**, whatever their age — otherwise a workflow that had
+  been broken for months would come back and delete its entire history in one pass, leaving a
+  single minutes-old file.
+
+Three things about this are easy to get wrong, and two of them are guarded in the workflow
+itself rather than left to be discovered:
+
+- **`SUPABASE_DATABASE_URL` must be the direct connection (port 5432), not the transaction
+  pooler.** `pg_dump` cannot run through pgbouncer in transaction mode — it has no stable
+  session for the operations a dump needs. Since this project's own `DATABASE_URL` *is* that
+  pooler, pasting the wrong one is an easy mistake; the workflow refuses a URL containing
+  `:6543` or `pgbouncer=true` up front rather than failing mid-dump with a protocol error. Use
+  the same value as `DIRECT_URL`.
+- **The `pg_dump` client must be at least the server's major version.** Ubuntu's default
+  `postgresql-client` trails Supabase, and `pg_dump` refuses a newer server outright rather than
+  writing a partial file. The workflow installs `postgresql-client-17` from PGDG; bump that when
+  Supabase's Postgres major version moves.
+- **`GOOGLE_DRIVE_FOLDER_ID` must point at a folder on a Shared Drive**, with the service
+  account added as a member (Content manager or better). A service account has **no My Drive
+  storage quota of its own**, so uploading into an ordinary folder merely *shared* with it fails
+  with `storageQuotaExceeded`. The upload script names this failure explicitly when it sees it.
+
+This is the Google *service account* path, unrelated to the `GOOGLE_CLIENT_ID`/`SECRET` above,
+which are end-user sign-in.
 
 ## Caching and freshness
 

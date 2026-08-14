@@ -37,62 +37,35 @@ beforeEach(async () => {
   await prisma.user.deleteMany();
 });
 
-describe('POST /api/organizations', () => {
-  it('rejects a request with no bearer token', async () => {
-    await request(app.getHttpServer())
-      .post('/api/organizations')
-      .send({ name: 'Acme Inc', slug: 'acme' })
-      .expect(401);
+/** Creates an organization directly, with `owner` as its OWNER.
+ *
+ * Phase 15.3 removed `POST /api/organizations`, which these tests previously used to build their
+ * fixtures. Setting them up through Prisma is actually the better arrangement anyway: a test of
+ * "can Bob read Alice's members" should not also depend on the create endpoint working. */
+async function createOrganization(slug: string, name: string, owner?: { id: string }) {
+  return prisma.organization.create({
+    data: {
+      name,
+      slug,
+      memberships: owner ? { create: { userId: owner.id, role: 'OWNER' } } : undefined,
+    },
   });
+}
 
-  it('rejects a request with an invalid bearer token', async () => {
-    await request(app.getHttpServer())
-      .post('/api/organizations')
-      .set('Authorization', 'Bearer not-a-real-token')
-      .send({ name: 'Acme Inc', slug: 'acme' })
-      .expect(401);
-  });
-
-  it('creates an organization and makes the caller its OWNER', async () => {
-    const alice = await prisma.user.create({ data: { email: 'alice@example.com' } });
-
-    const response = await request(app.getHttpServer())
-      .post('/api/organizations')
-      .set('Authorization', bearerFor(alice.id, alice.email))
-      .send({ name: 'Acme Inc', slug: 'acme' })
-      .expect(201);
-
-    expect(response.body).toMatchObject({ name: 'Acme Inc', slug: 'acme', role: 'OWNER' });
-
-    const membership = await prisma.organizationMember.findFirst({ where: { userId: alice.id } });
-    expect(membership?.role).toBe('OWNER');
-  });
-
-  it('rejects a slug that is already taken', async () => {
-    const alice = await prisma.user.create({ data: { email: 'alice@example.com' } });
-    const bob = await prisma.user.create({ data: { email: 'bob@example.com' } });
-
-    await request(app.getHttpServer())
-      .post('/api/organizations')
-      .set('Authorization', bearerFor(alice.id, alice.email))
-      .send({ name: 'Acme Inc', slug: 'acme' })
-      .expect(201);
-
-    await request(app.getHttpServer())
-      .post('/api/organizations')
-      .set('Authorization', bearerFor(bob.id, bob.email))
-      .send({ name: 'Acme Inc Two', slug: 'acme' })
-      .expect(409);
-  });
-
-  it('rejects an invalid slug', async () => {
+// Phase 15.3, requirement 16. Self-service organization creation is gone: membership is the
+// access gate, so a user waiting to be admitted must not be able to admit themselves. Creating
+// organizations now lives behind AdminGuard at POST /api/admin/organizations.
+describe('POST /api/organizations - removed in Phase 15.3', () => {
+  it('is no longer routed, even for an authenticated caller', async () => {
     const alice = await prisma.user.create({ data: { email: 'alice@example.com' } });
 
     await request(app.getHttpServer())
       .post('/api/organizations')
       .set('Authorization', bearerFor(alice.id, alice.email))
-      .send({ name: 'Acme Inc', slug: 'Not A Slug!' })
-      .expect(400);
+      .send({ name: 'Acme Inc', slug: 'acme' })
+      .expect(404);
+
+    expect(await prisma.organization.count()).toBe(0);
   });
 });
 
@@ -101,16 +74,8 @@ describe('GET /api/organizations', () => {
     const alice = await prisma.user.create({ data: { email: 'alice@example.com' } });
     const bob = await prisma.user.create({ data: { email: 'bob@example.com' } });
 
-    await request(app.getHttpServer())
-      .post('/api/organizations')
-      .set('Authorization', bearerFor(alice.id, alice.email))
-      .send({ name: 'Acme Inc', slug: 'acme' })
-      .expect(201);
-    await request(app.getHttpServer())
-      .post('/api/organizations')
-      .set('Authorization', bearerFor(bob.id, bob.email))
-      .send({ name: 'Other Co', slug: 'other-co' })
-      .expect(201);
+    await createOrganization('acme', 'Acme Inc', alice);
+    await createOrganization('other-co', 'Other Co', bob);
 
     const aliceOrgs = await request(app.getHttpServer())
       .get('/api/organizations')
@@ -120,19 +85,28 @@ describe('GET /api/organizations', () => {
     expect(aliceOrgs.body).toHaveLength(1);
     expect(aliceOrgs.body[0]).toMatchObject({ slug: 'acme', role: 'OWNER' });
   });
+
+  // The state a newly registered user is in until an administrator admits them - what the
+  // dashboard's awaiting-access screen renders from (Phase 15.3).
+  it('returns an empty list for a user with no memberships', async () => {
+    const newcomer = await prisma.user.create({ data: { email: 'newcomer@example.com' } });
+
+    const response = await request(app.getHttpServer())
+      .get('/api/organizations')
+      .set('Authorization', bearerFor(newcomer.id, newcomer.email))
+      .expect(200);
+
+    expect(response.body).toEqual([]);
+  });
 });
 
 describe('GET /api/organizations/:id/members - tenant isolation', () => {
   it("lets a member see their organization's member list", async () => {
     const alice = await prisma.user.create({ data: { email: 'alice@example.com' } });
-    const created = await request(app.getHttpServer())
-      .post('/api/organizations')
-      .set('Authorization', bearerFor(alice.id, alice.email))
-      .send({ name: 'Acme Inc', slug: 'acme' })
-      .expect(201);
+    const created = await createOrganization('acme', 'Acme Inc', alice);
 
     const members = await request(app.getHttpServer())
-      .get(`/api/organizations/${created.body.id}/members`)
+      .get(`/api/organizations/${created.id}/members`)
       .set('Authorization', bearerFor(alice.id, alice.email))
       .expect(200);
 
@@ -144,16 +118,12 @@ describe('GET /api/organizations/:id/members - tenant isolation', () => {
     const alice = await prisma.user.create({ data: { email: 'alice@example.com' } });
     const bob = await prisma.user.create({ data: { email: 'bob@example.com' } });
 
-    const aliceOrg = await request(app.getHttpServer())
-      .post('/api/organizations')
-      .set('Authorization', bearerFor(alice.id, alice.email))
-      .send({ name: 'Acme Inc', slug: 'acme' })
-      .expect(201);
+    const aliceOrg = await createOrganization('acme', 'Acme Inc', alice);
 
     // Bob is a real, authenticated user - just not a member of Alice's org. The response
     // must be 404, and critically must NOT contain Alice's org's member data anywhere.
     const response = await request(app.getHttpServer())
-      .get(`/api/organizations/${aliceOrg.body.id}/members`)
+      .get(`/api/organizations/${aliceOrg.id}/members`)
       .set('Authorization', bearerFor(bob.id, bob.email))
       .expect(404);
 

@@ -49,6 +49,23 @@ do it by hand or pay for a third-party point-and-click tool.
 Items 1-2 are done (Phase 5-6). See `docs/IMPLEMENTATION-ROADMAP.md` for the phase mapping
 of the rest.
 
+**Amended 2026-08-14 (Phases 15-16).** A 20-requirement change request altered how items 1-2
+work and extended item 6. In summary:
+
+- **Item 1 (authentication)** now also offers Google sign-in beside email/password, requires a
+  password confirmation at sign-up, and ends a session after 30 minutes of inactivity — see
+  `docs/ADR/0008-google-signin-and-session-lifetime.md`.
+- **Item 2 (organization/multi-tenancy)** is no longer self-service. Registration lands
+  directly on the dashboard, and an administrator admits the user by assigning them an
+  organization. Multi-tenancy itself is unchanged. See
+  `docs/ADR/0007-global-user-roles-and-administration.md`.
+- **Item 6 (create a comment automation)** gained three Zernio capabilities this project had
+  documented but never used: an "any comments" trigger, a followers-only/non-followers
+  audience filter, and up to five public replies rotated at random.
+
+The 13-item list itself still describes the product. Nothing was added to it and nothing was
+dropped from it.
+
 ## Explicitly out of scope (retired, not deferred — see ADR 0005)
 
 - Story reply triggers — also a real Zernio/Meta limitation regardless (see
@@ -57,8 +74,13 @@ of the rest.
 - A generic trigger/condition/action workflow engine, or any visual workflow builder UI.
 - Contact management / CRM, an inbox/conversations UI.
 - Follow-up workflows, delays, branching.
-- Billing, plans, usage limits, team roles beyond what Phase 4's `OrganizationRole` vocabulary
-  already provides.
+- Billing, plans, usage limits.
+- ~~Team roles beyond what Phase 4's `OrganizationRole` vocabulary already provides.~~
+  **Amended 2026-08-14 by `docs/ADR/0007-global-user-roles-and-administration.md`**: a single
+  additional *global* role axis (`UserRole`: `ADMIN` | `NORMAL_USER`) now exists, so that one
+  administrator can admit users and assign them to organizations. This is deliberately narrow —
+  it is not general RBAC, not per-resource permissions, and it does not change tenant isolation
+  or `OrganizationRole`, which keeps its Phase 4 meaning. Anything broader remains out of scope.
 - An analytics pipeline beyond the basic per-automation status/history in item 13.
 - Multiple automations per post/reel, or automations scoped to "any post" — one automation
   per specific post/reel, matching the MVP list exactly.
@@ -68,21 +90,34 @@ and its own roadmap phase at that point — it is not "coming later" on the curr
 
 ## Functional requirements (MVP)
 
-- FR1: A user can sign up and is placed into a new organization as its owner (done, Phase
-  5-6).
+- FR1: A user can sign up, with email/password or with Google, and lands on the dashboard.
+  **Amended Phase 15.3**: they are no longer placed into a new organization automatically.
+  Until an administrator assigns them one they see an "awaiting access" state and can reach
+  nothing — organization membership is the access gate (see FR8). Original Phase 5-6 behaviour
+  was self-service organization creation at `/onboarding`, which has been removed.
 - FR2: An organization member can connect an Instagram account through Zernio's OAuth flow.
 - FR3: An organization member can list an account's posts/reels (paginated per Zernio's own
   mechanism) and open one.
 - FR4: From a specific post/reel, a member can configure and save one automation: a
   keyword (or short keyword list) with a match mode, a public reply template, and a DM
-  template.
+  template. **Extended Phase 16.2**: the trigger may instead be "any comment" (no keywords);
+  the automation may be restricted to followers or non-followers; and the public reply may
+  carry up to five alternates, one of which Zernio picks at random per triggering comment.
 - FR5: An incoming Zernio webhook for a matching comment on a tracked post/reel causes the
   saved automation's public reply and DM to be sent.
 - FR6: A member can view basic status/history for an automation (did it trigger, did the
   reply/DM succeed).
 - FR7: An organization cannot see or affect another organization's accounts or automations,
   under any code path (already proven for organizations/membership in Phase 6; extends to
-  every tenant-owned table added from here on).
+  every tenant-owned table added from here on). **Unchanged by Phases 15-16**, including for
+  administrators: the Administration surface manages users, organizations and memberships and
+  reads no tenant data at all.
+- FR8 (Phase 15.2/15.3): An administrator can see every user, grant or revoke administrator
+  status, and assign users to organizations. A user with no organization membership can reach
+  no tenant data and connect no Instagram account — membership *is* the permission, rather
+  than a second flag beside it. Revoking the last remaining administrator is refused, so the
+  surface cannot be locked away. See
+  `docs/ADR/0007-global-user-roles-and-administration.md`.
 
 ## Non-functional requirements
 

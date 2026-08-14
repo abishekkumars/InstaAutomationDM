@@ -12,16 +12,23 @@ An `Automation` is exactly:
 - one connected `InstagramAccount`
 - one specific Zernio post/reel, identified by Zernio's own post/reel id (a plain string —
   the post/reel itself is never stored locally, see `docs/DATABASE.md`)
-- one keyword, or a short list of keywords, with a match mode (contains/word/exact)
-- one public reply template
-- one DM message template
+- a trigger: **either** a short list of keywords with a match mode (contains/word/exact),
+  **or** an empty keyword list, which means "any comment on this post" (Phase 16.2)
+- an audience restriction: everyone, followers only, or non-followers only (Phase 16.2)
+- one public reply template, optionally with up to 5 alternates that Zernio rotates between
+  at random, one per triggering comment (Phase 16.2)
+- one DM message template, optionally with up to 3 inline link buttons
 - an active/inactive flag
 
 There is **no** generic `Trigger`/`Condition[]`/`Action[]` graph, no branching, no delays,
-no tagging, no multi-step action sequencing. This is exactly MVP items 6-10
-(`docs/PRODUCT-REQUIREMENTS.md`) and nothing more. **The engine never executes
-arbitrary user-supplied code** — the shape above is the entire vocabulary, fixed and
-versioned, matching `CLAUDE.md`'s rule.
+no tagging, no multi-step action sequencing. **The engine never executes arbitrary
+user-supplied code** — the shape above is the entire vocabulary, fixed and versioned, matching
+`CLAUDE.md`'s rule.
+
+The Phase 16.2 additions did not loosen that. Each is a fixed field with a closed set of
+values, passed straight through to a Zernio field of the same shape — not a new axis of
+user-defined behaviour. "Any comments" in particular is not a new trigger *type*: it is the
+absence of keywords, which Zernio already treats as "match everything."
 
 ## Resolved: Zernio does the matching (verified live during Phase 10)
 
@@ -29,8 +36,14 @@ Fetched Zernio's live OpenAPI spec (`docs.zernio.com/api/openapi`) rather than a
 either outcome. `POST /v1/comment-automations`'s own description: *"Set up keyword triggers
 on Instagram/Facebook so commenters automatically receive a DM."* Zernio's platform executes
 the entire keyword-match → public-reply → DM flow server-side, using exactly the config we
-send it (`keywords`, `matchMode`, `commentReply`, `dmMessage`) — it does not just notify us
-of a raw incoming comment and leave matching to us.
+send it (`keywords`, `matchMode`, `audience`, `commentReply`, `commentReplyVariations`,
+`dmMessage`) — it does not just notify us of a raw incoming comment and leave matching to us.
+
+This is worth restating for the Phase 16.2 fields specifically, because two of them look like
+behaviour this project might implement and do not: the **follower check** is Zernio's (it is
+the only party that can ask Instagram about a follow relationship), and the **random pick
+among reply variations** is Zernio's too. This codebase stores the configuration and sends it;
+it never evaluates an audience rule or chooses a reply.
 
 Consequence: **`packages/automation-engine` was never created.** There is no local
 keyword-matching logic anywhere in this codebase, and there never needs to be one — Phase

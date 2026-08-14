@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { GoogleButton } from '../(auth)/google-button';
 import { SignUpForm } from '../(auth)/sign-up-form';
 
 export default function SignUpPage() {
@@ -15,6 +16,9 @@ export default function SignUpPage() {
         </p>
       </div>
       <SignUpForm />
+      {/* Same action as on the sign-in page - Google's flow creates the account if it does not
+          exist yet, so there is no separate "sign up with Google" path to build. */}
+      <GoogleButton label="Sign up with Google" />
     </div>
   );
 }

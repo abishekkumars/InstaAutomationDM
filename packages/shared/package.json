@@ -7,12 +7,14 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
   },
   "dependencies": {
     "jsonwebtoken": "^9.0.0"
   },
   "devDependencies": {
-    "@types/jsonwebtoken": "^9.0.0"
+    "@types/jsonwebtoken": "^9.0.0",
+    "vitest": "^2.1.0"
   }
 }

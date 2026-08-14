@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
 export type ToastTone = 'success' | 'warning' | 'error';
@@ -25,9 +25,20 @@ const DISMISS_AFTER_MS: Record<ToastTone, number> = {
  * actions already redirect with, so the notification layer needs no new plumbing: the redirect
  * IS the notification. */
 const MESSAGES: Record<
-  'automation' | 'instagram',
+  'automation' | 'instagram' | 'admin',
   Record<string, { tone: ToastTone; message: string }>
 > = {
+  admin: {
+    'role-granted': { tone: 'success', message: 'Administrator access granted.' },
+    'role-revoked': { tone: 'success', message: 'Administrator access revoked.' },
+    'org-created': { tone: 'success', message: 'Organization created and access granted.' },
+    'access-granted': { tone: 'success', message: 'Access granted.' },
+    'access-revoked': { tone: 'success', message: 'Access revoked.' },
+    // Overridden by the `?message=` param when the action supplies one - apps/api's own text
+    // ("You are the only administrator...", "An organization with that slug already exists")
+    // tells the administrator what to do differently, which this generic fallback cannot.
+    error: { tone: 'error', message: 'That change could not be applied.' },
+  },
   automation: {
     created: { tone: 'success', message: 'Automation created.' },
     updated: { tone: 'success', message: 'Changes saved.' },
@@ -82,6 +93,11 @@ export function ToastHost() {
   const searchParams = useSearchParams();
   const pathname = usePathname();
   const router = useRouter();
+  /** The `namespace:status:detail` already announced, so re-runs of the effect below are no-ops.
+   * A ref, not state: changing it must not itself trigger a render. */
+  const announcedRef = useRef<string | null>(null);
+  /** Monotonic toast id source - see the comment where it is incremented. */
+  const nextIdRef = useRef(0);
 
   const dismiss = useCallback((id: number) => {
     setToasts((current) => current.filter((toast) => toast.id !== id));
@@ -89,20 +105,52 @@ export function ToastHost() {
 
   const automationStatus = searchParams.get('automation');
   const instagramStatus = searchParams.get('instagram');
-  const namespace: 'automation' | 'instagram' | null = automationStatus
+  const adminStatus = searchParams.get('admin');
+  const namespace: 'automation' | 'instagram' | 'admin' | null = automationStatus
     ? 'automation'
     : instagramStatus
       ? 'instagram'
-      : null;
-  const status = automationStatus ?? instagramStatus;
+      : adminStatus
+        ? 'admin'
+        : null;
+  const status = automationStatus ?? instagramStatus ?? adminStatus;
+  // Only ever used to replace the *text* of an entry already matched from MESSAGES above, never
+  // to conjure a toast of its own. That matters: this value comes from the URL, so a crafted
+  // link could otherwise put arbitrary text on screen. React escapes it on render either way.
+  const detail = searchParams.get('message');
 
   useEffect(() => {
-    if (!status || !namespace) return;
+    if (!status || !namespace) {
+      // The param is gone (either cleared below, or a normal navigation). Reset the guard so a
+      // genuinely repeated action - connecting, failing, connecting again - still announces
+      // itself the second time.
+      announcedRef.current = null;
+      return;
+    }
     const entry = MESSAGES[namespace][status];
     if (!entry) return;
 
-    const id = Date.now();
-    setToasts((current) => [...current, { id, ...entry }]);
+    // Requirement 7: the "Instagram account connected." toast used to appear twice.
+    //
+    // Three separate things caused that, and only a guard that makes this effect idempotent
+    // fixes all three at once. React StrictMode double-invokes effects in development. The
+    // `router.replace()` below is asynchronous, so the effect can re-run - `searchParams` is a
+    // new object identity on every render - while the URL still carries the old param. And a
+    // navigation that re-mounts this component replays it. Rather than trying to defeat each
+    // path, record what has already been announced and refuse to announce it twice.
+    const key = `${namespace}:${status}:${detail ?? ''}`;
+    if (announcedRef.current === key) return;
+    announcedRef.current = key;
+
+    // A counter, not Date.now(): two toasts raised inside the same millisecond would otherwise
+    // share an id, and React would treat them as one list item - which is its own way of losing
+    // a notification.
+    nextIdRef.current += 1;
+    const id = nextIdRef.current;
+    setToasts((current) => [
+      ...current,
+      { id, tone: entry.tone, message: detail && detail.length > 0 ? detail : entry.message },
+    ]);
 
     // Drop the status param so the toast does not fire again on refresh, keeping every other
     // param (accountId, view, sort, page) intact - those are real view state, not one-shot
@@ -110,9 +158,11 @@ export function ToastHost() {
     const next = new URLSearchParams(searchParams.toString());
     next.delete('automation');
     next.delete('instagram');
+    next.delete('admin');
+    next.delete('message');
     const query = next.toString();
     router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
-  }, [status, namespace, searchParams, pathname, router]);
+  }, [status, namespace, detail, searchParams, pathname, router]);
 
   useEffect(() => {
     const timers = toasts

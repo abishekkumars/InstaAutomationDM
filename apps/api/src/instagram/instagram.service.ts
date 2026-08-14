@@ -214,6 +214,45 @@ export class InstagramService {
     }
   }
 
+  /** Confirms with Zernio that `accountId` really is connected to `profileId`, retrying briefly
+   * before giving up (Phase 16.1, requirement 6).
+   *
+   * The bug this fixes: a user completes Instagram's consent screen, Zernio redirects them back,
+   * and this app tells them the connection failed - while the account is, in fact, connected. Go
+   * back to the dashboard manually and there it is.
+   *
+   * The cause is that `GET /v1/accounts` is eventually consistent with the connection Zernio has
+   * only just finished making. The callback arrives at the speed of an HTTP redirect, which is
+   * frequently faster than Zernio's own read path settles, so the single confirmation call came
+   * back empty and a successful connection was reported as an error.
+   *
+   * The confirmation itself is NOT skipped - dropping it would mean trusting `accountId` from a
+   * query string the user's own browser supplied, which is exactly what this check exists to
+   * prevent. It is only retried. Delays are short and bounded (0.5s + 1s + 2s = 3.5s worst case)
+   * because this runs inside a request the user is actively waiting on.
+   */
+  private async confirmWithRetry(
+    profileId: string,
+    accountId: string,
+  ): Promise<{ zernioAccountId: string; username: string | null } | null> {
+    const delaysMs = [500, 1000, 2000];
+
+    for (let attempt = 0; attempt <= delaysMs.length; attempt += 1) {
+      const confirmed = await this.provider.findConnectedAccount({ zernioProfileId: profileId });
+      if (confirmed && confirmed.zernioAccountId === accountId) {
+        return confirmed;
+      }
+
+      const delay = delaysMs[attempt];
+      if (delay === undefined) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+
+    return null;
+  }
+
   async handleCallback(
     userId: string,
     organizationId: string,
@@ -241,8 +280,8 @@ export class InstagramService {
 
     // Never trust the redirect query params alone (they arrived via the user's own browser) -
     // independently confirm the connection with a live Zernio call before writing anything.
-    const confirmed = await this.provider.findConnectedAccount({ zernioProfileId: profileId });
-    if (!confirmed || confirmed.zernioAccountId !== accountId) {
+    const confirmed = await this.confirmWithRetry(profileId, accountId);
+    if (!confirmed) {
       throw new BadRequestException('Could not confirm this Instagram connection with Zernio.');
     }
 

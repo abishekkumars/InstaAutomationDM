@@ -112,7 +112,11 @@ class FakeInstagramProvider implements InstagramProvider {
       name: input.name,
       keywords: input.keywords,
       matchMode: input.matchMode,
+      // Echoed back with Zernio's own defaults applied, the same way the real API does: an
+      // omitted audience means 'any', and omitted variations mean none.
+      audience: input.audience ?? 'any',
       commentReply: input.commentReply ?? null,
+      commentReplyVariations: input.commentReplyVariations ?? [],
       buttons: input.buttons ?? [],
       dmMessage: input.dmMessage,
       isActive: true,
@@ -155,6 +159,8 @@ class FakeInstagramProvider implements InstagramProvider {
         name: 'Made in Zernio',
         keywords: ['price'],
         matchMode: 'contains',
+        audience: 'any',
+        commentReplyVariations: [],
         stats: null,
         commentReply: null,
         buttons: [],
@@ -386,7 +392,11 @@ describe('POST .../instagram/accounts/:accountId/posts/:postId/automations', () 
     expect(stored?.organizationId).toBe(organization.id);
   });
 
-  it('rejects a request with no keywords', async () => {
+  // Phase 16.2, requirement 12 deliberately REVERSED this. An empty keyword list used to be
+  // rejected, because specific-keyword was the only trigger there was. It is now the
+  // "Any comments" trigger, and Zernio's own spec says an empty list means every comment fires
+  // the automation - so rejecting it would block a supported configuration.
+  it('accepts an empty keyword list as the "any comment" trigger', async () => {
     const { user, organization } = await createOrgWithOwner('alice@example.com');
     const { accountId } = await connectAndConfirmAccount(
       app,
@@ -396,12 +406,91 @@ describe('POST .../instagram/accounts/:accountId/posts/:postId/automations', () 
       'acme_ig',
     );
 
-    await request(app.getHttpServer())
+    const response = await request(app.getHttpServer())
       .post(
         `/api/organizations/${organization.id}/instagram/accounts/${accountId}/posts/post-1/automations`,
       )
       .set('Authorization', bearerFor(user.id, user.email))
       .send({ ...AUTOMATION_BODY, keywords: [] })
+      .expect(201);
+
+    expect(response.body.keywords).toEqual([]);
+
+    // And the empty list reached Zernio as an empty list, rather than being dropped from the
+    // request body - an omitted `keywords` key would mean something different to Zernio than an
+    // explicitly empty one.
+    expect(fakeProvider.lastCreateInput?.keywords).toEqual([]);
+  });
+
+  it('defaults the audience to "any" and accepts a follower restriction', async () => {
+    const { user, organization } = await createOrgWithOwner('alice@example.com');
+    const { accountId } = await connectAndConfirmAccount(
+      app,
+      user,
+      organization,
+      'ig-acct-1',
+      'acme_ig',
+    );
+    const path = `/api/organizations/${organization.id}/instagram/accounts/${accountId}/posts`;
+
+    const defaulted = await request(app.getHttpServer())
+      .post(`${path}/post-1/automations`)
+      .set('Authorization', bearerFor(user.id, user.email))
+      .send(AUTOMATION_BODY)
+      .expect(201);
+    expect(defaulted.body.audience).toBe('ANY');
+
+    const restricted = await request(app.getHttpServer())
+      .post(`${path}/post-2/automations`)
+      .set('Authorization', bearerFor(user.id, user.email))
+      .send({ ...AUTOMATION_BODY, audience: 'follower' })
+      .expect(201);
+    expect(restricted.body.audience).toBe('FOLLOWER');
+    expect(fakeProvider.lastCreateInput?.audience).toBe('follower');
+  });
+
+  it('persists up to five rotating public replies', async () => {
+    const { user, organization } = await createOrgWithOwner('alice@example.com');
+    const { accountId } = await connectAndConfirmAccount(
+      app,
+      user,
+      organization,
+      'ig-acct-1',
+      'acme_ig',
+    );
+    const path = `/api/organizations/${organization.id}/instagram/accounts/${accountId}/posts`;
+
+    const response = await request(app.getHttpServer())
+      .post(`${path}/post-1/automations`)
+      .set('Authorization', bearerFor(user.id, user.email))
+      .send({
+        ...AUTOMATION_BODY,
+        commentReply: 'Sent!',
+        commentReplyVariations: ['On its way!', 'Just DMed you.'],
+      })
+      .expect(201);
+
+    expect(response.body.commentReplyVariations).toEqual(['On its way!', 'Just DMed you.']);
+
+    // Six alternates is one past Zernio's own maxItems of 5.
+    await request(app.getHttpServer())
+      .post(`${path}/post-2/automations`)
+      .set('Authorization', bearerFor(user.id, user.email))
+      .send({
+        ...AUTOMATION_BODY,
+        commentReply: 'Sent!',
+        commentReplyVariations: ['a', 'b', 'c', 'd', 'e', 'f'],
+      })
+      .expect(400);
+
+    // Alternates with no primary reply have nothing to rotate against. `commentReply` is
+    // explicitly stripped here - AUTOMATION_BODY carries one, so spreading it alone would not
+    // actually produce the orphaned case this is meant to cover.
+    const bodyWithoutReply = { ...AUTOMATION_BODY, commentReply: undefined };
+    await request(app.getHttpServer())
+      .post(`${path}/post-3/automations`)
+      .set('Authorization', bearerFor(user.id, user.email))
+      .send({ ...bodyWithoutReply, commentReplyVariations: ['orphan'] })
       .expect(400);
   });
 

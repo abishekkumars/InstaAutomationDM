@@ -1,5 +1,4 @@
 import { Suspense } from 'react';
-import { redirect } from 'next/navigation';
 import { ApiError } from '@/lib/api';
 import { AutomationsBrowser } from './automations-browser';
 import {
@@ -20,11 +19,13 @@ import { SyncButton } from './sync-button';
 // ?instagram= / ?automation= params the server actions redirect with.
 
 export default async function HomePage() {
-  // Awaited here, deliberately ABOVE every Suspense boundary below. `redirect()` cannot change a
-  // response that has already begun streaming - once a fallback flushes it degrades to a
-  // client-side redirect - so the "does this user even have an organization yet?" decision has to
-  // be made before the first byte goes out. This is one fast API call (~0.2s, no Zernio, no
-  // enrichment); everything expensive happens inside the boundaries.
+  // Awaited here, deliberately ABOVE every Suspense boundary below: this call decides whether the
+  // page is a dashboard at all or the awaiting-access state, and the two share no layout, so
+  // flushing dashboard skeletons first would show a user structure that is about to be replaced
+  // wholesale. (Until Phase 15.3 this was a `redirect()`, which had a harder version of the same
+  // constraint - a redirect cannot change a response that has already begun streaming.) One fast
+  // API call, ~0.2s, no Zernio and no enrichment; everything expensive happens inside the
+  // boundaries.
   let organizations;
   try {
     organizations = await getOrganizations();
@@ -41,7 +42,7 @@ export default async function HomePage() {
 
   const organization = organizations[0];
   if (!organization) {
-    redirect('/onboarding');
+    return <AwaitingAccess />;
   }
 
   return (
@@ -90,6 +91,36 @@ export default async function HomePage() {
       <Suspense fallback={<CardSkeleton rows={2} />}>
         <TeamSection organizationId={organization.id} />
       </Suspense>
+    </div>
+  );
+}
+
+/** What a newly registered user sees until an administrator admits them (Phase 15.3,
+ * requirement 16).
+ *
+ * This replaced a redirect to `/onboarding`, where a brand-new user used to invent an
+ * organization name and URL slug for themselves. That self-service path is gone: membership in an
+ * organization is now the access gate, and only an administrator can grant it
+ * (docs/ADR/0007-global-user-roles-and-administration.md).
+ *
+ * Deliberately a rendered state rather than another redirect. There is nowhere useful to send
+ * them - every route behind sign-in needs an organization - and a redirect loop between two empty
+ * pages is worse than one page that explains itself. It also deliberately does not say who the
+ * administrator is: that would mean exposing the admin list to any user who signs up, and the
+ * person in question already knows who runs their tool.
+ */
+function AwaitingAccess() {
+  return (
+    <div className="mx-auto max-w-md py-10 text-center">
+      <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-muted-bg text-2xl">
+        ⏳
+      </div>
+      <h1 className="mt-4 text-xl font-semibold text-text">Waiting for access</h1>
+      <p className="mt-2 text-sm text-text-muted">
+        Your account is set up, but it has not been added to an organization yet. An administrator
+        needs to grant you access before you can connect an Instagram account or create automations.
+      </p>
+      <p className="mt-4 text-xs text-text-faint">Already been granted access? Reload this page.</p>
     </div>
   );
 }

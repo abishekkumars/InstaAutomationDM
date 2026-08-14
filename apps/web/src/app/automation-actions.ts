@@ -1,9 +1,11 @@
 'use server';
 
-import { revalidatePath, revalidateTag } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { callApi } from '@/lib/api';
-import { automationTags } from '@/lib/cache-tags';
+// Shared with the Instagram connect flow (lib/revalidate.ts) so "what a change invalidates" has
+// one definition - a route handler needs the same behaviour and cannot import it from a
+// 'use server' module.
+import { invalidateOrganizationCaches } from '@/lib/revalidate';
 
 // Edit/delete actions, shared by the post detail page and the dashboard table. They live here
 // rather than under instagram/posts/[postId]/ because the dashboard has no post in its route -
@@ -12,28 +14,6 @@ import { automationTags } from '@/lib/cache-tags';
 //
 // `redirectTo` is passed by the caller instead of being derived here: the same action serves
 // two pages, and after a delete the user should land back on the page they were already on.
-
-/** Expires every cached read a change to an automation can affect.
- *
- * `revalidateTag` (not `updateTag`) because the cached reads are built on `unstable_cache`, whose
- * own docs name `revalidateTag`/`revalidatePath` as its invalidation path - `updateTag` is
- * documented for `fetch`-tagged and `'use cache'` entries, which these are not. Getting this wrong
- * fails silently: the write succeeds, the page re-renders, and the user still sees old numbers.
- *
- * `{ expire: 0 }` rather than the recommended `'max'` profile: `'max'` is stale-while-revalidate,
- * which would serve the pre-edit values once more before refreshing. After an explicit save or a
- * Sync press the user must see their own change immediately, so this expires now and lets the next
- * request wait for fresh data.
- *
- * `revalidatePath` as well as the tags: the tags clear the data cache, the path clears the cached
- * render that would otherwise be replayed without re-running these fetches.
- */
-function invalidateAutomationCaches(organizationId: string, path: string): void {
-  for (const tag of automationTags(organizationId)) {
-    revalidateTag(tag, { expire: 0 });
-  }
-  revalidatePath(path);
-}
 
 function parseButtons(formData: FormData): { title: string; url: string }[] {
   // Same positional pairing as createAutomationAction: each row renders two same-named inputs,
@@ -63,14 +43,24 @@ export async function updateAutomationAction(formData: FormData): Promise<void> 
           .filter((keyword) => keyword.length > 0)
       : [];
   const commentReply = formData.get('commentReply');
+  const commentReplyVariations = formData
+    .getAll('commentReplyVariation')
+    .map((reply) => String(reply).trim())
+    .filter((reply) => reply.length > 0);
 
   try {
     await callApi(`/api/organizations/${organizationId}/automations/${automationId}`, {
       method: 'PATCH',
       body: JSON.stringify({
         name: formData.get('name'),
+        // Always sent, including as [] - that is how an automation is switched to triggering on
+        // any comment (Phase 16.2, requirement 12), not an omission.
         keywords,
         matchMode: formData.get('matchMode'),
+        audience: formData.get('audience') ?? 'any',
+        // Always sent, including as [] - that is how alternates are cleared, same convention as
+        // `buttons` below.
+        commentReplyVariations,
         // Always sent, including as '' - that is how the public reply gets cleared. Omitting
         // the key would instead leave whatever is already stored on the automation.
         commentReply: typeof commentReply === 'string' ? commentReply : '',
@@ -85,7 +75,7 @@ export async function updateAutomationAction(formData: FormData): Promise<void> 
     redirect(`${target}${target.includes('?') ? '&' : '?'}automation=update-error`);
   }
 
-  invalidateAutomationCaches(organizationId, target);
+  invalidateOrganizationCaches(organizationId, target);
   redirect(`${target}${target.includes('?') ? '&' : '?'}automation=updated`);
 }
 
@@ -104,7 +94,7 @@ export async function syncAutomationsAction(formData: FormData): Promise<void> {
   if (typeof organizationId !== 'string') {
     redirect('/');
   }
-  invalidateAutomationCaches(organizationId, '/');
+  invalidateOrganizationCaches(organizationId, '/');
   redirect('/?automation=synced');
 }
 
@@ -126,6 +116,6 @@ export async function deleteAutomationAction(formData: FormData): Promise<void> 
     redirect(`${target}${target.includes('?') ? '&' : '?'}automation=delete-error`);
   }
 
-  invalidateAutomationCaches(organizationId, target);
+  invalidateOrganizationCaches(organizationId, target);
   redirect(`${target}${target.includes('?') ? '&' : '?'}automation=deleted`);
 }

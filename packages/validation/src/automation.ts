@@ -14,7 +14,15 @@ export const AUTOMATION_LIMITS = {
   dmMessageMax: 1000,
   dmMessageWithButtonsMax: 640,
   commentReplyMax: 1000,
+  /** Alternate public replies, on top of the primary `commentReply`. Zernio's own
+   * `commentReplyVariations` has `maxItems: 5` (verified against the live OpenAPI spec,
+   * Phase 16.2). */
+  commentReplyVariationsMax: 5,
 } as const;
+
+/** Which commenters an automation may answer (Phase 16.2, requirement 11). Mirrors Zernio's
+ * `audience.followerStatus`. */
+export const AUTOMATION_AUDIENCES = ['any', 'follower', 'non_follower'] as const;
 
 // One inline DM button - title + link only (Zernio's own `type: url`). `type: postback`
 // (needs a webhook handler this project doesn't have) and `type: phone` (Facebook-only,
@@ -50,12 +58,24 @@ export const createAutomationSchema = z
         AUTOMATION_LIMITS.nameMax,
         `Name must be ${AUTOMATION_LIMITS.nameMax} characters or fewer.`,
       ),
-    keywords: z
-      .array(z.string().trim().min(1))
-      .min(1, 'At least one keyword is required.')
-      .max(AUTOMATION_LIMITS.keywordsMax),
+    // No `.min(1)` as of Phase 16.2 (requirement 12): an EMPTY array is now a valid, meaningful
+    // configuration - it is how the wizard's "Any comments" tab says "trigger on every comment",
+    // which is Zernio's own documented behaviour for an empty keyword list. The previous
+    // "At least one keyword is required." rule was correct only while specific-keyword was the
+    // sole trigger type.
+    keywords: z.array(z.string().trim().min(1)).max(AUTOMATION_LIMITS.keywordsMax),
     matchMode: z.enum(['contains', 'word', 'exact']).default('contains'),
+    audience: z.enum(AUTOMATION_AUDIENCES).default('any'),
     commentReply: z.string().trim().min(1).max(AUTOMATION_LIMITS.commentReplyMax).optional(),
+    // Up to 5 alternates, on top of `commentReply`. Zernio rotates between them at random - it
+    // does not post all of them on one comment.
+    commentReplyVariations: z
+      .array(z.string().trim().min(1).max(AUTOMATION_LIMITS.commentReplyMax))
+      .max(
+        AUTOMATION_LIMITS.commentReplyVariationsMax,
+        `Up to ${AUTOMATION_LIMITS.commentReplyVariationsMax} extra replies are allowed.`,
+      )
+      .optional(),
     // Up to 3, Zernio's own limit (Phase 10.1) - see docs/ZERNIO-INTEGRATION.md.
     buttons: z
       .array(automationButtonSchema)
@@ -84,7 +104,14 @@ export const createAutomationSchema = z
       message: `DM message must be ${AUTOMATION_LIMITS.dmMessageWithButtonsMax} characters or fewer when buttons are added.`,
       path: ['dmMessage'],
     },
-  );
+  )
+  .refine((value) => !value.commentReplyVariations?.length || Boolean(value.commentReply), {
+    // Zernio rotates over `[commentReply, ...commentReplyVariations]`. With no primary reply
+    // there is nothing to rotate *with*, and the variations would either be silently ignored or
+    // silently promoted - neither of which is what the user configured.
+    message: 'Add a public reply before adding alternates.',
+    path: ['commentReplyVariations'],
+  });
 
 export type CreateAutomationInput = z.infer<typeof createAutomationSchema>;
 
@@ -115,13 +142,20 @@ export const updateAutomationSchema = z
         `Name must be ${AUTOMATION_LIMITS.nameMax} characters or fewer.`,
       )
       .optional(),
-    keywords: z
-      .array(z.string().trim().min(1))
-      .min(1, 'At least one keyword is required.')
-      .max(AUTOMATION_LIMITS.keywordsMax)
-      .optional(),
+    // As on create, `[]` is meaningful rather than invalid - it switches an existing automation
+    // over to triggering on any comment.
+    keywords: z.array(z.string().trim().min(1)).max(AUTOMATION_LIMITS.keywordsMax).optional(),
     matchMode: z.enum(['contains', 'word', 'exact']).optional(),
+    audience: z.enum(AUTOMATION_AUDIENCES).optional(),
     commentReply: z.string().trim().max(AUTOMATION_LIMITS.commentReplyMax).optional(),
+    // `[]` clears every alternate, same convention as `buttons`.
+    commentReplyVariations: z
+      .array(z.string().trim().min(1).max(AUTOMATION_LIMITS.commentReplyMax))
+      .max(
+        AUTOMATION_LIMITS.commentReplyVariationsMax,
+        `Up to ${AUTOMATION_LIMITS.commentReplyVariationsMax} extra replies are allowed.`,
+      )
+      .optional(),
     buttons: z
       .array(automationButtonSchema)
       .max(
