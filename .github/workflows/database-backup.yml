@@ -41,6 +41,7 @@ jobs:
       # Postgres major version moves.
       - name: Install PostgreSQL client 17
         run: |
+          set -o pipefail
           sudo apt-get update
           sudo apt-get install -y curl ca-certificates gnupg
           curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
@@ -50,9 +51,41 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql-client-17
 
-      - name: Check PostgreSQL client
+      # Resolve the actual binary rather than trusting PATH.
+      #
+      # Installing postgresql-client-17 is not enough on its own: `/usr/bin/pg_dump` on
+      # Debian/Ubuntu is postgresql-common's `pg_wrapper`, which picks a version of its own
+      # accord. The runner image ships client 16 pre-installed, and pg_wrapper kept choosing it
+      # even with 17 present - producing "aborting because of server version mismatch, server
+      # 17.6, pg_dump 16.14" while the install step had reported success.
+      #
+      # pg_dump refuses to dump a server NEWER than itself (it cannot know about catalog changes
+      # that did not exist when it was built), so this is a hard failure, not a warning.
+      #
+      # Picking the highest installed version rather than hardcoding /usr/lib/postgresql/17 means
+      # this keeps working when Supabase moves to 18: bump the install line above and this
+      # follows automatically.
+      - name: Resolve PostgreSQL client binary
         run: |
-          pg_dump --version
+          set -o pipefail
+
+          PG_VERSION=$(ls -1 /usr/lib/postgresql 2>/dev/null | sort -V | tail -1)
+          if [ -z "$PG_VERSION" ]; then
+            echo "::error::No PostgreSQL client found under /usr/lib/postgresql."
+            exit 1
+          fi
+
+          PG_DUMP="/usr/lib/postgresql/${PG_VERSION}/bin/pg_dump"
+          if [ ! -x "$PG_DUMP" ]; then
+            echo "::error::Expected pg_dump at ${PG_DUMP}, but it is not executable."
+            exit 1
+          fi
+
+          echo "Installed client versions: $(ls -1 /usr/lib/postgresql | sort -V | tr '\n' ' ')"
+          echo "PATH pg_dump would have been: $(pg_dump --version)"
+          echo "Using instead: $("$PG_DUMP" --version)"
+
+          echo "PG_DUMP=${PG_DUMP}" >> "$GITHUB_ENV"
 
       - name: Create backup directory
         run: |
@@ -122,7 +155,9 @@ jobs:
           # contain is database roles: those are cluster-level and pg_dump never includes them.
           # Nothing here depends on them, because --no-owner/--no-privileges make the restore
           # role-agnostic on purpose.
-          pg_dump \
+          # "$PG_DUMP", not bare `pg_dump` - see the "Resolve PostgreSQL client binary" step for
+          # why PATH cannot be trusted here.
+          "$PG_DUMP" \
             --dbname="$SUPABASE_DATABASE_URL" \
             --schema=public \
             --no-owner \
