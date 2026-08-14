@@ -3,8 +3,21 @@ import path from 'node:path';
 import { google } from 'googleapis';
 
 const backupFile = process.env.BACKUP_FILE;
-const googleServiceAccountJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
 const googleDriveFolderId = process.env.GOOGLE_DRIVE_FOLDER_ID;
+
+// OAuth as a real user, NOT a service account.
+//
+// A service account has no Drive storage quota of its own, so uploading into an ordinary My
+// Drive folder fails with `storageQuotaExceeded` - the file would be owned by the service
+// account, which has nowhere to put it. The documented fix is a Shared Drive, but Shared Drives
+// are a Google Workspace feature and do not exist on a personal Gmail account.
+//
+// Authenticating as the account owner instead sidesteps both problems: the uploaded files are
+// owned by that user and count against their own 15GB, and no Shared Drive is needed. See
+// scripts/get-google-drive-refresh-token.mjs for how the refresh token is obtained.
+const clientId = process.env.GOOGLE_DRIVE_CLIENT_ID;
+const clientSecret = process.env.GOOGLE_DRIVE_CLIENT_SECRET;
+const refreshToken = process.env.GOOGLE_DRIVE_REFRESH_TOKEN;
 
 /** How long a backup is kept before the cleanup pass removes it. Three months by default;
  * override with BACKUP_RETENTION_DAYS. Set to 0 to disable cleanup entirely. */
@@ -29,13 +42,20 @@ if (!backupFile) {
   process.exit(1);
 }
 
-if (!googleServiceAccountJson) {
-  console.error('ERROR: GOOGLE_SERVICE_ACCOUNT_JSON is not set.');
-  process.exit(1);
-}
+const missing = [
+  ['GOOGLE_DRIVE_CLIENT_ID', clientId],
+  ['GOOGLE_DRIVE_CLIENT_SECRET', clientSecret],
+  ['GOOGLE_DRIVE_REFRESH_TOKEN', refreshToken],
+  ['GOOGLE_DRIVE_FOLDER_ID', googleDriveFolderId],
+]
+  .filter(([, value]) => !value)
+  .map(([name]) => name);
 
-if (!googleDriveFolderId) {
-  console.error('ERROR: GOOGLE_DRIVE_FOLDER_ID is not set.');
+if (missing.length > 0) {
+  console.error(`ERROR: missing required environment variable(s): ${missing.join(', ')}.`);
+  console.error('');
+  console.error('Obtain the refresh token by running, on your own machine:');
+  console.error('  scripts\\pnpm.ps1 exec node scripts/get-google-drive-refresh-token.mjs');
   process.exit(1);
 }
 
@@ -44,27 +64,10 @@ if (!fs.existsSync(backupFile)) {
   process.exit(1);
 }
 
-let serviceAccount;
-
-try {
-  serviceAccount = JSON.parse(googleServiceAccountJson);
-} catch {
-  // The parse error itself is deliberately not logged: its message can echo back a fragment of
-  // the secret it failed to parse, and this runs in a GitHub Actions log.
-  console.error('ERROR: GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON.');
-  process.exit(1);
-}
-
-if (!serviceAccount.client_email || !serviceAccount.private_key) {
-  console.error('ERROR: Service account JSON must contain client_email and private_key.');
-  process.exit(1);
-}
-
-const auth = new google.auth.JWT({
-  email: serviceAccount.client_email,
-  key: serviceAccount.private_key.replace(/\\n/g, '\n'),
-  scopes: ['https://www.googleapis.com/auth/drive.file'],
-});
+// No redirect URI needed here: the authorization step already happened on someone's machine, and
+// this only exchanges the stored refresh token for short-lived access tokens.
+const auth = new google.auth.OAuth2(clientId, clientSecret);
+auth.setCredentials({ refresh_token: refreshToken });
 
 const drive = google.drive({
   version: 'v3',
@@ -200,25 +203,43 @@ try {
     console.error(error.message);
   }
 
-  // The three failures this setup actually hits, named explicitly - the raw API error for each
-  // is accurate but says nothing about what to change.
+  // The failures this setup actually hits, named explicitly - the raw API error for each is
+  // accurate but says nothing about what to change.
   const reason = String(error.response?.data?.error?.errors?.[0]?.reason ?? '');
-  if (reason === 'storageQuotaExceeded') {
+  const description = String(error.response?.data?.error_description ?? '');
+
+  if (String(error.response?.data?.error ?? '') === 'invalid_grant') {
     console.error(
-      '\nHINT: service accounts have no My Drive storage quota. GOOGLE_DRIVE_FOLDER_ID must ' +
-        'point at a folder on a SHARED DRIVE, with the service account added as a member ' +
-        '(Content manager or better) - not an ordinary My Drive folder shared with it.',
+      '\nHINT: the refresh token is no longer valid' +
+        (description ? ` (${description})` : '') +
+        '.\nThe usual cause is the OAuth consent screen still being in "Testing" mode, where ' +
+        'Google\nexpires refresh tokens after seven days. Publish it: Google Cloud Console > ' +
+        'APIs &\nServices > OAuth consent screen > PUBLISH APP. No verification review is ' +
+        'needed for\nthe drive.file scope. Then re-run ' +
+        'scripts/get-google-drive-refresh-token.mjs and update\nthe ' +
+        'GOOGLE_DRIVE_REFRESH_TOKEN secret.',
+    );
+  } else if (reason === 'storageQuotaExceeded') {
+    console.error(
+      '\nHINT: the Drive account is out of storage. Uploads are owned by the user who ' +
+        'authorised\nthe refresh token and count against their quota (15GB on a free account). ' +
+        'Either free up\nspace, or lower BACKUP_RETENTION_DAYS so old backups are cleared ' +
+        'sooner.',
     );
   } else if (reason === 'notFound') {
     console.error(
-      '\nHINT: the folder id was not found *for this service account*. Confirm ' +
-        'GOOGLE_DRIVE_FOLDER_ID is the id from the folder URL, and that the service account ' +
-        'has been granted access to it.',
+      '\nHINT: the folder id was not found for the authorising user. Confirm ' +
+        'GOOGLE_DRIVE_FOLDER_ID\nis the id from the folder URL ' +
+        '(drive.google.com/drive/folders/<THIS>), and that the folder\nbelongs to the same ' +
+        'Google account that authorised the refresh token.',
     );
-  } else if (reason === 'insufficientFilePermissions') {
+  } else if (reason === 'insufficientFilePermissions' || reason === 'forbidden') {
     console.error(
-      '\nHINT: the service account can see the folder but cannot write to it. Grant it ' +
-        'Content manager on the Shared Drive.',
+      '\nHINT: the token is valid but not allowed to write here. The drive.file scope only ' +
+        'grants\naccess to files this app created - if GOOGLE_DRIVE_FOLDER_ID points at a ' +
+        'folder created by\nhand in the Drive UI, uploading into it can be refused. Try a ' +
+        'folder this app created, or\nleave GOOGLE_DRIVE_FOLDER_ID unset to upload to the ' +
+        "account's My Drive root.",
     );
   }
 

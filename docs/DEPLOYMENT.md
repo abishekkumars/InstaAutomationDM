@@ -84,8 +84,58 @@ https://<your-web-domain>/api/auth/callback/google
 
 `.github/workflows/database-backup.yml` runs `pg_dump` against Supabase daily at 06:30 UTC
 (12:00 IST) and uploads the gzipped dump to Google Drive via
-`scripts/upload-backup-to-drive.mjs`. Repository secrets required:
-`SUPABASE_DATABASE_URL`, `GOOGLE_SERVICE_ACCOUNT_JSON`, `GOOGLE_DRIVE_FOLDER_ID`.
+`scripts/upload-backup-to-drive.mjs`. Repository secrets required: `SUPABASE_DATABASE_URL`,
+`GOOGLE_DRIVE_CLIENT_ID`, `GOOGLE_DRIVE_CLIENT_SECRET`, `GOOGLE_DRIVE_REFRESH_TOKEN`,
+`GOOGLE_DRIVE_FOLDER_ID`.
+
+### Why OAuth and not a service account
+
+The obvious design — a service account with a JSON key — **cannot work on a personal Google
+account**, and fails in a way that reads like a permissions problem:
+
+```
+403 storageQuotaExceeded
+Service Accounts do not have storage quota. Leverage shared drives, or use OAuth delegation.
+```
+
+A service account is not a person and owns no Drive storage. A file it uploads would be *owned
+by it*, and it has nowhere to put one. Google's documented answer is a **Shared Drive**, which
+owns files at the drive level — but Shared Drives are a Google Workspace feature and simply do
+not exist on a personal Gmail account.
+
+So the uploader authenticates **as a real user** via an OAuth refresh token. Backups are owned by
+that user and count against their own quota (15GB free), and no Shared Drive is involved.
+
+Scope is `drive.file` — access limited to files this app itself created. It cannot read the rest
+of that user's Drive even if the token leaked, and being a non-sensitive scope it needs no
+Google verification review to publish.
+
+### One-time setup
+
+1. **Google Cloud Console → APIs & Services → Library → enable "Google Drive API"**.
+2. **OAuth consent screen** → External. Add yourself as a test user.
+3. **Credentials → Create credentials → OAuth client ID → Application type: Desktop app.**
+   Note the client ID and secret.
+4. Run the helper locally — it opens the consent screen, catches the redirect, and prints a
+   refresh token:
+   ```
+   $env:GOOGLE_DRIVE_CLIENT_ID="...apps.googleusercontent.com"
+   $env:GOOGLE_DRIVE_CLIENT_SECRET="..."
+   scripts\pnpm.ps1 exec node scripts/get-google-drive-refresh-token.mjs
+   ```
+5. Add all three as repository secrets, plus `GOOGLE_DRIVE_FOLDER_ID`.
+6. **Publish the OAuth consent screen** (OAuth consent screen → PUBLISH APP).
+
+> **Step 6 is not optional.** While the consent screen is in "Testing", Google expires refresh
+> tokens after **seven days**. The backup runs fine for a week, then fails with `invalid_grant` —
+> which is a bad way to find out your backups stopped. Publishing needs no verification review,
+> because `drive.file` is non-sensitive. The upload script names this explicitly if it ever sees
+> that error.
+
+These `GOOGLE_DRIVE_*` secrets are entirely separate from the `GOOGLE_CLIENT_ID`/
+`GOOGLE_CLIENT_SECRET` used for end-user sign-in in `apps/web` — different OAuth client,
+different purpose. Do not reuse one for the other; the sign-in client needs web redirect URIs
+this flow does not.
 
 **Each dump is a full restore point, not a data-only export** — schema *and* data, scoped to
 `--schema=public` (where all of this project's data lives; Supabase's managed schemas are not
@@ -131,13 +181,12 @@ itself rather than left to be discovered:
   `postgresql-client` trails Supabase, and `pg_dump` refuses a newer server outright rather than
   writing a partial file. The workflow installs `postgresql-client-17` from PGDG; bump that when
   Supabase's Postgres major version moves.
-- **`GOOGLE_DRIVE_FOLDER_ID` must point at a folder on a Shared Drive**, with the service
-  account added as a member (Content manager or better). A service account has **no My Drive
-  storage quota of its own**, so uploading into an ordinary folder merely *shared* with it fails
-  with `storageQuotaExceeded`. The upload script names this failure explicitly when it sees it.
-
-This is the Google *service account* path, unrelated to the `GOOGLE_CLIENT_ID`/`SECRET` above,
-which are end-user sign-in.
+- **`GOOGLE_DRIVE_FOLDER_ID` must be a folder in the Drive of the account that authorised the
+  refresh token.** Take the id from the folder URL
+  (`drive.google.com/drive/folders/<THIS>`). If uploads are refused with a permission error
+  rather than a quota one, the `drive.file` scope is the likely cause: it grants access only to
+  files this app created, so a folder made by hand in the Drive UI can be off-limits. Leaving
+  the id pointing at a folder this app created, or at the My Drive root, avoids that.
 
 ## Caching and freshness
 
