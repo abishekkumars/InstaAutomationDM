@@ -1,0 +1,27 @@
+# Line endings.
+#
+# This machine has `core.autocrlf=true`, which rewrites checked-out files to CRLF. Prettier
+# defaults to `endOfLine: "lf"`, so every file Git touched started failing `prettier --check`
+# locally - a false failure that appears out of nowhere after a commit or a branch switch and
+# has nothing to do with the code. CI never saw it (it runs on Linux, where autocrlf is off),
+# which makes it purely a local time-waster.
+#
+# Normalising to LF in the working tree removes the disagreement at the source rather than
+# re-running `prettier --write` every time Git converts something back.
+* text=auto eol=lf
+
+# Exception: PowerShell scripts stay CRLF. Windows PowerShell 5.1 is the runtime here (see
+# docs/DEVELOPMENT-SETUP.md), and CLAUDE.md already records that it is particular about how
+# these files are encoded - CRLF is the native, known-good form for them, and nothing in the
+# toolchain checks their formatting.
+*.ps1 text eol=crlf
+
+# Binary files Git must never touch.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.gz binary

@@ -62,6 +62,13 @@ jobs:
         env:
           SUPABASE_DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
         run: |
+          # pipefail is load-bearing, not boilerplate. The dump below is `pg_dump | gzip`, and a
+          # pipeline's exit status is the LAST command's - so without this, a pg_dump that fails
+          # outright still leaves gzip exiting 0. The result is a small but perfectly valid .gz
+          # containing nothing, and the step reports success. That is exactly how a broken backup
+          # can go unnoticed until the day it is needed.
+          set -o pipefail
+
           if [ -z "$SUPABASE_DATABASE_URL" ]; then
             echo "::error::SUPABASE_DATABASE_URL secret is not configured."
             exit 1
@@ -107,8 +114,14 @@ jobs:
             --format=plain \
             | gzip > "$BACKUP_FILE"
 
-          if [ ! -s "$BACKUP_FILE" ]; then
-            echo "::error::Backup file is empty."
+          # `-s` (non-empty) is too weak on its own: gzip of *nothing* is still about 20 bytes, so
+          # an empty dump passes it. Compare the uncompressed size instead, which is 0 for a dump
+          # that produced no output at all.
+          UNCOMPRESSED=$(gzip -l "$BACKUP_FILE" | awk 'NR==2 {print $2}')
+          echo "Uncompressed size: ${UNCOMPRESSED} bytes"
+
+          if [ -z "$UNCOMPRESSED" ] || [ "$UNCOMPRESSED" -lt 1024 ]; then
+            echo "::error::Dump is ${UNCOMPRESSED} bytes uncompressed - pg_dump produced essentially nothing. Check this step's output above for the real pg_dump error."
             exit 1
           fi
 
@@ -128,21 +141,36 @@ jobs:
           # restore into a database with no tables and lose everything silently.
           echo "Checking the dump is a full restore point (schema + data)..."
 
+          # Matched without the schema qualifier. pg_dump's exact emission varies - it qualifies
+          # as `CREATE TABLE public.users`, but with `--schema=public` some versions set
+          # search_path and emit a bare `CREATE TABLE users`, and identifiers are quoted when the
+          # server deems it necessary. Anchoring on the table name alone accepts every one of
+          # those spellings while still failing on a dump that genuinely has no tables, which is
+          # the case worth catching.
           MISSING=""
           for table in users organizations organization_members instagram_accounts automations; do
-            if ! zgrep -q "CREATE TABLE public.${table}" "$BACKUP_FILE"; then
+            if ! zgrep -Eq "CREATE TABLE [^;]*\"?${table}\"?" "$BACKUP_FILE"; then
               MISSING="${MISSING} ${table}"
             fi
           done
 
           if [ -n "$MISSING" ]; then
             echo "::error::Dump is missing CREATE TABLE for:${MISSING}. This is not a restorable backup."
+            echo ""
+            echo "--- What the dump actually contains (first 60 lines) ---"
+            zcat "$BACKUP_FILE" | head -60
+            echo ""
+            echo "--- Every CREATE statement found ---"
+            zgrep -E "^CREATE " "$BACKUP_FILE" | head -40 || echo "(none - the dump has no DDL at all)"
+            echo ""
+            echo "If the section above is empty or only SET/SELECT lines, pg_dump failed and the"
+            echo "real error is in the 'Create PostgreSQL backup' step's log, not here."
             exit 1
           fi
 
           # The enums are the other half of the schema Prisma depends on - a restore without them
-          # fails on the first typed column.
-          if ! zgrep -q "CREATE TYPE public." "$BACKUP_FILE"; then
+          # fails on the first typed column. Unqualified for the same reason as above.
+          if ! zgrep -Eq "^CREATE TYPE " "$BACKUP_FILE"; then
             echo "::error::Dump contains no CREATE TYPE statements - the enums are missing."
             exit 1
           fi
