@@ -74,15 +74,31 @@ jobs:
             exit 1
           fi
 
-          # pg_dump cannot run through Supabase's transaction pooler: pgbouncer in transaction
-          # mode multiplexes statements across connections, so it has no stable session for the
-          # operations a dump needs. This repo's own DATABASE_URL *is* that pooler (see
-          # docs/DEPLOYMENT.md), so pasting it into this secret is an easy mistake to make -
-          # and it surfaces as a confusing mid-dump protocol error rather than a clear refusal.
-          # Use the session pooler / direct connection on 5432 (this repo's DIRECT_URL).
+          # Two connection strings are wrong here for two entirely different reasons, and both
+          # are easy to reach for. Refuse them up front with the actual fix, rather than letting
+          # one fail mid-dump with a protocol error and the other with a routing error.
+
+          # 1. The TRANSACTION pooler. pgbouncer in transaction mode multiplexes statements
+          #    across connections, so it has no stable session for the operations a dump needs.
+          #    This repo's own DATABASE_URL *is* that pooler (docs/DEPLOYMENT.md).
           case "$SUPABASE_DATABASE_URL" in
-            *:6543*|*pgbouncer=true*)
-              echo "::error::SUPABASE_DATABASE_URL looks like the transaction pooler (port 6543 / pgbouncer=true). pg_dump needs the direct connection on port 5432 - use the same value as DIRECT_URL."
+            *:6543* | *pgbouncer=true*)
+              echo "::error::SUPABASE_DATABASE_URL is the transaction pooler (port 6543 / pgbouncer=true). pg_dump cannot run through it. Use the SESSION pooler (port 5432 on *.pooler.supabase.com) from Supabase's Connect dialog."
+              exit 1
+              ;;
+          esac
+
+          # 2. The DIRECT connection (db.<ref>.supabase.co). Correct for pg_dump, and correct
+          #    from Vercel or a local machine - but Supabase resolves it to IPv6 only on the
+          #    free tier, and GitHub-hosted runners have no IPv6 connectivity. The failure is
+          #    "Network is unreachable" before authentication is even attempted, which reads
+          #    like a credentials or firewall problem and is neither.
+          #
+          #    This repo's DIRECT_URL is very likely this host, which makes it the natural thing
+          #    to paste into this secret - hence the explicit check.
+          case "$SUPABASE_DATABASE_URL" in
+            *db.*.supabase.co*)
+              echo "::error::SUPABASE_DATABASE_URL is Supabase's DIRECT connection (db.<ref>.supabase.co). That host is IPv6-only on the free tier and GitHub Actions runners have no IPv6, so it is unreachable from here regardless of credentials. Use the SESSION pooler instead: Supabase dashboard > Connect > Session pooler (port 5432, host *.pooler.supabase.com, username postgres.<project-ref>). It is IPv4 and session-mode, so pg_dump works through it."
               exit 1
               ;;
           esac

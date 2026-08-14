@@ -108,12 +108,25 @@ cleanup safe to leave unattended:
 Three things about this are easy to get wrong, and two of them are guarded in the workflow
 itself rather than left to be discovered:
 
-- **`SUPABASE_DATABASE_URL` must be the direct connection (port 5432), not the transaction
-  pooler.** `pg_dump` cannot run through pgbouncer in transaction mode — it has no stable
-  session for the operations a dump needs. Since this project's own `DATABASE_URL` *is* that
-  pooler, pasting the wrong one is an easy mistake; the workflow refuses a URL containing
-  `:6543` or `pgbouncer=true` up front rather than failing mid-dump with a protocol error. Use
-  the same value as `DIRECT_URL`.
+- **`SUPABASE_DATABASE_URL` must be the SESSION POOLER** — not the transaction pooler, and
+  **not** the direct connection either. Both of the obvious choices are wrong, for two
+  unrelated reasons, and the workflow now refuses each with the fix in the error message:
+
+  | Connection | Host | Reachable from Actions? | Usable by `pg_dump`? |
+  |---|---|---|---|
+  | Direct | `db.<ref>.supabase.co:5432` | ❌ **IPv6-only**; GitHub runners have no IPv6 | ✅ |
+  | **Session pooler** | `*.pooler.supabase.com:5432` | ✅ | ✅ **use this** |
+  | Transaction pooler | `*.pooler.supabase.com:6543` | ✅ | ❌ no stable session |
+
+  The direct host is the natural thing to reach for — it is what `DIRECT_URL` uses, and it is
+  correct for `pg_dump` — but Supabase resolves it to IPv6 only on the free tier, and a
+  GitHub-hosted runner cannot route there. It fails with `Network is unreachable` **before
+  authentication is attempted**, which reads like a credentials or firewall problem and is
+  neither. Vercel is unaffected because Vercel has IPv6.
+
+  Copy the value from **Supabase dashboard → Connect → Session pooler**. Note the username
+  carries the project ref (`postgres.<project-ref>`, not plain `postgres`), and the host prefix
+  varies by project age (`aws-0-…` or `aws-1-…`), so copy it verbatim rather than assembling it.
 - **The `pg_dump` client must be at least the server's major version.** Ubuntu's default
   `postgresql-client` trails Supabase, and `pg_dump` refuses a newer server outright rather than
   writing a partial file. The workflow installs `postgresql-client-17` from PGDG; bump that when

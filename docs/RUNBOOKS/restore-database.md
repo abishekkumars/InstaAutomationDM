@@ -107,9 +107,15 @@ Only after the above succeeded against a scratch target.
 1. **Take a fresh backup of the current production database first**, even if it is the thing you
    believe is broken. Run the workflow manually (`workflow_dispatch`). A restore replaces state;
    without this you cannot get back to where you started.
-2. Use the **direct connection (port 5432)** — the same value as `DIRECT_URL`, never the
-   transaction pooler on 6543. `psql` restoring a schema needs a stable session, exactly as
-   `pg_dump` does.
+2. Use a **session-mode connection on port 5432** — never the transaction pooler on 6543.
+   `psql` restoring a schema needs a stable session, exactly as `pg_dump` does.
+   - From **your own machine**, the direct connection (`db.<ref>.supabase.co`, the same value as
+     `DIRECT_URL`) is fine if your network has IPv6.
+   - From **CI, or any IPv4-only network**, it is not: Supabase resolves that host to IPv6 only
+     on the free tier, and it fails with `Network is unreachable` before authentication is even
+     attempted. Use the **Session pooler** (`*.pooler.supabase.com:5432`) instead — this is the
+     same trap the backup workflow hit, and why `SUPABASE_DATABASE_URL` is the session pooler
+     rather than `DIRECT_URL`.
 3. Restore, then run `migrate:deploy` to confirm the schema is at the migration HEAD the code
    expects:
    ```bash
