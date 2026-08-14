@@ -198,11 +198,35 @@ is the first real example: `listMembers` looks up the caller's own membership ro
 requested org *before* returning anything about it, and returns a plain `404` (not `403`) for
 a real org the caller isn't in, so a non-member can't even confirm the org exists.
 
-Real organization creation lives behind `POST /api/organizations` (`apps/api`'s
-`organizations` module) — `apps/web` has a create-organization onboarding step
-(`apps/web/src/app/onboarding/`) that every new sign-up with zero organizations is redirected
-to (checked in `apps/web/src/app/page.tsx`, not in `proxy.ts`, since it needs a live org
-count, not just "is there a session").
+**Organization creation is administrator-only as of Phase 15.2/15.3.** It lives behind
+`POST /api/admin/organizations`, guarded by `SessionGuard` + `AdminGuard`. The
+`organizations` module is now read-only (`GET /api/organizations`, `GET /api/organizations/
+:id/members`).
+
+The self-service path that used to exist — `POST /api/organizations` plus an
+`apps/web/src/app/onboarding/` step every new sign-up was redirected to — has been removed
+outright. It was correct while onboarding was the way in, and became a hole the moment
+organization membership became the access gate (requirement 16): a user waiting to be admitted
+could simply create an organization and admit themselves. See
+`docs/ADR/0007-global-user-roles-and-administration.md`.
+
+What a new sign-up sees instead: `apps/web/src/app/page.tsx` still checks the caller's live
+organization count (in the page, not `proxy.ts`, since it needs a real count rather than just
+"is there a session"), but now *renders* an "awaiting access" state rather than redirecting.
+There is nowhere useful to redirect to — every route behind sign-in needs an organization — so
+a rendered explanation beats a loop between two empty pages.
+
+### Global roles (Phase 15.1)
+
+A second, independent role axis sits alongside `OrganizationRole`: `users.role`
+(`ADMIN` | `NORMAL_USER`), which governs access to the Administration surface and nothing
+else. Neither role implies the other, and **being an administrator grants no tenant data
+access** — `AdminService` reads users, organizations and memberships only. The tenant
+isolation rules above bind admins exactly as they bind everyone else.
+
+`SessionGuard` resolves that role from the `users` table on every request rather than reading
+it from the bearer token, so revoking an administrator takes effect on their next request
+instead of at token expiry. Full rules: `docs/SECURITY.md`'s "Global user roles" section.
 
 ## Instagram connect flow (Phase 8)
 

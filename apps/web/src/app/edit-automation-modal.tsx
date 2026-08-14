@@ -11,9 +11,12 @@ import { updateAutomationAction, deleteAutomationAction } from './automation-act
 export interface EditableAutomation {
   id: string;
   name: string;
+  /** Empty means the automation triggers on any comment (Phase 16.2, requirement 12). */
   keywords: string[];
   matchMode: 'CONTAINS' | 'WORD' | 'EXACT';
+  audience: 'ANY' | 'FOLLOWER' | 'NON_FOLLOWER';
   commentReply: string | null;
+  commentReplyVariations: string[];
   buttons: { title: string; url: string }[];
   dmMessage: string;
   isActive: boolean;
@@ -26,6 +29,21 @@ interface ButtonRow {
 }
 
 type MatchMode = 'contains' | 'word' | 'exact';
+type TriggerType = 'keywords' | 'any';
+type Audience = 'any' | 'follower' | 'non_follower';
+
+const MAX_REPLY_VARIATIONS = AUTOMATION_LIMITS.commentReplyVariationsMax;
+
+const TRIGGER_TYPES: { value: TriggerType; label: string }[] = [
+  { value: 'keywords', label: 'Specific keyword' },
+  { value: 'any', label: 'Any comments' },
+];
+
+const AUDIENCES: { value: Audience; label: string }[] = [
+  { value: 'any', label: 'Everyone' },
+  { value: 'follower', label: 'Followers only' },
+  { value: 'non_follower', label: 'Non-followers' },
+];
 
 // From packages/validation so the form and the schema cannot disagree - see AUTOMATION_LIMITS.
 const MAX_BUTTONS = AUTOMATION_LIMITS.buttonsMax;
@@ -93,8 +111,17 @@ export function EditAutomationModal({
   const [matchMode, setMatchMode] = useState<MatchMode>(
     automation.matchMode.toLowerCase() as MatchMode,
   );
+  // Derived from the stored keywords rather than persisted separately: "no keywords" IS the
+  // any-comments trigger, so there is no second source of truth to keep in sync.
+  const [triggerType, setTriggerType] = useState<TriggerType>(
+    automation.keywords.length === 0 ? 'any' : 'keywords',
+  );
+  const [audience, setAudience] = useState<Audience>(automation.audience.toLowerCase() as Audience);
   const [replyEnabled, setReplyEnabled] = useState(Boolean(automation.commentReply));
   const [commentReply, setCommentReply] = useState(automation.commentReply ?? '');
+  const [replyVariations, setReplyVariations] = useState<string[]>(
+    automation.commentReplyVariations,
+  );
   const [dmMessage, setDmMessage] = useState(automation.dmMessage);
   const [isActive, setIsActive] = useState(automation.isActive);
   const [buttons, setButtons] = useState<ButtonRow[]>(
@@ -104,7 +131,17 @@ export function EditAutomationModal({
 
   const limit = buttons.length > 0 ? LIMIT_WITH_BUTTONS : LIMIT_PLAIN;
   const overLimit = dmMessage.length > limit;
-  const canSave = name.trim().length > 0 && keywords.length > 0 && dmMessage.trim().length > 0;
+  const submittedKeywords = triggerType === 'any' ? [] : keywords;
+  const submittedVariations =
+    replyEnabled && commentReply.trim().length > 0
+      ? replyVariations.map((reply) => reply.trim()).filter((reply) => reply.length > 0)
+      : [];
+
+  // No keyword requirement on the any-comments trigger - see the create wizard for why.
+  const canSave =
+    name.trim().length > 0 &&
+    (triggerType === 'any' || keywords.length > 0) &&
+    dmMessage.trim().length > 0;
 
   // Restores the fields to what the server currently has, so cancelling genuinely discards
   // edits rather than leaving them staged for the next time the dialog opens.
@@ -116,8 +153,11 @@ export function EditAutomationModal({
     setKeywords(automation.keywords);
     setKeywordDraft('');
     setMatchMode(automation.matchMode.toLowerCase() as MatchMode);
+    setTriggerType(automation.keywords.length === 0 ? 'any' : 'keywords');
+    setAudience(automation.audience.toLowerCase() as Audience);
     setReplyEnabled(Boolean(automation.commentReply));
     setCommentReply(automation.commentReply ?? '');
+    setReplyVariations(automation.commentReplyVariations);
     setDmMessage(automation.dmMessage);
     setIsActive(automation.isActive);
     setButtons(automation.buttons.map((button, index) => ({ key: index, ...button })));
@@ -169,7 +209,10 @@ export function EditAutomationModal({
       {open && (
         // No backdrop click-to-close, same reasoning as the create wizard: a stray click must
         // not silently discard an in-progress edit.
-        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink-950/60 p-0 sm:items-center sm:p-6">
+        //
+        // `h-dvh` as well as `inset-0` - see create-automation-modal.tsx for why (Phase 16.3,
+        // requirement 15).
+        <div className="fixed inset-0 z-50 flex h-dvh items-start justify-center overflow-y-auto bg-ink-950/60 p-0 sm:items-center sm:p-6">
           {/* Delete-only mode: opened from the dashboard's trash icon, so there is no edit to
               perform. Rendering just the confirmation - rather than the edit form with a
               confirmation layered on top of it - keeps the intent unambiguous and stops the
@@ -193,7 +236,7 @@ export function EditAutomationModal({
               role="dialog"
               aria-modal="true"
               aria-label="Edit automation"
-              className="relative flex h-full w-full flex-col overflow-hidden bg-surface shadow-lg sm:h-auto sm:max-h-[85vh] sm:max-w-lg sm:rounded-xl sm:border sm:border-border"
+              className="relative flex h-full w-full flex-col overflow-hidden bg-surface shadow-lg sm:h-auto sm:max-h-[85dvh] sm:max-w-lg sm:rounded-xl sm:border sm:border-border"
             >
               <div className="flex items-center gap-2 border-b border-border px-4 py-3">
                 <h2 className="flex-1 truncate text-sm font-semibold text-text">Edit automation</h2>
@@ -217,9 +260,13 @@ export function EditAutomationModal({
                 <input type="hidden" name="automationId" value={automation.id} />
                 <input type="hidden" name="redirectTo" value={redirectTo} />
                 <input type="hidden" name="name" value={name} />
-                <input type="hidden" name="keywords" value={keywords.join(',')} />
+                <input type="hidden" name="keywords" value={submittedKeywords.join(',')} />
                 <input type="hidden" name="matchMode" value={matchMode} />
+                <input type="hidden" name="audience" value={audience} />
                 <input type="hidden" name="commentReply" value={replyEnabled ? commentReply : ''} />
+                {submittedVariations.map((reply, index) => (
+                  <input key={index} type="hidden" name="commentReplyVariation" value={reply} />
+                ))}
                 <input type="hidden" name="dmMessage" value={dmMessage} />
                 <input type="hidden" name="isActive" value={isActive ? 'true' : 'false'} />
                 {buttons
@@ -267,66 +314,122 @@ export function EditAutomationModal({
                     )}
                   </div>
 
+                  {/* Same trigger tabs as the create wizard (requirement 12), so an existing
+                      keyword automation can be switched to any-comments and back. */}
                   <div>
-                    <span className="block text-sm font-medium text-text">Match mode</span>
-                    <div className="mt-1 inline-flex rounded-md border border-border-strong p-0.5">
-                      {MATCH_MODES.map((mode) => (
+                    <div
+                      role="tablist"
+                      aria-label="What triggers this automation"
+                      className="flex rounded-md border border-border-strong p-0.5"
+                    >
+                      {TRIGGER_TYPES.map((option) => (
                         <button
-                          key={mode.value}
+                          key={option.value}
                           type="button"
-                          onClick={() => setMatchMode(mode.value)}
+                          role="tab"
+                          aria-selected={triggerType === option.value}
+                          onClick={() => setTriggerType(option.value)}
                           className={
-                            matchMode === mode.value
+                            triggerType === option.value
+                              ? 'flex-1 rounded-[5px] bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink'
+                              : 'flex-1 rounded-[5px] px-3 py-1.5 text-xs font-medium text-text-muted hover:text-text'
+                          }
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                    {triggerType === 'any' && (
+                      <p className="mt-1 text-xs text-text-muted">
+                        Every comment on this post or reel triggers the automation.
+                      </p>
+                    )}
+                  </div>
+
+                  <div>
+                    <span className="block text-sm font-medium text-text">Send to</span>
+                    <div className="mt-1 inline-flex rounded-md border border-border-strong p-0.5">
+                      {AUDIENCES.map((option) => (
+                        <button
+                          key={option.value}
+                          type="button"
+                          onClick={() => setAudience(option.value)}
+                          className={
+                            audience === option.value
                               ? 'rounded-[5px] bg-accent px-3 py-1 text-xs font-semibold text-accent-ink'
                               : 'rounded-[5px] px-3 py-1 text-xs font-medium text-text-muted hover:text-text'
                           }
                         >
-                          {mode.label}
+                          {option.label}
                         </button>
                       ))}
                     </div>
                   </div>
 
-                  <div>
-                    <span className="block text-sm font-medium text-text">Keywords</span>
-                    <div className="mt-1 flex gap-2">
-                      <input
-                        type="text"
-                        value={keywordDraft}
-                        onChange={(e) => setKeywordDraft(e.target.value)}
-                        onKeyDown={onKeywordKeyDown}
-                        placeholder="Type a keyword and press Enter"
-                        className="min-w-0 flex-1 rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
-                      />
-                      <button
-                        type="button"
-                        onClick={addKeyword}
-                        className="shrink-0 rounded-md border border-border-strong px-3 py-1.5 text-sm font-medium text-text-muted hover:bg-surface-2"
-                      >
-                        + Add
-                      </button>
-                    </div>
-                    {keywords.length > 0 && (
-                      <div className="mt-2 flex flex-wrap gap-1.5">
-                        {keywords.map((keyword) => (
-                          <span
-                            key={keyword}
-                            className="inline-flex max-w-full items-center gap-1.5 rounded-full bg-muted-bg px-2.5 py-1 text-xs font-medium text-text"
-                          >
-                            <span className="truncate">{keyword}</span>
+                  {triggerType === 'keywords' && (
+                    <>
+                      <div>
+                        <span className="block text-sm font-medium text-text">Match mode</span>
+                        <div className="mt-1 inline-flex rounded-md border border-border-strong p-0.5">
+                          {MATCH_MODES.map((mode) => (
                             <button
+                              key={mode.value}
                               type="button"
-                              onClick={() => setKeywords(keywords.filter((k) => k !== keyword))}
-                              aria-label={`Remove ${keyword}`}
-                              className="shrink-0 text-text-faint hover:text-text"
+                              onClick={() => setMatchMode(mode.value)}
+                              className={
+                                matchMode === mode.value
+                                  ? 'rounded-[5px] bg-accent px-3 py-1 text-xs font-semibold text-accent-ink'
+                                  : 'rounded-[5px] px-3 py-1 text-xs font-medium text-text-muted hover:text-text'
+                              }
                             >
-                              ✕
+                              {mode.label}
                             </button>
-                          </span>
-                        ))}
+                          ))}
+                        </div>
                       </div>
-                    )}
-                  </div>
+
+                      <div>
+                        <span className="block text-sm font-medium text-text">Keywords</span>
+                        <div className="mt-1 flex gap-2">
+                          <input
+                            type="text"
+                            value={keywordDraft}
+                            onChange={(e) => setKeywordDraft(e.target.value)}
+                            onKeyDown={onKeywordKeyDown}
+                            placeholder="Type a keyword and press Enter"
+                            className="min-w-0 flex-1 rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
+                          />
+                          <button
+                            type="button"
+                            onClick={addKeyword}
+                            className="shrink-0 rounded-md border border-border-strong px-3 py-1.5 text-sm font-medium text-text-muted hover:bg-surface-2"
+                          >
+                            + Add
+                          </button>
+                        </div>
+                        {keywords.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {keywords.map((keyword) => (
+                              <span
+                                key={keyword}
+                                className="inline-flex max-w-full items-center gap-1.5 rounded-full bg-muted-bg px-2.5 py-1 text-xs font-medium text-text"
+                              >
+                                <span className="truncate">{keyword}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => setKeywords(keywords.filter((k) => k !== keyword))}
+                                  aria-label={`Remove ${keyword}`}
+                                  className="shrink-0 text-text-faint hover:text-text"
+                                >
+                                  ✕
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
 
                   <div>
                     <div className="flex items-center justify-between gap-2">
@@ -350,10 +453,60 @@ export function EditAutomationModal({
                           className="mt-2 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
                         />
                         <ReplySuggestions value={commentReply} onAppend={setCommentReply} />
+
+                        {replyVariations.length > 0 && (
+                          <div className="mt-2 space-y-2">
+                            {replyVariations.map((reply, index) => (
+                              <div key={index} className="flex gap-2">
+                                <input
+                                  type="text"
+                                  value={reply}
+                                  maxLength={AUTOMATION_LIMITS.commentReplyMax}
+                                  onChange={(e) =>
+                                    setReplyVariations(
+                                      replyVariations.map((existing, i) =>
+                                        i === index ? e.target.value : existing,
+                                      ),
+                                    )
+                                  }
+                                  placeholder={`Alternative reply ${index + 1}`}
+                                  className="min-w-0 flex-1 rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setReplyVariations(
+                                      replyVariations.filter((_, i) => i !== index),
+                                    )
+                                  }
+                                  aria-label={`Remove alternative reply ${index + 1}`}
+                                  className="shrink-0 px-1 text-text-faint hover:text-text"
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {replyVariations.length < MAX_REPLY_VARIATIONS && (
+                          <button
+                            type="button"
+                            onClick={() => setReplyVariations([...replyVariations, ''])}
+                            disabled={commentReply.trim().length === 0}
+                            className="mt-2 w-full rounded-md border border-dashed border-border-strong px-3 py-2 text-xs font-medium text-text-muted hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            + Add another reply ({MAX_REPLY_VARIATIONS - replyVariations.length}{' '}
+                            left)
+                          </button>
+                        )}
                       </>
                     )}
                     <p className="mt-1 text-xs text-text-muted">
                       Turning this off clears the public reply.
+                      {replyEnabled && replyVariations.length > 0 && (
+                        <> One of the replies is picked at random per comment, not all of them.</>
+                      )}
                     </p>
                   </div>
 

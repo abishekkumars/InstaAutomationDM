@@ -1,7 +1,9 @@
 'use client';
 
 import { useActionState } from 'react';
+import { MIN_PASSWORD_LENGTH } from '@automationdm/validation';
 import { LoadingOverlay } from '../loader';
+import { PasswordField } from './password-field';
 import { registerAction, type AuthActionResult } from './actions';
 
 export function SignUpForm() {
@@ -26,21 +28,17 @@ export function SignUpForm() {
           className="mt-1 block w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none"
         />
       </div>
-      <div>
-        <label htmlFor="password" className="block text-sm font-medium text-text">
-          Password
-        </label>
-        <input
-          id="password"
-          name="password"
-          type="password"
-          required
-          minLength={8}
-          autoComplete="new-password"
-          className="mt-1 block w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none"
-        />
-        <p className="mt-1 text-xs text-text-muted">At least 8 characters.</p>
-      </div>
+      <PasswordField
+        name="password"
+        label="Password"
+        autoComplete="new-password"
+        minLength={MIN_PASSWORD_LENGTH}
+        hint={`At least ${MIN_PASSWORD_LENGTH} characters.`}
+      />
+      {/* No minLength here: the confirmation is checked for *equality*, and a browser-level
+          "too short" tooltip on this field would be a confusing way to report that the password
+          above is the one that is too short. registerSchema reports the real mismatch. */}
+      <PasswordField name="confirmPassword" label="Confirm password" autoComplete="new-password" />
       {state?.error && <p className="text-sm text-danger">{state.error}</p>}
       <button
         type="submit"

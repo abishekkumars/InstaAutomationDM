@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { z } from 'zod';
-import { AutomationMatchMode, Prisma } from '@automationdm/database';
+import { AutomationAudience, AutomationMatchMode, Prisma } from '@automationdm/database';
 import {
   AUTOMATION_LIMITS,
   createAutomationSchema,
@@ -31,9 +31,15 @@ export interface AutomationSummary {
   id: string;
   zernioPostId: string;
   name: string;
+  /** Empty means "any comment triggers" (Phase 16.2, requirement 12). */
   keywords: string[];
   matchMode: AutomationMatchMode;
+  /** Which commenters may be answered (Phase 16.2, requirement 11). */
+  audience: AutomationAudience;
   commentReply: string | null;
+  /** Alternate public replies. Zernio picks one at random per triggering comment from
+   * `[commentReply, ...commentReplyVariations]` (Phase 16.2, requirement 13). */
+  commentReplyVariations: string[];
   buttons: AutomationButton[];
   dmMessage: string;
   isActive: boolean;
@@ -71,6 +77,13 @@ export interface AutomationPostPreview {
 
 function toMatchMode(matchMode: 'contains' | 'word' | 'exact'): AutomationMatchMode {
   return matchMode.toUpperCase() as AutomationMatchMode;
+}
+
+// Zernio speaks lowercase snake_case ('non_follower'); the Prisma enum is SCREAMING_SNAKE
+// ('NON_FOLLOWER'). Same shape of mapping as toMatchMode above, and the reason both exist is
+// that neither vocabulary gets to dictate the other's casing.
+function toAudience(audience: 'any' | 'follower' | 'non_follower'): AutomationAudience {
+  return audience.toUpperCase() as AutomationAudience;
 }
 
 function toStats(stats: CommentAutomationStats): AutomationStats {
@@ -197,7 +210,9 @@ export class AutomationsService {
           name: remote.name,
           keywords: remote.keywords,
           matchMode: toMatchMode(remote.matchMode),
+          audience: toAudience(remote.audience),
           commentReply: remote.commentReply,
+          commentReplyVariations: remote.commentReplyVariations,
           buttons: remote.buttons.length
             ? (remote.buttons as unknown as Prisma.InputJsonValue)
             : undefined,
@@ -393,7 +408,9 @@ export class AutomationsService {
         name: parsed.name,
         keywords: parsed.keywords,
         matchMode: parsed.matchMode,
+        audience: parsed.audience,
         commentReply: parsed.commentReply,
+        commentReplyVariations: parsed.commentReplyVariations,
         buttons: parsed.buttons,
         dmMessage: parsed.dmMessage,
       });
@@ -420,7 +437,9 @@ export class AutomationsService {
           name: created.name,
           keywords: created.keywords,
           matchMode: toMatchMode(created.matchMode),
+          audience: toAudience(created.audience),
           commentReply: created.commentReply,
+          commentReplyVariations: created.commentReplyVariations,
           // Omitted (not an explicit JSON null) when empty - Prisma.JsonNull would work too,
           // but there's no need to distinguish "no buttons" from "column left at its default"
           // for this field; both mean the same thing. Cast, not a plain array literal: an
@@ -506,7 +525,9 @@ export class AutomationsService {
         name: parsed.name,
         keywords: parsed.keywords,
         matchMode: parsed.matchMode,
+        audience: parsed.audience,
         commentReply: parsed.commentReply,
+        commentReplyVariations: parsed.commentReplyVariations,
         buttons: parsed.buttons,
         dmMessage: parsed.dmMessage,
         isActive: parsed.isActive,
@@ -530,7 +551,9 @@ export class AutomationsService {
         name: updated.name,
         keywords: updated.keywords,
         matchMode: toMatchMode(updated.matchMode),
+        audience: toAudience(updated.audience),
         commentReply: updated.commentReply,
+        commentReplyVariations: updated.commentReplyVariations,
         // DbNull, not undefined: on update, "no buttons" has to be able to CLEAR the stored ones.
         // `undefined` means "leave this column alone" to Prisma, which is exactly the bug -
         // removing every button would appear to succeed on Zernio and silently do nothing here.
@@ -573,7 +596,9 @@ function toSummary(automation: {
   name: string;
   keywords: string[];
   matchMode: AutomationMatchMode;
+  audience: AutomationAudience;
   commentReply: string | null;
+  commentReplyVariations: string[];
   buttons: Prisma.JsonValue | null;
   dmMessage: string;
   isActive: boolean;
@@ -584,7 +609,9 @@ function toSummary(automation: {
     name: automation.name,
     keywords: automation.keywords,
     matchMode: automation.matchMode,
+    audience: automation.audience,
     commentReply: automation.commentReply,
+    commentReplyVariations: automation.commentReplyVariations,
     buttons: toButtons(automation.buttons),
     dmMessage: automation.dmMessage,
     isActive: automation.isActive,

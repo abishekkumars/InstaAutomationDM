@@ -2,10 +2,11 @@
 
 import { redirect } from 'next/navigation';
 import { callApi } from '@/lib/api';
+import { invalidateOrganizationCaches } from '@/lib/revalidate';
 
 // Plain <form action={...}> + a hidden input for organizationId (not .bind()) - matches the
-// FormData-reading style already used by app/(auth)/actions.ts and
-// app/onboarding/actions.ts in this codebase.
+// FormData-reading style already used by app/(auth)/actions.ts and app/admin/actions.ts in this
+// codebase.
 export async function connectInstagramAction(formData: FormData): Promise<void> {
   const organizationId = formData.get('organizationId');
   if (typeof organizationId !== 'string' || organizationId.length === 0) {
@@ -36,6 +37,12 @@ export async function connectInstagramAction(formData: FormData): Promise<void> 
   // skip the OAuth round trip entirely rather than sending the user through a flow that
   // would only re-connect what they already have.
   if (result.alreadyConnected) {
+    // Requirement 8 explicitly covers this branch too ("as well as already connected
+    // connection"). apps/api has just written or updated an `instagram_accounts` row during
+    // reconciliation, so the dashboard's cached reads are stale in exactly the same way as
+    // after a fresh connect - and this is the path most likely to look broken without it,
+    // since the user pressed a button and would otherwise see no change at all.
+    invalidateOrganizationCaches(organizationId, '/');
     redirect('/?instagram=already-connected');
   }
 

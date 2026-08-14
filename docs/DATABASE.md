@@ -104,6 +104,17 @@ and why `Credentials` over an OAuth provider). Fields:
   rather than folding into a single `"provider:id"` string so each half stays independently
   queryable/indexable, and so a provider migration (if it ever happens) can filter on
   `authProvider` directly.
+- `role` — `UserRole` enum (`ADMIN` | `NORMAL_USER`), **not null, defaults to
+  `NORMAL_USER`** (Phase 15.1). The user's role across the whole application, deliberately
+  distinct from `OrganizationMember.role`, which scopes to a single organization — neither
+  implies the other. Written server-side only: at registration, by the `ADMIN_EMAIL`
+  bootstrap, or by an existing admin's explicit action. Never read from an API request body,
+  and never read from the `apps/web` → `apps/api` bearer token either — `SessionGuard`
+  re-reads this column on every request so a revoked admin loses access immediately rather
+  than at the end of their token's life. The `NOT NULL DEFAULT` is load-bearing, not
+  cosmetic: it means an insert that forgets to mention `role` cannot accidentally produce an
+  admin. Full rules and rationale: `docs/SECURITY.md`'s "Global user roles" section and
+  `docs/ADR/0007-global-user-roles-and-administration.md`.
 - `passwordHash` — nullable `String`. Bcrypt hash (`bcryptjs`, cost factor 12) of the
   account password, used by the `Credentials` provider's `authorize()` callback
   (`apps/web/src/auth.ts`). Nullable because a user created by a future OAuth provider would
@@ -202,10 +213,33 @@ the automation itself; this table only mirrors the config it was created with.
   `POST /v1/comment-automations` takes an array of keywords per automation
   (`docs/ZERNIO-INTEGRATION.md`), and this project's product model is "one keyword, or a
   short list of keywords."
+  - **An empty array is meaningful, not invalid** (Phase 16.2): it means *"any comment on
+    this post triggers the automation."* That is Zernio's own documented semantics for an
+    empty keyword list, not a local convention — its spec says verbatim *"empty = any comment
+    triggers"*. This is what the create wizard's "Any comments" tab sends, and it is why
+    `createAutomationSchema` no longer carries a `.min(1)` on this field. `matchMode` is
+    irrelevant when the list is empty, since there is nothing to match against.
 - `matchMode` — `AutomationMatchMode` enum (`CONTAINS`, `WORD`, `EXACT`), defaults to
   `CONTAINS` — same three values, same default, as Zernio's own `matchMode`.
+- `audience` — `AutomationAudience` enum (`ANY`, `FOLLOWER`, `NON_FOLLOWER`), **not null,
+  defaults to `ANY`** (Phase 16.2). Mirrors Zernio's `audience.followerStatus`, which
+  restricts who an automation will answer. `ANY` is the behaviour every automation had before
+  this column existed, so the default backfills existing rows correctly and no data migration
+  was needed.
+  - Best-effort by nature: Instagram only discloses the follow relationship for people who
+    have messaged the account before. Zernio's `audience.whenUnknown` decides what happens for
+    everyone else, and this project leaves it at Zernio's default (`send`) rather than
+    silently dropping DMs to commenters whose status simply cannot be determined — see
+    `docs/ZERNIO-INTEGRATION.md`. Only the follower-status axis is stored; Zernio's
+    `minFollowerCount` and `followGate` copy are real but out of scope.
 - `commentReply` — nullable `String`. Zernio's own API treats the public reply as optional;
   a DM-only automation with no public reply is a normal, supported configuration.
+- `commentReplyVariations` — `String[]` (Phase 16.2), up to 5, mirroring Zernio's own
+  `commentReplyVariations` (`maxItems: 5`). **Zernio picks ONE at random per triggering
+  comment** from `[commentReply, ...commentReplyVariations]` — it does not post all of them.
+  The point is that repeat commenters on the same post do not all receive a visibly identical
+  reply. Empty when the automation has a single fixed reply. Meaningless without a
+  `commentReply` to rotate against, which `createAutomationSchema` enforces.
 - `buttons` — nullable `Json` (Phase 10.1), `[{ title, url }]`, up to 3. A JSON column, not a
   separate table: at most 3 small, fixed-shape items never queried independently of their
   automation. Only `title`+`url` are stored — this project always sends Zernio's `type: url`
@@ -285,6 +319,21 @@ Schema changes always go through a generated migration file committed to the rep
   `AutomationMatchMode` enum.
 - `20260812090000_add_automation_buttons` (Phase 10.1) adds the nullable `automations.buttons`
   JSON column.
+- `20260814135948_add_user_role` (Phase 15.1) creates the `UserRole` enum and adds
+  `users.role NOT NULL DEFAULT 'NORMAL_USER'`. Purely additive — existing rows are backfilled
+  to `NORMAL_USER` by the default, so no data migration accompanies it and it is safe to
+  `migrate:deploy` against an environment with live data.
+- `20260814161206_add_automation_audience_and_reply_variations` (Phase 16.2) creates the
+  `AutomationAudience` enum and adds `automations.audience NOT NULL DEFAULT 'ANY'` plus
+  `automations.comment_reply_variations TEXT[]`. Also additive: the enum default backfills
+  existing rows to the behaviour they already had, and a Postgres text array defaults to
+  empty. Safe to `migrate:deploy` against live data.
+
+Both Phase 15/16 migrations are additive by design. Nothing in this change set drops a column
+or a table, so no backup-and-restore step is required before deploying them — which is
+deliberate, since the alternative design considered for requirement 4 (removing
+`organizations` entirely) would have needed exactly that. See
+`docs/ADR/0007-global-user-roles-and-administration.md`.
 
 ## Prisma client
 

@@ -2,6 +2,7 @@
 
 import { useActionState } from 'react';
 import { LoadingOverlay } from '../loader';
+import { PasswordField } from './password-field';
 import { signInAction, type AuthActionResult } from './actions';
 
 export function SignInForm() {
@@ -26,19 +27,7 @@ export function SignInForm() {
           className="mt-1 block w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none"
         />
       </div>
-      <div>
-        <label htmlFor="password" className="block text-sm font-medium text-text">
-          Password
-        </label>
-        <input
-          id="password"
-          name="password"
-          type="password"
-          required
-          autoComplete="current-password"
-          className="mt-1 block w-full rounded-md border border-border-strong bg-surface px-3 py-2 text-sm text-text shadow-sm focus:border-accent focus:outline-none"
-        />
-      </div>
+      <PasswordField name="password" label="Password" autoComplete="current-password" />
       {state?.error && <p className="text-sm text-danger">{state.error}</p>}
       <button
         type="submit"

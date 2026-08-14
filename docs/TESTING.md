@@ -1,7 +1,24 @@
 # Testing Strategy
 
-Status: Phase 8. Real test suites are added alongside each phase's implementation, not
+Status: Phase 16. Real test suites are added alongside each phase's implementation, not
 written speculatively ahead of the code they test.
+
+**Where coverage actually is, as of Phase 16** — worth stating plainly, because the plan below
+describes more than exists:
+
+| Package | Runner | Suites |
+|---|---|---|
+| `apps/api` | Vitest + Supertest | **102 tests** across 5 e2e suites (auth/session guard, admin, organizations, instagram, automations) |
+| `packages/database` | Vitest | 16 (schema constraints against real Postgres) |
+| `packages/validation` | Vitest (added Phase 15.2a) | 16 (`slugFromEmail` and the organization schema) |
+| `packages/shared` | Vitest (added Phase 15.1) | 10 (`ADMIN_EMAIL` bootstrap rules) |
+| **`apps/web`** | **none** | **0** |
+
+**`apps/web` has no test runner and no automated tests at all.** Everything in it — every form,
+every server action, the Administration screen, the session-expiry dialog — is verified only by
+TypeScript, a production build, and manual browser checks recorded in the phase reports. This is
+the single largest gap in this project's testing, and it is a known, accepted one rather than an
+oversight; the Playwright plan below has never been started.
 
 ## Tooling
 
@@ -18,8 +35,12 @@ written speculatively ahead of the code they test.
 **Unit** (`packages/automation-engine` if it ends up holding real logic — see
 `docs/AUTOMATION-ENGINE.md`'s open question, `packages/zernio`, `packages/validation`,
 NestJS services in isolation):
-- Keyword matching (contains/word/exact, case sensitivity, empty-keyword = match-any) — only
-  if matching turns out to be our own responsibility rather than Zernio's.
+- ~~Keyword matching (contains/word/exact, case sensitivity, empty-keyword = match-any)~~ —
+  **resolved: not our responsibility.** Zernio does the matching server-side, so there is no
+  local matching logic to unit-test and `packages/automation-engine` was never built (see
+  `docs/AUTOMATION-ENGINE.md`). Note that "empty keywords = match any" is nonetheless real —
+  it is Zernio's rule, and this project sends `[]` to invoke it (Phase 16.2); what is tested is
+  that the empty array *reaches* Zernio, not that we match on it.
 - Tenant authorization at the service layer (org A cannot fetch org B's rows — see below).
 - Webhook idempotency logic (duplicate event id → no-op).
 - `ZernioInstagramProvider` adapter behavior against a mocked HTTP layer (never real Zernio).
@@ -34,9 +55,13 @@ NestJS services in isolation):
 - Automation execution: a webhook for a tracked post/reel + matching keyword results in the
   expected `automation_runs` row, using a mocked Zernio provider.
 
-**E2E** (Playwright, against a fully running local stack):
+**E2E** (Playwright, against a fully running local stack) — **not built; still a plan**. Note
+that step 2 no longer describes the product: organizations are created by an administrator, not
+by the signing-up user (Phase 15.3).
 1. Sign in.
-2. Create organization.
+2. ~~Create organization.~~ Sign in as an administrator and assign the new user an organization
+   through the Administration screen — a user with no membership can go no further, which is
+   itself worth asserting.
 3. Connect an Instagram account through a mocked/test Zernio integration.
 4. List posts/reels, click one.
 5. Create a comment automation for it (keyword, public reply, DM).

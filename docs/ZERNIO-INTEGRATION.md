@@ -142,6 +142,12 @@ is now resolved, not assumed.
   - `keywords` is a **string array**, not a single string (`type: array, items: {type:
     string}`) - `InstagramProvider.createCommentAutomation` and the create form both take
     multiple keywords for exactly this reason, not one.
+    - **An empty array means "any comment triggers"** - the spec's own wording is `Trigger
+      keywords (empty = any comment triggers)`, and `keywords` is absent from the endpoint's
+      `required` list (`[profileId, accountId, name, dmMessage]`). Re-verified against the live
+      spec in Phase 16.2, and this is what the create wizard's "Any comments" tab sends. It is
+      therefore sent as `[]` rather than being omitted: an absent key and an explicitly empty
+      one are not interchangeable here.
   - `platformPostId` and `postId` are **two different ids, and must not be swapped** (corrected
     in Phase 10.2b - this was previously wrong in both this doc and the code):
     - `platformPostId` is *"Platform media/post ID"* - **Instagram's own media id**, i.e. the
@@ -172,10 +178,32 @@ is now resolved, not assumed.
     (boolean, default **true**) wraps `url` buttons in a tracked redirect so clicks are
     counted - left at its default; this project never sends it explicitly, since the default
     is exactly the behavior wanted (see the `stats` fields below).
+  - `audience` (Phase 16.2 - **real, built**): restricts who the automation answers.
+    `audience.followerStatus` is `any` (default) | `follower` | `non_follower`, and maps onto
+    this project's `AutomationAudience` enum. Sent as a nested object (`{followerStatus}`) and
+    **omitted entirely when `any`**, since that is Zernio's own default - omitting keeps the
+    body minimal and means a PATCH that is not changing the audience does not re-assert it.
+    - The object also carries `minFollowerCount` and `whenUnknown` (`send` | `skip` |
+      `verify`). Neither is sent: this project stores only the follower-status axis, and
+      `whenUnknown` is deliberately left at Zernio's `send` default. **Instagram only reveals
+      the follow relationship for people who have messaged the account before**, so a stricter
+      setting would silently drop DMs to commenters whose status cannot be determined - which
+      users read as the automation being broken rather than as a filter working. The create
+      wizard says so in as many words when a restriction is selected.
+    - `followGate` (the one-tap confirmation copy used by `whenUnknown: verify`) is real but
+      not used, since `verify` is not used.
+  - `commentReplyVariations` (Phase 16.2 - **real, built**): up to 5 (`maxItems: 5`) alternate
+    public replies. Zernio picks **one at random per triggering comment** from
+    `[commentReply, ...commentReplyVariations]` - it does **not** post all of them, which is
+    the single most important thing to know about this field. Omitted when empty on create;
+    on PATCH an explicit `[]` survives, because that is how a set of variations is cleared.
+    Requires a `commentReply` to rotate against, enforced by `createAutomationSchema`.
+    - `dmMessageVariations` is the same idea for the DM body (also `maxItems: 5`). Real, and
+      **not** used - the requirement that introduced rotation was about public replies only.
   - Not used by this project (documented for completeness, not built): `trigger:
-    story_reply`, `template`, `*Variations` rotation, `clickTag`,
-    `dmDelaySeconds`/`commentReplyDelaySeconds`, `audience`/`followGate`,
-    `excludeKeywords`/`typoTolerance`, `alsoMatchInDms`.
+    story_reply`, `template`, `dmMessageVariations`, `clickTag`,
+    `dmDelaySeconds`/`commentReplyDelaySeconds`, `excludeKeywords`/`typoTolerance`,
+    `alsoMatchInDms`.
   - Response: `{ automation: { id, name, platform, trigger, platformPostId, keywords,
     matchMode, commentReply, buttons, dmMessage, isActive, stats: {totalTriggered, totalSent,
     totalFailed}, createdAt, ... } }`. **Does not echo `accountId`** (list/get do) -

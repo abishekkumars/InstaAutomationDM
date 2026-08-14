@@ -19,3 +19,25 @@ export const credentialsSchema = z.object({
 });
 
 export type Credentials = z.infer<typeof credentialsSchema>;
+
+/** Registration (Phase 15.4, requirement 2): the sign-in credentials plus a confirmation field.
+ *
+ * A separate schema rather than a flag on `credentialsSchema`, because the two are used at
+ * genuinely different moments: signing in must never ask for a confirmation, and Auth.js's
+ * `authorize()` callback parses the sign-in shape. Extending keeps the email/password rules
+ * themselves in one place, so they cannot drift between the two forms.
+ *
+ * Note what is still absent: no `role` field, here or anywhere else on a creation path. That is
+ * requirement 20, and the absence is the enforcement - see docs/SECURITY.md. */
+export const registerSchema = credentialsSchema
+  .extend({
+    confirmPassword: z.string().min(1, 'Please confirm your password.'),
+  })
+  .refine((values) => values.password === values.confirmPassword, {
+    // Reported against the confirmation field, not the form as a whole, so the message lands
+    // next to the input the user has to fix rather than floating above both.
+    path: ['confirmPassword'],
+    message: 'Those passwords do not match.',
+  });
+
+export type RegisterInput = z.infer<typeof registerSchema>;

@@ -1,4 +1,5 @@
 import type {
+  AutomationAudience,
   CommentAutomation,
   ConnectedInstagramAccount,
   CreateCommentAutomationInput,
@@ -179,9 +180,17 @@ export class ZernioInstagramProvider implements InstagramProvider {
         platformPostId: input.platformPostId,
         postId: input.zernioPostId,
         name: input.name,
+        // Sent as-is, including `[]`. Zernio's spec is explicit that an empty keyword list means
+        // "any comment triggers" (verified against the live OpenAPI spec, Phase 16.2), which is
+        // exactly what the wizard's "Any comments" tab asks for.
         keywords: input.keywords,
         matchMode: input.matchMode,
+        audience: toRawAudience(input.audience),
         commentReply: input.commentReply,
+        // Omitted (not []) when empty, same convention as `buttons` below.
+        commentReplyVariations: input.commentReplyVariations?.length
+          ? input.commentReplyVariations
+          : undefined,
         // Omit entirely (not []) when there are none - undefined keys are dropped by
         // JSON.stringify, same as commentReply above; Zernio's own docs say either is
         // equivalent for "no buttons," but omitting keeps the request body minimal.
@@ -213,7 +222,11 @@ export class ZernioInstagramProvider implements InstagramProvider {
         name: input.name,
         keywords: input.keywords,
         matchMode: input.matchMode,
+        audience: toRawAudience(input.audience),
         commentReply: input.commentReply,
+        // Same explicit-undefined check as `buttons`: `[]` must survive, because that is how a
+        // set of reply variations gets cleared.
+        commentReplyVariations: input.commentReplyVariations,
         buttons: input.buttons === undefined ? undefined : input.buttons.map(toRawDmButton),
         dmMessage: input.dmMessage,
         isActive: input.isActive,
@@ -334,6 +347,22 @@ function toRawDmButton(button: DmButton): RawDmButton {
   return { type: 'url', title: button.title, url: button.url };
 }
 
+/** Wraps a follower-status filter in the nested object Zernio's API expects, or omits it.
+ *
+ * `'any'` sends nothing at all rather than `{followerStatus: 'any'}`. That is Zernio's own
+ * default, so the two are equivalent - but omitting it keeps the request body minimal and, more
+ * usefully, means a PATCH that is not changing the audience does not silently re-assert it.
+ *
+ * `whenUnknown` is deliberately left at Zernio's default (`send`). Instagram only discloses the
+ * follow relationship for people who have messaged the account before, so a stricter setting
+ * would silently drop DMs to commenters whose status simply cannot be determined - which reads
+ * as the automation being broken. See docs/ZERNIO-INTEGRATION.md. */
+function toRawAudience(
+  audience: AutomationAudience | undefined,
+): { followerStatus: AutomationAudience } | undefined {
+  return audience && audience !== 'any' ? { followerStatus: audience } : undefined;
+}
+
 function fromRawDmButtons(buttons: RawDmButton[] | undefined): DmButton[] {
   return (buttons ?? [])
     .filter(
@@ -358,7 +387,9 @@ interface RawCommentAutomation {
   name: string;
   keywords?: string[];
   matchMode?: 'contains' | 'word' | 'exact';
+  audience?: { followerStatus?: AutomationAudience };
   commentReply?: string;
+  commentReplyVariations?: string[];
   buttons?: RawDmButton[];
   dmMessage: string;
   isActive?: boolean;
@@ -384,7 +415,11 @@ function toCommentAutomation(automation: RawCommentAutomation): CommentAutomatio
     name: automation.name,
     keywords: automation.keywords ?? [],
     matchMode: automation.matchMode ?? 'contains',
+    // Zernio omits `audience` entirely on automations that never set one, which means the same
+    // thing as `any`.
+    audience: automation.audience?.followerStatus ?? 'any',
     commentReply: automation.commentReply ?? null,
+    commentReplyVariations: automation.commentReplyVariations ?? [],
     buttons: fromRawDmButtons(automation.buttons),
     dmMessage: automation.dmMessage,
     isActive: automation.isActive ?? true,

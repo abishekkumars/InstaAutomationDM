@@ -14,6 +14,41 @@ interface ButtonRow {
 }
 
 type MatchMode = 'contains' | 'word' | 'exact';
+type TriggerType = 'keywords' | 'any';
+type Audience = 'any' | 'follower' | 'non_follower';
+
+const MAX_REPLY_VARIATIONS = AUTOMATION_LIMITS.commentReplyVariationsMax;
+
+/** Requirement 12: the trigger is now a choice between matching keywords and answering every
+ * comment. "Any comments" is not a separate Zernio feature - it is an empty `keywords` array,
+ * which Zernio documents as "any comment triggers". */
+const TRIGGER_TYPES: { value: TriggerType; label: string; hint: string }[] = [
+  {
+    value: 'keywords',
+    label: 'Specific keyword',
+    hint: 'Only comments containing one of your keywords trigger the automation.',
+  },
+  {
+    value: 'any',
+    label: 'Any comments',
+    hint: 'Every comment on this post or reel triggers the automation.',
+  },
+];
+
+/** Requirement 11: Zernio's `audience.followerStatus`. */
+const AUDIENCES: { value: Audience; label: string; hint: string }[] = [
+  { value: 'any', label: 'Everyone', hint: 'Reply to any commenter.' },
+  {
+    value: 'follower',
+    label: 'Followers only',
+    hint: 'Only send to accounts that follow you.',
+  },
+  {
+    value: 'non_follower',
+    label: 'Non-followers',
+    hint: 'Only send to accounts that do not follow you yet.',
+  },
+];
 
 // Re-exported from packages/validation so the form and the schema can never disagree about a
 // limit - see AUTOMATION_LIMITS for why these are centralised.
@@ -59,11 +94,16 @@ export function CreateAutomationModal({
 
   const [name, setName] = useState(() => defaultAutomationName(postCaption));
   const [isActive, setIsActive] = useState(true);
+  const [triggerType, setTriggerType] = useState<TriggerType>('keywords');
   const [keywords, setKeywords] = useState<string[]>([]);
   const [keywordDraft, setKeywordDraft] = useState('');
   const [matchMode, setMatchMode] = useState<MatchMode>('contains');
+  const [audience, setAudience] = useState<Audience>('any');
   const [replyEnabled, setReplyEnabled] = useState(false);
   const [commentReply, setCommentReply] = useState('');
+  /** Alternate public replies. Zernio rotates over `[commentReply, ...these]`, one picked at
+   * random per triggering comment - it does not post all of them. */
+  const [replyVariations, setReplyVariations] = useState<string[]>([]);
 
   const [dmMessage, setDmMessage] = useState('');
   const [buttons, setButtons] = useState<ButtonRow[]>([]);
@@ -71,18 +111,34 @@ export function CreateAutomationModal({
 
   const limit = buttons.length > 0 ? LIMIT_WITH_BUTTONS : LIMIT_PLAIN;
   const overLimit = dmMessage.length > limit;
-  const step1Valid = name.trim().length > 0 && keywords.length > 0;
+  // On the "Any comments" tab there are no keywords to require - that is the whole point of it.
+  const step1Valid = name.trim().length > 0 && (triggerType === 'any' || keywords.length > 0);
   const step2Valid = dmMessage.trim().length > 0 && !overLimit;
+
+  /** What actually gets submitted. On the "Any comments" tab this is empty, which is how Zernio
+   * is told to trigger on everything - the typed keywords are kept in state rather than cleared,
+   * so switching tabs back and forth does not silently destroy them. */
+  const submittedKeywords = triggerType === 'any' ? [] : keywords;
+
+  /** Only non-blank alternates are worth sending, and only when there is a primary reply for
+   * Zernio to rotate them against (the API rejects variations without one). */
+  const submittedVariations =
+    replyEnabled && commentReply.trim().length > 0
+      ? replyVariations.map((reply) => reply.trim()).filter((reply) => reply.length > 0)
+      : [];
 
   function reset() {
     setStep(1);
     setName(defaultAutomationName(postCaption));
     setIsActive(true);
+    setTriggerType('keywords');
     setKeywords([]);
     setKeywordDraft('');
     setMatchMode('contains');
+    setAudience('any');
     setReplyEnabled(false);
     setCommentReply('');
+    setReplyVariations([]);
     setDmMessage('');
     setButtons([]);
     setNextButtonKey(0);
@@ -138,12 +194,17 @@ export function CreateAutomationModal({
         // No onClick={close} on the backdrop: a stray click outside the dialog used to discard
         // everything typed so far with no warning and no undo. Closing is deliberate only -
         // the ✕ button or Cancel.
-        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink-950/60 p-0 sm:items-center sm:p-6">
+        //
+        // `h-dvh` as well as `inset-0` (Phase 16.3, requirement 15): on mobile browsers a fixed,
+        // inset-0 element is sized against the large viewport, so this scroll container extended
+        // behind the URL bar and its last rows - including the Next/Confirm footer - could not be
+        // reached. See layout.tsx for the full explanation.
+        <div className="fixed inset-0 z-50 flex h-dvh items-start justify-center overflow-y-auto bg-ink-950/60 p-0 sm:items-center sm:p-6">
           <div
             role="dialog"
             aria-modal="true"
             aria-label="Create automation"
-            className="flex h-full w-full flex-col overflow-hidden bg-surface shadow-lg sm:h-auto sm:max-h-[85vh] sm:max-w-lg sm:rounded-xl sm:border sm:border-border"
+            className="flex h-full w-full flex-col overflow-hidden bg-surface shadow-lg sm:h-auto sm:max-h-[85dvh] sm:max-w-lg sm:rounded-xl sm:border sm:border-border"
           >
             {/* Steps 1-2 are a plain <div>; only step 3 renders a real <form>. A <form
                 action={serverAction}> is submitted by React itself, and preventDefault() in an
@@ -159,9 +220,15 @@ export function CreateAutomationModal({
               <input type="hidden" name="accountId" value={accountId} />
               <input type="hidden" name="postId" value={postId} />
               <input type="hidden" name="name" value={name} />
-              <input type="hidden" name="keywords" value={keywords.join(',')} />
+              <input type="hidden" name="keywords" value={submittedKeywords.join(',')} />
               <input type="hidden" name="matchMode" value={matchMode} />
+              <input type="hidden" name="audience" value={audience} />
               <input type="hidden" name="commentReply" value={replyEnabled ? commentReply : ''} />
+              {/* One field per alternate, read back with getAll() - same positional convention as
+                  the button rows below. */}
+              {submittedVariations.map((reply, index) => (
+                <input key={index} type="hidden" name="commentReplyVariation" value={reply} />
+              ))}
               <input type="hidden" name="dmMessage" value={dmMessage} />
               <input type="hidden" name="isActive" value={isActive ? 'true' : 'false'} />
               {buttons
@@ -223,70 +290,138 @@ export function CreateAutomationModal({
                       )}
                     </div>
 
+                    {/* Requirement 12: the two trigger tabs. Rendered as a tablist rather than a
+                        toggle because the choice changes which fields exist below it. */}
                     <div>
-                      <span className="block text-sm font-medium text-text">Match mode</span>
-                      <div className="mt-1 inline-flex rounded-md border border-border-strong p-0.5">
-                        {MATCH_MODES.map((mode) => (
+                      <div
+                        role="tablist"
+                        aria-label="What triggers this automation"
+                        className="flex rounded-md border border-border-strong p-0.5"
+                      >
+                        {TRIGGER_TYPES.map((option) => (
                           <button
-                            key={mode.value}
+                            key={option.value}
                             type="button"
-                            onClick={() => setMatchMode(mode.value)}
+                            role="tab"
+                            aria-selected={triggerType === option.value}
+                            onClick={() => setTriggerType(option.value)}
                             className={
-                              matchMode === mode.value
+                              triggerType === option.value
+                                ? 'flex-1 rounded-[5px] bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink'
+                                : 'flex-1 rounded-[5px] px-3 py-1.5 text-xs font-medium text-text-muted hover:text-text'
+                            }
+                          >
+                            {option.label}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="mt-1 text-xs text-text-muted">
+                        {TRIGGER_TYPES.find((option) => option.value === triggerType)?.hint}
+                      </p>
+                    </div>
+
+                    {/* Match mode and the keyword list are hidden entirely on the "Any comments"
+                        tab, exactly as requirement 12 asks - with no keywords there is nothing
+                        for a match mode to apply to, so showing a disabled control would just
+                        raise a question it cannot answer. */}
+                    {triggerType === 'keywords' && (
+                      <>
+                        <div>
+                          <span className="block text-sm font-medium text-text">Match mode</span>
+                          <div className="mt-1 inline-flex rounded-md border border-border-strong p-0.5">
+                            {MATCH_MODES.map((mode) => (
+                              <button
+                                key={mode.value}
+                                type="button"
+                                onClick={() => setMatchMode(mode.value)}
+                                className={
+                                  matchMode === mode.value
+                                    ? 'rounded-[5px] bg-accent px-3 py-1 text-xs font-semibold text-accent-ink'
+                                    : 'rounded-[5px] px-3 py-1 text-xs font-medium text-text-muted hover:text-text'
+                                }
+                              >
+                                {mode.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div>
+                          <span className="block text-sm font-medium text-text">
+                            Should include any of these keywords
+                          </span>
+                          <div className="mt-1 flex gap-2">
+                            <input
+                              type="text"
+                              value={keywordDraft}
+                              onChange={(e) => setKeywordDraft(e.target.value)}
+                              onKeyDown={onKeywordKeyDown}
+                              placeholder="Type a keyword and press Enter"
+                              className="flex-1 rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
+                            />
+                            <button
+                              type="button"
+                              onClick={addKeyword}
+                              className="rounded-md border border-border-strong px-3 py-1.5 text-sm font-medium text-text-muted hover:bg-surface-2"
+                            >
+                              + Add
+                            </button>
+                          </div>
+                          {keywords.length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-1.5">
+                              {keywords.map((keyword) => (
+                                <span
+                                  key={keyword}
+                                  className="inline-flex items-center gap-1.5 rounded-full bg-muted-bg px-2.5 py-1 text-xs font-medium text-text"
+                                >
+                                  {keyword}
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setKeywords(keywords.filter((k) => k !== keyword))
+                                    }
+                                    aria-label={`Remove ${keyword}`}
+                                    className="text-text-faint hover:text-text"
+                                  >
+                                    ✕
+                                  </button>
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          <p className="mt-1 text-xs text-text-muted">
+                            Any comment matching one of these triggers the automation. At least one
+                            is required.
+                          </p>
+                        </div>
+                      </>
+                    )}
+
+                    {/* Requirement 11. Zernio only learns the follow relationship for people who
+                        have messaged the account before, so this is a best-effort filter - see
+                        docs/ZERNIO-INTEGRATION.md. */}
+                    <div>
+                      <span className="block text-sm font-medium text-text">Send to</span>
+                      <div className="mt-1 inline-flex rounded-md border border-border-strong p-0.5">
+                        {AUDIENCES.map((option) => (
+                          <button
+                            key={option.value}
+                            type="button"
+                            onClick={() => setAudience(option.value)}
+                            className={
+                              audience === option.value
                                 ? 'rounded-[5px] bg-accent px-3 py-1 text-xs font-semibold text-accent-ink'
                                 : 'rounded-[5px] px-3 py-1 text-xs font-medium text-text-muted hover:text-text'
                             }
                           >
-                            {mode.label}
+                            {option.label}
                           </button>
                         ))}
                       </div>
-                    </div>
-
-                    <div>
-                      <span className="block text-sm font-medium text-text">
-                        Should include any of these keywords
-                      </span>
-                      <div className="mt-1 flex gap-2">
-                        <input
-                          type="text"
-                          value={keywordDraft}
-                          onChange={(e) => setKeywordDraft(e.target.value)}
-                          onKeyDown={onKeywordKeyDown}
-                          placeholder="Type a keyword and press Enter"
-                          className="flex-1 rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
-                        />
-                        <button
-                          type="button"
-                          onClick={addKeyword}
-                          className="rounded-md border border-border-strong px-3 py-1.5 text-sm font-medium text-text-muted hover:bg-surface-2"
-                        >
-                          + Add
-                        </button>
-                      </div>
-                      {keywords.length > 0 && (
-                        <div className="mt-2 flex flex-wrap gap-1.5">
-                          {keywords.map((keyword) => (
-                            <span
-                              key={keyword}
-                              className="inline-flex items-center gap-1.5 rounded-full bg-muted-bg px-2.5 py-1 text-xs font-medium text-text"
-                            >
-                              {keyword}
-                              <button
-                                type="button"
-                                onClick={() => setKeywords(keywords.filter((k) => k !== keyword))}
-                                aria-label={`Remove ${keyword}`}
-                                className="text-text-faint hover:text-text"
-                              >
-                                ✕
-                              </button>
-                            </span>
-                          ))}
-                        </div>
-                      )}
                       <p className="mt-1 text-xs text-text-muted">
-                        Any comment matching one of these triggers the automation. At least one is
-                        required.
+                        {AUDIENCES.find((option) => option.value === audience)?.hint}
+                        {audience !== 'any' &&
+                          ' Instagram only reveals this for people who have messaged you before; anyone else is still sent to.'}
                       </p>
                     </div>
 
@@ -312,11 +447,73 @@ export function CreateAutomationModal({
                             className="mt-2 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
                           />
                           <ReplySuggestions value={commentReply} onAppend={setCommentReply} />
+
+                          {/* Requirement 13: up to 5 alternates on top of the reply above. */}
+                          {replyVariations.length > 0 && (
+                            <div className="mt-2 space-y-2">
+                              {replyVariations.map((reply, index) => (
+                                <div key={index} className="flex gap-2">
+                                  <input
+                                    type="text"
+                                    value={reply}
+                                    maxLength={AUTOMATION_LIMITS.commentReplyMax}
+                                    onChange={(e) =>
+                                      setReplyVariations(
+                                        replyVariations.map((existing, i) =>
+                                          i === index ? e.target.value : existing,
+                                        ),
+                                      )
+                                    }
+                                    placeholder={`Alternative reply ${index + 1}`}
+                                    className="flex-1 rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setReplyVariations(
+                                        replyVariations.filter((_, i) => i !== index),
+                                      )
+                                    }
+                                    aria-label={`Remove alternative reply ${index + 1}`}
+                                    className="px-1 text-text-faint hover:text-text"
+                                  >
+                                    ✕
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {replyVariations.length < MAX_REPLY_VARIATIONS && (
+                            <button
+                              type="button"
+                              onClick={() => setReplyVariations([...replyVariations, ''])}
+                              // Disabled until there is a primary reply: Zernio rotates over
+                              // [commentReply, ...variations], so alternates with nothing to
+                              // rotate against are rejected by the API.
+                              disabled={commentReply.trim().length === 0}
+                              className="mt-2 w-full rounded-md border border-dashed border-border-strong px-3 py-2 text-xs font-medium text-text-muted hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              + Add another reply ({MAX_REPLY_VARIATIONS - replyVariations.length}{' '}
+                              left)
+                            </button>
+                          )}
                         </>
                       )}
                       <p className="mt-1 text-xs text-text-muted">
                         Posted publicly under the triggering comment. Leave the toggle off to skip a
                         public reply.
+                        {replyEnabled && replyVariations.length > 0 && (
+                          <>
+                            {' '}
+                            With alternatives added, Instagram shows{' '}
+                            <strong className="font-medium">
+                              one of them picked at random
+                            </strong>{' '}
+                            per comment - not all of them - so repeat commenters do not all see the
+                            same wording.
+                          </>
+                        )}
                       </p>
                     </div>
 
@@ -448,24 +645,55 @@ export function CreateAutomationModal({
                     <ReviewRow label="When someone comments">
                       <p className="text-text">This post/reel</p>
                     </ReviewRow>
-                    <ReviewRow label="and the comment matches">
-                      <p className="text-text-faint">{matchMode}</p>
-                      <div className="mt-1 flex flex-wrap gap-1.5">
-                        {keywords.map((keyword) => (
-                          <span
-                            key={keyword}
-                            className="rounded-full bg-muted-bg px-2.5 py-0.5 text-xs font-medium text-text"
-                          >
-                            {keyword}
-                          </span>
-                        ))}
-                      </div>
+                    <ReviewRow
+                      label={
+                        triggerType === 'any' ? 'with any text at all' : 'and the comment matches'
+                      }
+                    >
+                      {triggerType === 'any' ? (
+                        <p className="text-text">Every comment triggers this automation</p>
+                      ) : (
+                        <>
+                          <p className="text-text-faint">{matchMode}</p>
+                          <div className="mt-1 flex flex-wrap gap-1.5">
+                            {keywords.map((keyword) => (
+                              <span
+                                key={keyword}
+                                className="rounded-full bg-muted-bg px-2.5 py-0.5 text-xs font-medium text-text"
+                              >
+                                {keyword}
+                              </span>
+                            ))}
+                          </div>
+                        </>
+                      )}
                     </ReviewRow>
+                    {audience !== 'any' && (
+                      <ReviewRow label="but only for">
+                        <p className="text-text">
+                          {AUDIENCES.find((option) => option.value === audience)?.label}
+                        </p>
+                      </ReviewRow>
+                    )}
                     {replyEnabled && commentReply && (
-                      <ReviewRow label="reply publicly with">
+                      <ReviewRow
+                        label={
+                          submittedVariations.length > 0
+                            ? `reply publicly with one of these ${submittedVariations.length + 1}, at random`
+                            : 'reply publicly with'
+                        }
+                      >
                         <p className="whitespace-pre-wrap break-words rounded-lg bg-muted-bg px-3 py-2 text-text">
                           &quot;{commentReply}&quot;
                         </p>
+                        {submittedVariations.map((reply, index) => (
+                          <p
+                            key={index}
+                            className="mt-1 whitespace-pre-wrap break-words rounded-lg bg-muted-bg px-3 py-2 text-text"
+                          >
+                            &quot;{reply}&quot;
+                          </p>
+                        ))}
                       </ReviewRow>
                     )}
                     <ReviewRow label="and send this DM">

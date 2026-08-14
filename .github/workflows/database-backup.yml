@@ -1,0 +1,172 @@
+name: PostgreSQL Daily Backup
+
+on:
+  schedule:
+    # 06:30 UTC = 12:00 PM IST
+    - cron: '30 6 * * *'
+
+  workflow_dispatch:
+
+jobs:
+  backup:
+    name: Backup Supabase PostgreSQL
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # pnpm MUST be installed before setup-node runs: `cache: pnpm` makes setup-node ask pnpm
+      # where its store is, which fails outright if pnpm is not on PATH yet. Reversing these
+      # two steps breaks the job before it reaches anything interesting.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Ubuntu's default postgresql-client trails Supabase's server version, and pg_dump refuses
+      # to dump a NEWER server ("server version mismatch") rather than producing a partial file.
+      # Installing from PGDG pins a client that is >= the server. Bump this when Supabase's
+      # Postgres major version moves.
+      - name: Install PostgreSQL client 17
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl ca-certificates gnupg
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo gpg --dearmor -o /usr/share/keyrings/postgresql.gpg
+          echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-17
+
+      - name: Check PostgreSQL client
+        run: |
+          pg_dump --version
+
+      - name: Create backup directory
+        run: |
+          mkdir -p backup
+
+      - name: Create PostgreSQL backup
+        env:
+          SUPABASE_DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+        run: |
+          if [ -z "$SUPABASE_DATABASE_URL" ]; then
+            echo "::error::SUPABASE_DATABASE_URL secret is not configured."
+            exit 1
+          fi
+
+          # pg_dump cannot run through Supabase's transaction pooler: pgbouncer in transaction
+          # mode multiplexes statements across connections, so it has no stable session for the
+          # operations a dump needs. This repo's own DATABASE_URL *is* that pooler (see
+          # docs/DEPLOYMENT.md), so pasting it into this secret is an easy mistake to make -
+          # and it surfaces as a confusing mid-dump protocol error rather than a clear refusal.
+          # Use the session pooler / direct connection on 5432 (this repo's DIRECT_URL).
+          case "$SUPABASE_DATABASE_URL" in
+            *:6543*|*pgbouncer=true*)
+              echo "::error::SUPABASE_DATABASE_URL looks like the transaction pooler (port 6543 / pgbouncer=true). pg_dump needs the direct connection on port 5432 - use the same value as DIRECT_URL."
+              exit 1
+              ;;
+          esac
+
+          TIMESTAMP=$(date -u +"%Y-%m-%d_%H-%M-%S")
+
+          BACKUP_FILE="backup/postgres_${TIMESTAMP}.sql.gz"
+
+          echo "Creating PostgreSQL backup..."
+          echo "Backup file: ${BACKUP_FILE}"
+
+          # --schema=public: this project's entire dataset lives there (Prisma owns every table,
+          # and authentication is Auth.js against our own `users` table - Supabase Auth is not
+          # used). Supabase's managed schemas (auth, storage, realtime, extensions) are not ours
+          # to back up: the connecting role cannot read all of them, which produces permission
+          # errors mid-dump and a file that fails partway through a restore.
+          #
+          # schema AND data, deliberately - no --data-only. The dump recreates tables, enums,
+          # indexes and constraints as well as rows, so restoring into an empty database gives
+          # back a working application rather than rows with nowhere to go. What it does NOT
+          # contain is database roles: those are cluster-level and pg_dump never includes them.
+          # Nothing here depends on them, because --no-owner/--no-privileges make the restore
+          # role-agnostic on purpose.
+          pg_dump \
+            --dbname="$SUPABASE_DATABASE_URL" \
+            --schema=public \
+            --no-owner \
+            --no-privileges \
+            --format=plain \
+            | gzip > "$BACKUP_FILE"
+
+          if [ ! -s "$BACKUP_FILE" ]; then
+            echo "::error::Backup file is empty."
+            exit 1
+          fi
+
+          echo "BACKUP_FILE=${BACKUP_FILE}" >> "$GITHUB_ENV"
+
+          echo "Backup created successfully."
+          ls -lh "$BACKUP_FILE"
+
+      - name: Verify backup
+        run: |
+          echo "Validating gzip integrity..."
+          gzip -t "$BACKUP_FILE"
+
+          # Integrity alone only proves the file is not corrupt - a valid gzip of an empty or
+          # schema-less dump passes it. These checks prove the thing that actually matters: that
+          # this file is a restore point. A dump missing its CREATE TABLE statements would
+          # restore into a database with no tables and lose everything silently.
+          echo "Checking the dump is a full restore point (schema + data)..."
+
+          MISSING=""
+          for table in users organizations organization_members instagram_accounts automations; do
+            if ! zgrep -q "CREATE TABLE public.${table}" "$BACKUP_FILE"; then
+              MISSING="${MISSING} ${table}"
+            fi
+          done
+
+          if [ -n "$MISSING" ]; then
+            echo "::error::Dump is missing CREATE TABLE for:${MISSING}. This is not a restorable backup."
+            exit 1
+          fi
+
+          # The enums are the other half of the schema Prisma depends on - a restore without them
+          # fails on the first typed column.
+          if ! zgrep -q "CREATE TYPE public." "$BACKUP_FILE"; then
+            echo "::error::Dump contains no CREATE TYPE statements - the enums are missing."
+            exit 1
+          fi
+
+          echo "Backup validation successful - schema and data present."
+          ls -lh "$BACKUP_FILE"
+
+      # Uploads, then removes backups older than the retention window - in that order, and only
+      # if the upload succeeded, so a failed backup run can never delete an older good one.
+      - name: Upload backup to Google Drive and apply retention
+        env:
+          BACKUP_FILE: ${{ env.BACKUP_FILE }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          # Three months. Set to 0 to keep every backup forever. The script additionally always
+          # keeps the 7 newest regardless of age, so a workflow that has been broken for months
+          # cannot come back and delete its own history in one pass.
+          BACKUP_RETENTION_DAYS: '90'
+        run: |
+          node scripts/upload-backup-to-drive.mjs
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf backup
+
+          echo "Temporary backup files removed."

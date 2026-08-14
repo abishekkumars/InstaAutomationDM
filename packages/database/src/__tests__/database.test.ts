@@ -37,6 +37,23 @@ describe('User', () => {
     expect(user.createdAt).toBeInstanceOf(Date);
   });
 
+  // Phase 15.1. The default is what makes requirement 20 hold at the schema level: an insert
+  // that says nothing about `role` cannot accidentally produce an admin, whatever the calling
+  // code forgot to set.
+  it('defaults a new user to the NORMAL_USER global role', async () => {
+    const user = await prisma.user.create({ data: { email: 'alice@example.com' } });
+
+    expect(user.role).toBe('NORMAL_USER');
+  });
+
+  it('stores an explicitly granted ADMIN role', async () => {
+    const user = await prisma.user.create({
+      data: { email: 'admin@example.com', role: 'ADMIN' },
+    });
+
+    expect(user.role).toBe('ADMIN');
+  });
+
   it('rejects a second user with the same email', async () => {
     await prisma.user.create({ data: { email: 'dup@example.com' } });
 

@@ -40,9 +40,9 @@ export function MobileNav({ children }: { children: ReactNode }) {
 
   return (
     <>
-      {/* The bar is part of the normal document flow (not fixed): the shell is h-screen with
-          scrolling delegated to the content pane, so a fixed bar would overlap that pane's
-          first rows instead of sitting above them. */}
+      {/* The bar is part of the normal document flow (not fixed): the shell is a fixed-height
+          `h-dvh` column with scrolling delegated to the content pane, so a fixed bar would
+          overlap that pane's first rows instead of sitting above them. */}
       <div className="flex shrink-0 items-center gap-2 bg-ink-950 px-3 py-2.5 text-white md:hidden">
         <button
           type="button"

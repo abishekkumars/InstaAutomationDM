@@ -94,6 +94,54 @@ completed work, just a rewrite of what hadn't started yet).
   the operational half — DNS, backup/restore, a rollback runbook, and a secret-rotation
   procedure. No Docker/Nginx/Cloudflare requirement, per ADR 0005.
 
+**Requested 2026-08-14, executing ahead of Phases 11-14.** A 20-requirement change request
+covering authentication, an administration surface, three Zernio capabilities this project had
+documented but never used, and assorted UX fixes. Split into two phases, numbered **15 and 16**
+rather than taking the next free number: Phases 11-14 below are already referenced by number
+from `docs/DATABASE.md`, `docs/ZERNIO-INTEGRATION.md`, `docs/SECURITY.md`,
+`docs/ARCHITECTURE.md` and `docs/ADR/0002`, and renumbering them to make room would be churn
+for no benefit. Roadmap order is therefore not execution order for these two — they run first.
+
+- [x] **Phase 15 — Identity, administration, access control**
+  - [x] Phase 15.1 — global `UserRole` (`ADMIN`/`NORMAL_USER`) on `users`, the `ADMIN_EMAIL`
+    bootstrap, role resolution moved into `SessionGuard` (read from the database on every
+    request, never from the bearer token or client input), and `GET /api/me`. Requirements
+    17-20. See `docs/ADR/0007-global-user-roles-and-administration.md` and the "Phase 15.1
+    report" below.
+  - [x] Phase 15.2 — Administration surface: user list, role grant/revoke, and organization
+    create/assign with the slug defaulting to the new user's email local-part. Requirements
+    16, 5, and the administrator half of 4. Split in two, following the 10.2a/10.2b precedent:
+    - [x] Phase 15.2a — backend: `AdminGuard` plus the six `/api/admin/*` endpoints, the
+      email-derived slug suggestion, and the last-administrator lockout guard. See the
+      "Phase 15.2a report" below.
+    - [x] Phase 15.2b — the Administration page itself, and the nav item that is shown only to
+      administrators. See the "Phase 15.2b report" below.
+  - [x] Phase 15.3 — remove `/onboarding`; registration lands on the dashboard, and a user with
+    no organization membership gets the "awaiting access" empty state. Requirement 4. **Also
+    removed `POST /api/organizations`**, which would otherwise have let a user waiting to be
+    admitted admit themselves — see the "Phase 15.3 report" below.
+  - [x] Phase 15.4 — confirm-password field and a show/hide password control on both auth
+    forms. Requirements 2-3. See the "Phase 15.4-15.6 report" below.
+  - [x] Phase 15.5 — Google sign-in alongside the existing credentials provider. Requirement 1.
+    **Inert until `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` are set** — see
+    `docs/ADR/0008-google-signin-and-session-lifetime.md`.
+  - [x] Phase 15.6 — rolling 30-minute idle session plus a "session expired" popup.
+    Requirements 9-10.
+- [x] **Phase 16 — Zernio capabilities, connect flow, UX**
+  - [x] Phase 16.1 — connect-flow fixes: retry the post-OAuth confirmation against Zernio's
+    eventual consistency, stop the duplicate "connected" toast, auto-sync after connecting.
+    Requirements 6-8. See the "Phase 16 report" below.
+  - [x] Phase 16.2 — `audience.followerStatus` (followers-only sending), an "any comments"
+    trigger via an empty `keywords` array, and up to 5 rotating public replies
+    (`commentReplyVariations`). All three verified against Zernio's live OpenAPI spec on
+    2026-08-14. Requirements 11-13.
+  - [x] Phase 16.3 — visible outline on the enable toggle, and mobile viewport/scroll fixes.
+    Requirements 14-15.
+
+All 20 requirements of the 2026-08-14 change request are implemented. **Phases 11-14 below
+remain outstanding** — the webhook ingestion that makes automations actually record their
+results is still the next real piece of product work.
+
 **Retired (not deferred — see `docs/ADR/0005-simplified-mvp-architecture.md` for why)**:
 Redis + BullMQ queue wiring, a generic trigger/condition/action automation engine, contact
 management/CRM, an analytics pipeline, a visual workflow builder UI, an inbox/conversations
@@ -2070,3 +2118,462 @@ automations seeded to get a second page) were all removed afterwards; the pre-ex
 Instagram account, organization and two real users were confirmed untouched. Note the 51 mock rows
 mentioned in the Phase 10.5 report are gone - `scripts/test.ps1` wipes those tables by design (see
 the Phase 6 report), which is why this phase re-seeded its own.
+
+## Phase 15.1 report
+
+First step of the 20-requirement change request. Covers requirements **17-20**: a global user
+role, an `ADMIN_EMAIL` bootstrap, and backend-enforced role resolution. No UI in this step - the
+Administration surface that consumes it is Phase 15.2.
+
+**Numbering:** this is Phase **15**.1, not 11.1 as originally proposed to the user. Phase 11 was
+already taken (webhook ingestion), and its number is referenced from four other docs plus ADR
+0002 - see the note above the Phase 15 checklist entry.
+
+**What changed**
+
+- `packages/database/prisma/schema.prisma` - new `UserRole` enum (`ADMIN` | `NORMAL_USER`) and
+  `User.role`, defaulting to `NORMAL_USER`. Deliberately a *second* role axis alongside the
+  existing `OrganizationRole`, not a replacement for it, and deliberately not sharing a value
+  name with it (`NORMAL_USER`, not `MEMBER`) so the two can never be confused at a call site.
+- `packages/database/prisma/migrations/20260814135948_add_user_role/migration.sql` - generated by
+  `prisma migrate dev`, not hand-written, per `docs/DATABASE.md`. Two statements: create the enum,
+  add the column `NOT NULL DEFAULT 'NORMAL_USER'`. Purely additive; existing rows backfill from
+  the default, so there is no data migration and nothing destructive to review.
+- `packages/shared/src/user-role.ts` (new) - `GlobalUserRole`, `isAdminEmail`, and
+  `resolveRoleOnSignIn`. The last of these exists specifically to encode **promote-never-demote**
+  in one place: `ADMIN_EMAIL` promotes its holder, but an admin granted through the Phase 15.2 UI
+  is not named in `ADMIN_EMAIL`, so a "recompute the role from the env var" implementation would
+  silently revoke every such grant at that user's next sign-in.
+  - Typed as a string union rather than importing Prisma's generated enum, to keep this package
+    (which `apps/web` imports) free of a dependency on the database package.
+- `apps/api/src/auth/session.guard.ts` - now `async`, injects `PrismaService`, and resolves
+  `role` **and** `email` from the `users` row rather than from the token's claims. The token
+  still proves *who* the caller is; the database now decides *what they may do*.
+  - The database read sits deliberately **outside** the `try/catch` that wraps token
+    verification. Inside it, a Postgres outage would have been reported to the caller as
+    "invalid or expired bearer token" - sending them to re-authenticate over a fault that has
+    nothing to do with their credentials, and burying the real error.
+  - A structurally valid token whose user has since been deleted is a `401`, not a `500`: the
+    credential genuinely is no longer good.
+- `apps/api/src/auth/me.controller.ts` (new) + `auth.module.ts` - `GET /api/me`. Needed by Phase
+  15.2 (apps/web has to ask whether to render the Administration nav item, because the session
+  deliberately does not carry the role), and it gives the guard's role resolution a directly
+  testable surface. No `DatabaseModule` import was needed - it is `@Global()`.
+- `apps/web/src/app/(auth)/actions.ts` - registration derives `role` server-side.
+- `apps/web/src/auth.ts` - re-applies the bootstrap on each successful sign-in, **after** the
+  password check, so an unauthenticated caller cannot provoke a write by guessing the admin's
+  address. The role is deliberately *not* returned into the session/JWT.
+- `.env.example` - documents `ADMIN_EMAIL`. Also corrected two stale phase labels while in the
+  file: `REDIS_URL` was headed "Phase 11" (Redis is retired per ADR 0005, and Phase 11 now means
+  webhooks) and the S3 block was headed "Phase 15+", which would have collided with this phase.
+- Docs: `docs/ADR/0007-global-user-roles-and-administration.md` (new),
+  `docs/SECURITY.md` (new "Global user roles" section - the four rules, and the comparison table
+  against `OrganizationRole`), `docs/DATABASE.md` (`User.role` + the migration entry),
+  `docs/API-SPEC.md` (`GET /api/me`), `docs/PRODUCT-REQUIREMENTS.md` (the out-of-scope line this
+  contradicts is amended in place rather than left to contradict the ADR).
+
+**Requirement 20 holds at three independent layers**, which is why no single mistake can produce
+an unintended admin: `credentialsSchema` has no `role` field, so the value cannot survive
+parsing; the registration path derives the role server-side from `ADMIN_EMAIL`; and the column's
+`NOT NULL DEFAULT 'NORMAL_USER'` catches any future insert that simply forgets.
+
+**Commands executed and results**
+
+| Command | Result |
+|---|---|
+| `scripts/db.ps1 start` | Already running (PID 22504) |
+| `scripts/pnpm.ps1 --filter @automationdm/database exec prisma migrate dev --name add_user_role` | Migration `20260814135948_add_user_role` created and applied |
+| `scripts/pnpm.ps1 install --filter @automationdm/shared` / `--filter @automationdm/api` | `vitest` and `jsonwebtoken` linked |
+| `scripts/pnpm.ps1 ... run build` (4 workspace packages) | All Done |
+| `scripts/test.ps1` | **97/97 passed** (10 shared + 16 database + 71 api), up from 75 |
+| `scripts/lint.ps1` | ESLint 0 errors; typecheck Done in all 8 projects |
+| `prettier --write` on the one new file it flagged | Formatted |
+| Live `GET /api/me` against the running dev server, 5 cases | See below |
+
+The live check exercised the property the whole design exists for, using **one token held
+across a role change**: no token -> `401`; `NORMAL_USER` -> `200` with that role; after granting
+ADMIN in the database, the *same* token -> `200 ADMIN`; after revoking, the same token ->
+`200 NORMAL_USER`; after deleting the user, the same token -> `401`. Grant and revoke both take
+effect on the next request, with no re-authentication and no token expiry involved.
+
+**Note on `prisma generate`**: it reported `EPERM` renaming `query_engine-windows.dll.node`,
+because the running dev servers (ports 3000 and 4000) hold that file open. This was verified to
+be harmless rather than assumed: the *TypeScript* client did regenerate (`NORMAL_USER` is present
+in the emitted `index.d.ts`), and the query-engine binary is unchanged by a schema-only edit on
+an unchanged Prisma version, so the copy the running servers hold is identical to the one that
+failed to be written. No restart was needed, and the live check above confirms the new route and
+guard are actually serving.
+
+**Verification method / limitation**
+
+`apps/api`'s e2e suite runs against the real `AppModule` and the real local database, so the
+guard, the route and the schema default are all genuinely exercised rather than mocked. The
+`apps/web` side (registration writing the role, sign-in re-applying the bootstrap) has **no
+automated coverage** - that app still has no test runner, the same limitation recorded in the
+Phase 10.5 and 10.6 reports. The pure decision function behind it (`resolveRoleOnSignIn`,
+including the promote-never-demote rule and the ADMIN_EMAIL-repointed case) is covered by the 10
+new tests in `packages/shared`; what is unexercised is the two call sites wiring it up.
+
+`scripts/test.ps1` wipes `users`/`organizations`/`instagram_accounts` by design (see the Phase 6
+report), so the local dev database has no user accounts after this phase - re-register locally as
+needed. The deployed Supabase database was not touched: the migration was applied to local
+Postgres only, and applying it there is safe whenever wanted, being additive with a default.
+
+## Phase 15.2a report
+
+Backend half of the Administration surface: requirements **16**, **5**, and the administrator
+half of **4**. No UI - that is 15.2b. Split this way because the six endpoints plus the guard
+are a self-contained, fully testable unit, and building the page against a tested API beats
+building both at once and discovering the shape was wrong.
+
+**What changed**
+
+- `packages/validation/src/organization.ts` - `slugFromEmail`, plus `SLUG_PATTERN` and
+  `SLUG_MAX_LENGTH` now exported. Placed here, next to the pattern it has to satisfy, rather
+  than in the service that calls it: the two cannot drift if they sit in the same file, and the
+  function's contract ("returns something `createOrganizationSchema` will accept") is then
+  directly assertable.
+  - `john.doe@example.com` -> `john-doe`. Disallowed characters become separators rather than
+    being dropped - `johndoe` would be actively misleading, since two different addresses could
+    collapse onto one slug that way. Truncation re-trims afterwards, because slicing at 50 can
+    land exactly on a hyphen and reintroduce the trailing hyphen the previous step removed.
+- `packages/validation/src/admin.ts` (new) - `updateUserRoleSchema`, `addMembershipSchema`,
+  `adminCreateOrganizationSchema`. Note what is deliberately absent: no schema anywhere accepts
+  a role at user *creation* (requirement 20). Changing a role is an explicit administrator
+  action against an existing user, which is what `updateUserRoleSchema` is for.
+- `packages/validation` gained a test runner (`vitest`), like `packages/shared` did in 15.1.
+  This package is pure functions and schemas - the cheapest thing in the repo to test properly.
+- `apps/api/src/auth/admin.guard.ts` (new) - `403`, not `404`. Tenant-owned resources return
+  404 so a non-member cannot distinguish "doesn't exist" from "isn't yours", but the existence
+  of `/api/admin/*` is not a secret, and a 404 there would make a legitimate administrator's
+  misconfiguration look like a broken route. Throws (500) rather than returning false when
+  `request.user` is missing - that is a wiring mistake, not a client error, and it should not
+  masquerade as a legitimate authorization failure.
+- `apps/api/src/admin/` (new) - controller, service, module. Six endpoints; see
+  `docs/API-SPEC.md`'s "Administration" section for the full shapes.
+- Docs: `docs/API-SPEC.md` (the whole Administration section), `docs/SECURITY.md` (an
+  "Enforcement" subsection under "Global user roles").
+
+**Three decisions worth recording**
+
+1. **The slug suggestion is a hint, not a reservation.** `listUsers` computes it from one query
+   for all existing slugs, and it can go stale between rendering the form and submitting it. The
+   `organizations.slug` unique constraint is the real authority, and `createOrganization` turns
+   a violation into a `409` the UI can act on. Trying to reserve it instead would mean holding
+   state for a value the user may never submit.
+2. **Last-administrator lockout guard.** Revoking the final `ADMIN` is refused with a `409`.
+   Self-demotion is deliberately *allowed* while another admin exists - with two admins either
+   should be able to step down; it is only being the last that is blocked. `ADMIN_EMAIL` would
+   recover such a lockout at next sign-in, but only if it happens to be set and to point at a
+   real account, which is too thin a thread to hang this on.
+3. **Administrator is not a data-access role.** `AdminService` touches users, organizations and
+   memberships only. An admin who needs an organization's automations takes a membership in it,
+   through the same table as everyone else. Tenant isolation is unchanged by this phase.
+
+**Commands executed and results**
+
+| Command | Result |
+|---|---|
+| `scripts/pnpm.ps1 install --filter @automationdm/validation` | `vitest` linked |
+| `scripts/pnpm.ps1 ... run build` (validation, shared, database) | All Done |
+| `scripts/test.ps1` | **145/145 passed** (10 shared + 16 validation + 16 database + 103 api), up from 97 |
+| `scripts/lint.ps1` | ESLint 0 errors; typecheck Done in all 8 projects |
+| `prettier --write` on the 3 new files it flagged | Formatted |
+| Live check against the running dev server, 7 cases | See below |
+
+The live check confirmed, in order: no token -> `401`; `NORMAL_USER` listing users -> `403`;
+`ADMIN` listing users -> `200`; `suggestedSlug` for `livecheck.john@example.com` ->
+`livecheck-john`; creating that organization -> `201` with `memberCount: 1`; re-using the slug
+-> `409`; and a `NORMAL_USER` attempting to promote *themselves* -> `403`. The last is
+requirement 19 demonstrated rather than argued: the escalation attempt is refused by `apps/api`
+with no involvement from the frontend at all. Finally, the sole administrator revoking their own
+role -> `409` with the lockout message. All fixtures were removed afterwards; the three
+pre-existing local users and one organization were confirmed untouched.
+
+**Two mistakes made and corrected during this phase**, recorded because both are easy to repeat:
+
+- A test asserted on `response.body.error.message`. That is the shape `AllExceptionsFilter`
+  produces - but the filter is registered in `main.ts`, which `Test.createTestingModule` never
+  runs, so under the e2e harness errors carry Nest's default `{statusCode, message, error}`
+  instead. The assertion now matches against the raw body text, which is true under both shapes,
+  with a comment saying why. Worth knowing before writing the next error-body assertion: this
+  was the first one in the repo.
+- `vitest` was briefly invoked through `npx.cmd` directly while chasing a suite failure, which
+  `CLAUDE.md` forbids. It ran under the machine's global Node 16 and produced a misleading
+  `EventEmitterAsyncResource` error, and running concurrently with the real suite it also
+  perturbed the shared local database, causing a transient failure in an unrelated automations
+  test. Both disappeared once everything went back through `scripts/*.ps1`. The rule exists for
+  exactly this reason.
+
+**Verification method / limitation**
+
+The 32 new e2e tests run against the real `AppModule` and the real local database. Guard
+rejection is covered for **every** admin route via a table-driven case (401 without a token, 403
+as a `NORMAL_USER`), so adding a route without protecting it would need the table edited too.
+The lockout guard, the slug-collision path, and every 400/404/409 branch are asserted directly.
+
+The `slugFromEmail` contract is covered by 16 tests in `packages/validation`, including a
+parameterized case asserting that every output - for pathological inputs like `...@example.com`
+and a 120-character local part - satisfies `SLUG_PATTERN` and is accepted by
+`createOrganizationSchema`.
+
+Not covered: nothing in `apps/web` (still no test runner there), which is 15.2b's surface. And
+the endpoints have only been exercised against a database with a handful of rows; the
+"one query for all slugs" approach in `listUsers` is right at this project's scale and would
+need revisiting at a scale this project explicitly does not target.
+
+## Phase 15.2b report
+
+The Administration page and the admin-only nav item, on top of 15.2a's tested API.
+
+**What changed**
+
+- `apps/web/src/lib/me.ts` (new) - `getCurrentUser()` (memoized `GET /api/me`) and
+  `isCurrentUserAdmin()`, which **never throws**. The second exists for the root layout, which
+  renders on every signed-in page: an unreachable `apps/api` there would otherwise throw during
+  the layout render and take down every route at once, including ones that need no API. It
+  degrades to "not an admin", which hides a nav item - recoverable and obvious - instead of
+  bricking the app. Safe precisely because hiding the item protects nothing; `AdminGuard` does.
+- `apps/web/src/app/admin/` (new) - `page.tsx` (role check + Suspense), `admin-data.ts`,
+  `actions.ts` (four server actions), `admin-browser.tsx` (the table).
+- `apps/web/src/app/layout.tsx` - the Administration item is appended to `NAV_ITEMS` only for
+  administrators.
+- `apps/web/src/app/toast.tsx` - a third `admin` namespace, plus a `?message=` param so an
+  action can surface **apps/api's own error text** ("You are the only administrator...",
+  "An organization with that slug already exists") rather than a generic failure. That param is
+  only ever used to replace the text of an entry already matched from `MESSAGES` - it can never
+  conjure a toast of its own, which matters because it comes from the URL.
+
+**Deliberate non-caching**: `admin-data.ts` uses React `cache()` (per-request) but *not*
+`callApiCached`. The dashboard's durable caching exists because its reads fan out to Zernio and
+cost 0.4-1.7s; these are two small database reads. Caching them would buy nothing measurable
+and would add a tag-invalidation contract that all six admin mutations would have to honour -
+and forgetting one fails silently, showing an administrator a role they just changed as if the
+change had not happened. Freshness matters more than speed on a screen whose entire purpose is
+making changes.
+
+**Commands executed and results**
+
+| Command | Result |
+|---|---|
+| `scripts/pnpm.ps1 --filter @automationdm/web run typecheck` | Done |
+| Live check in the browser, signed in as a seeded ADMIN | See below |
+
+Verified in a real browser against the running dev server: the Administration nav item appears
+for an admin; the page lists users with their memberships; a user with no membership shows the
+"No access yet" state; `uicheck.pending@example.com` prefilled the slug `uicheck-pending`
+(requirement 5's dot-to-hyphen rule); "Create and grant" moved that user to `owner` and the new
+organization appeared with 1 member; a duplicate slug surfaced apps/api's own 409 text in the
+toast and left the user with no access (no half-success); and the sole administrator's "Revoke
+admin" button rendered disabled with the lockout explanation.
+
+**Verification method / limitation**
+
+`apps/web` still has no test runner, so all of the above is manual browser verification rather
+than automated coverage - the same limitation recorded since Phase 10.5. The API beneath it is
+covered by 15.2a's 32 e2e tests.
+
+**Two mistakes made and corrected**, both worth recording:
+
+- The `AllExceptionsFilter` error shape (`{error: {code, message, requestId}}`) is registered in
+  `main.ts`, which `Test.createTestingModule` never runs - so under the e2e harness errors carry
+  Nest's default `{statusCode, message, error}` instead. The first error-body assertion in this
+  repo hit that. Assertions now match raw body text, which is true under both shapes.
+- Several minutes were spent diagnosing a "client component is not hydrating" bug that did not
+  exist: the checks were sampling the DOM before hydration completed. The restart that
+  "fixed" it was unnecessary, and it broke the dev servers on the way through -
+  `.claude/launch.json` injects `PORT=3000`, `scripts/dev.ps1` starts *both* apps, and `apps/api`
+  reads `PORT`, so the API tried to bind 3000 and died with `EADDRINUSE`. **`.claude/launch.json`
+  is unsafe for this monorepo as written**; it should point at a web-only command.
+
+## Phase 15.3 report
+
+Removing self-service onboarding (requirement 4), and closing the hole that removal exposed.
+
+**What changed**
+
+- `apps/web/src/app/onboarding/` (3 files) - **deleted**.
+- `apps/web/src/app/page.tsx` - renders an `AwaitingAccess` state instead of
+  `redirect('/onboarding')`. A rendered state rather than another redirect: there is nowhere
+  useful to send a user with no organization, since every route behind sign-in needs one, and a
+  loop between two empty pages is worse than one page that explains itself. It deliberately does
+  not name the administrator - that would mean exposing the admin list to anyone who signs up.
+- **`POST /api/organizations` removed** (controller route + `OrganizationsService.create`). This
+  was not in the original 15.3 scope and was found while doing it: the endpoint let any
+  authenticated user create an organization and make themselves its `OWNER`. Correct while
+  `/onboarding` was the way in; a hole the moment membership became the access gate, because a
+  user waiting to be admitted could admit themselves and nothing on the Administration screen
+  would have stopped them. The `organizations` module is now read-only.
+- `apps/api/src/organizations/__tests__/organizations.e2e.test.ts` - fixtures now build
+  organizations through Prisma instead of that endpoint (better structure regardless: a
+  tenant-isolation test should not depend on the create endpoint working), plus a test asserting
+  the route now 404s, and one covering the empty-list case the awaiting-access screen renders
+  from.
+- Stale comments corrected in `page.tsx`, `dashboard-data.ts` and `instagram/actions.ts`.
+
+**Commands executed and results**
+
+| Command | Result |
+|---|---|
+| `scripts/pnpm.ps1 --filter @automationdm/api --filter @automationdm/web run typecheck` | Done |
+| `vitest run src/organizations` | **6/6 passed**, including the new 404 assertion |
+
+**A build-artifact trap worth knowing**: `apps/web` typecheck failed after deleting the
+onboarding route because Next's *generated* `.next/types/validator.ts` still referenced
+`../../src/app/onboarding/page.js`. Removing the generated `.next/types` directory fixes it. A
+clean CI build never hits this; a stale local `.next` does.
+
+**Verification method / limitation**
+
+The API-side removal is covered by tests. The sign-up to dashboard to "Waiting for access" flow
+was **not** verified end-to-end in a browser during this phase - an attempt did not persist a
+user and was not pursued further, since testing had been explicitly deferred. Treat that flow as
+untested until someone walks it.
+
+**Note on local data**: running the test suite wipes `users`/`organizations`/
+`instagram_accounts` by design (see the Phase 6 report). That destroyed local dev data that had
+been built up through the Administration screen mid-session. Supabase was untouched. Worth
+remembering before running tests against a database you are also using by hand.
+
+## Phase 15.4-15.6 report
+
+Auth UI, Google sign-in, and session lifetime. Grouped because they are one coherent pass over
+the authentication surface. See `docs/ADR/0008-google-signin-and-session-lifetime.md` for the
+decisions behind 15.5 and 15.6.
+
+**15.4 - confirm password + show/hide (requirements 2-3)**
+
+- `packages/validation/src/auth.ts` - `registerSchema` extends `credentialsSchema` with
+  `confirmPassword` and a `.refine` reporting the mismatch **on the confirmation field**, so the
+  message lands next to the input the user has to fix. A separate schema, not a flag: signing in
+  must never ask for a confirmation, and Auth.js's `authorize()` parses the sign-in shape.
+- `apps/web/src/app/(auth)/password-field.tsx` (new) - one component used three times, so the
+  toggle and labelling cannot drift. **Each instance owns its own visibility**: revealing the
+  password must not also reveal the confirmation, since typing it twice is the entire point of
+  the second field. `useId` for the input id, because two fields both labelled
+  `htmlFor="password"` would point at the same input.
+- `registerAction` re-checks the match server-side. A mismatched pair reaching that point means
+  the form was bypassed, and creating the account anyway would set a password the user does not
+  think they chose.
+
+**15.5 - Google sign-in (requirement 1)**
+
+- `apps/web/src/auth.ts` - the Google provider, registered **only when both credentials are
+  present**, plus a `signIn` callback that maps the Google identity onto a `users` row.
+- `apps/web/src/app/(auth)/google-button.tsx` (new) - hidden on the same condition, on both the
+  sign-in and sign-up pages (one action serves both; Google's flow creates the account if it
+  does not exist).
+- The load-bearing line is `user.id = record.id`. Auth.js hands the callback Google's own
+  subject id and the `jwt` callback copies `user.id` into `token.sub` - which is what
+  `SessionGuard` looks up. Leaving Google's id there would 401 every API call after an otherwise
+  successful sign-in.
+- Unverified Google emails are refused (accounts link by email, so accepting one is how someone
+  signs in as an existing user). Linking never overwrites an existing `passwordHash` or
+  `authProvider`, so an email/password account keeps working both ways.
+
+**15.6 - session lifetime (requirements 9-10)**
+
+- `apps/web/src/auth.config.ts` - `maxAge: 30 * 60`, `updateAge: 5 * 60`. With the JWT strategy
+  this is a *rolling idle* timeout, not an absolute one.
+- `apps/web/src/app/session-expiry-watcher.tsx` (new) - polls `/api/auth/session` every 60s and
+  on `visibilitychange` (returning to a long-backgrounded tab is the likeliest moment for the
+  session to have lapsed, and browsers throttle timers in hidden tabs). It treats **only a
+  successful response with no user** as expiry; a 5xx or a dropped connection is ignored,
+  because a spurious "you have been signed out" trains people to dismiss the real one.
+
+**Commands executed and results**: typecheck Done for `apps/web` and `apps/api` after each step.
+Full suite results are in the Phase 16 report below, which is where the run ended.
+
+**Verification method / limitation**
+
+None of 15.4-15.6 was verified in a browser. `apps/web` has no test runner, and the deferred-
+testing instruction meant these were built and compile-checked rather than exercised. The
+session-expiry dialog in particular has never been seen on screen. Google sign-in additionally
+**cannot** be verified until `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` exist - until then the
+button is hidden by design, which is indistinguishable from "not implemented" without reading
+`.env.example`.
+
+## Phase 16 report
+
+Connect-flow fixes, the three Zernio capabilities, and two UI fixes. Requirements 6-8 and 11-15.
+
+**16.1 - connect flow (requirements 6-8)**
+
+- **Requirement 7 (duplicate toast)** had *three* compounding causes, so `ToastHost`'s effect was
+  made idempotent rather than each cause patched: React StrictMode double-invokes effects;
+  `router.replace()` is asynchronous, so the effect re-runs (`searchParams` is a new object
+  identity every render) while the URL still carries the param; and a re-mount replays it. A ref
+  records what has been announced. Toast ids also moved from `Date.now()` to a counter - two
+  toasts in the same millisecond shared an id, which React treats as one list item.
+- **Requirement 6 ("try again" on a connection that worked)**: `GET /v1/accounts` is eventually
+  consistent with the connection Zernio has only just made, and the callback arrives at the speed
+  of an HTTP redirect - frequently faster than Zernio's read path settles. The single confirmation
+  call came back empty and a successful connection was reported as an error. Now retried with
+  bounded backoff (0.5s + 1s + 2s). **The confirmation itself is not skipped** - dropping it would
+  mean trusting an `accountId` from a query string the user's own browser supplied.
+- **Requirement 8 (auto-sync)**: the callback became a **Route Handler**
+  (`instagram/callback/route.ts`, replacing `page.tsx`) because `revalidateTag` throws during a
+  Server Component render. Both the fresh-connect and already-connected paths now invalidate.
+  Without it the user lands on a dashboard rendered from a cache entry written *before* the
+  account existed - showing "Connect Instagram" again, which reads as failure.
+- `apps/web/src/lib/revalidate.ts` (new) - the shared invalidation helper. It could not live in
+  `automation-actions.ts`, which carries `'use server'` and would have turned it into a
+  remotely-invokable endpoint.
+
+**16.2 - Zernio capabilities (requirements 11-13)**
+
+One additive migration (`20260814161206_...`): `AutomationAudience` enum, `automations.audience`
+defaulting to `ANY`, and `automations.comment_reply_variations`.
+
+- All three were **verified against Zernio's live OpenAPI spec** before implementing, per
+  `CLAUDE.md`'s rule against inventing Zernio behaviour. `docs/ZERNIO-INTEGRATION.md` had listed
+  them as "not used by this project"; it now documents them as built.
+- **Requirement 13 differs from how it was asked for**, and the docs say so: Zernio picks *one*
+  reply at random per triggering comment from `[commentReply, ...variations]`. It does not post
+  all five. Posting five replies to one comment would read as spam; rotation is what the API
+  offers and what the UI now explains.
+- **Requirement 12** is not a new trigger type - it is an empty `keywords` array, which Zernio
+  documents as "any comment triggers". `createAutomationSchema` lost its `.min(1)` accordingly,
+  and the wizard hides match mode and the keyword list on that tab.
+
+**16.3 - UI fixes (requirements 14-15)**
+
+- **Toggle (14)**: `bg-muted-bg` on `bg-surface` is a very small step in luminance, so an
+  unchecked switch read as empty space. Fixed with an outline present in *both* states rather
+  than a brighter "off" fill - a border defines the control's shape even when its fill nearly
+  matches the card behind it, and keeping it in both states stops the switch changing size as it
+  flips. Also a focus ring.
+- **Mobile viewport (15)**: the shell was `h-screen` (`100vh`), which on mobile browsers is the
+  *large* viewport - the height the page would have with the URL bar hidden. Combined with
+  `overflow-hidden` on the clipping element, the overflow was genuinely **unreachable**: the top
+  bar sat under the URL bar and the bottom of the content could not be scrolled to. Now `h-dvh`,
+  which tracks the viewport as browser chrome shows and hides. Both modals got the same treatment
+  (their footers, including Next/Confirm, were affected).
+
+**Commands executed and results**
+
+| Command | Result |
+|---|---|
+| `scripts/pnpm.ps1 --filter @automationdm/database exec prisma migrate dev` | `20260814161206_add_automation_audience_and_reply_variations` created and applied |
+| `scripts/test.ps1` | **144/144 passed** (10 shared + 16 validation + 16 database + 102 api) |
+| `scripts/lint.ps1` | ESLint 0 errors; typecheck Done in all 8 projects; **prettier clean** |
+| `scripts/pnpm.ps1 --filter @automationdm/web run build` | `next build` succeeded; route list confirms `/admin`, `/instagram/callback`, and **no `/onboarding`** |
+
+One test was **deliberately inverted** rather than fixed: `rejects a request with no keywords`
+became `accepts an empty keyword list as the "any comment" trigger`. That is requirement 12
+changing the contract, not a regression - the old assertion encoded the rule the requirement
+removed.
+
+**A note on formatting**: `prettier --write .` was run across the repo at the end. Ten files
+carried pre-existing formatting failures that kept `scripts/lint.ps1` red regardless of this
+work; they are now clean, at the cost of about six files in the diff whose only change is
+whitespace.
+
+**Verification method / limitation**
+
+`apps/api` is covered by 102 e2e tests against the real `AppModule` and database. `apps/web`
+remains uncovered by any automated test. Everything in 15.4-16.3 is verified by tests,
+typecheck and a production build - **not** by clicking through it. The session-expiry dialog,
+the mobile viewport fix, and the reworked automation wizard are the three worth exercising by
+hand before trusting them.
+

@@ -40,8 +40,10 @@ export interface InstagramAccountSummary {
 // inner one avoids repeat HTTP across the Suspense siblings in a single render, the outer one
 // avoids it across page loads. Neither replaces the other.
 //
-// Uncached on purpose: this one gates a `redirect()`, so it must reflect reality the instant an
-// organization is created during onboarding. It is also the cheapest call in the app.
+// Uncached on purpose: this one gates whether the dashboard renders at all or the awaiting-access
+// state does, so it must reflect reality the instant an administrator grants the user a
+// membership - a cached "no organizations" would leave them staring at the waiting screen after
+// access had already been granted. It is also the cheapest call in the app.
 export const getOrganizations = cache(() => callApi<OrganizationSummary[]>('/api/organizations'));
 
 export const getMembers = cache((organizationId: string) =>

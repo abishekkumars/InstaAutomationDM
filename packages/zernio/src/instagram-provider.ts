@@ -101,6 +101,12 @@ export interface DmButton {
   url: string;
 }
 
+/** Which commenters an automation may answer, mirroring Zernio's `audience.followerStatus`
+ * (Phase 16.2, requirement 11). Instagram only reveals the follow relationship for people who
+ * have messaged the account before, so this is a filter Zernio applies on a best-effort basis -
+ * see `audience.whenUnknown` in docs/ZERNIO-INTEGRATION.md. */
+export type AutomationAudience = 'any' | 'follower' | 'non_follower';
+
 export interface CreateCommentAutomationInput {
   zernioProfileId: string;
   zernioAccountId: string;
@@ -116,11 +122,20 @@ export interface CreateCommentAutomationInput {
    * silently creating an account-wide automation. */
   platformPostId: string;
   name: string;
+  /** Trigger keywords. **An empty array means "every comment triggers"** - Zernio's own
+   * documented behaviour for an empty list ("empty = any comment triggers"), which is what the
+   * create wizard's "Any comments" tab sends. `matchMode` is then irrelevant. */
   keywords: string[];
   matchMode: 'contains' | 'word' | 'exact';
+  /** Restricts who gets answered (Phase 16.2). Omitted entirely when `'any'`, which is Zernio's
+   * own default - see `toRawAudience`. */
+  audience?: AutomationAudience;
   /** Optional public reply posted on the triggering comment - Zernio's own API treats this
    * as optional, not required. */
   commentReply?: string;
+  /** Up to 5 alternate public replies. Zernio picks ONE at random per triggering comment from
+   * `[commentReply, ...commentReplyVariations]` - it does not post all of them. */
+  commentReplyVariations?: string[];
   /** Up to 3 (Zernio's own limit). Omit or pass an empty array for a plain-text DM. Attaching
    * any buttons lowers Zernio's own dmMessage length limit from ~1000 to 640 chars. */
   buttons?: DmButton[];
@@ -160,9 +175,13 @@ export interface CommentAutomation {
    * two - see docs/ZERNIO-INTEGRATION.md. */
   platformPostId: string | null;
   name: string;
+  /** Empty means "any comment triggers" - see CreateCommentAutomationInput.keywords. */
   keywords: string[];
   matchMode: 'contains' | 'word' | 'exact';
+  audience: AutomationAudience;
   commentReply: string | null;
+  /** Empty when the automation has a single fixed public reply. */
+  commentReplyVariations: string[];
   buttons: DmButton[];
   dmMessage: string;
   isActive: boolean;
@@ -183,10 +202,15 @@ export interface ListCommentAutomationsInput {
 export interface UpdateCommentAutomationInput {
   zernioAutomationId: string;
   name?: string;
+  /** An empty array is meaningful here, not a no-op: it switches the automation to "any
+   * comment triggers". */
   keywords?: string[];
   matchMode?: 'contains' | 'word' | 'exact';
+  audience?: AutomationAudience;
   /** Empty string clears the public reply. */
   commentReply?: string;
+  /** Pass an empty array to clear every variation, same convention as `buttons`. */
+  commentReplyVariations?: string[];
   /** Pass an empty array to clear every button - Zernio's own documented way to remove them
    * (an omitted `buttons` key leaves the stored ones untouched instead). */
   buttons?: DmButton[];
