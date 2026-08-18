@@ -285,8 +285,29 @@ account connection, comment-automations, messages, and webhooks, not media listi
   synced posts) and searches the result for the matching `_id`. This is a real, load-bearing
   workaround for a genuine gap in Zernio's API, not a stylistic choice.
 - A Reel is just a video-`mediaType` post on Instagram's own data model — Zernio exposes no
-  separate "is this a reel" flag, so this project doesn't invent one either; the UI labels a
-  post by its `mediaType` (`image`/`video`/`gif`/`document`).
+  separate "is this a reel" flag for synced posts, so this project doesn't invent one either; the
+  UI labels a post by its `mediaType` (`image`/`video`/`gif`/`document`).
+- **Content Zernio has not synced cannot be listed, and there is no way to force a sync.**
+  Worth stating explicitly because it is the first question a user asks when a post is missing:
+  - Sync is **poll-driven, roughly hourly** — a just-published post is genuinely absent for a
+    while, and the spec has **no re-sync/refresh endpoint** to hurry it along.
+  - Anything not in the account's public feed is never synced at all: Instagram's Graph API is
+    the only source, and it does not expose drafts or unpublished media.
+- **Trial Reels are a real Zernio feature, but only for reels Zernio itself published** —
+  re-verified against the live spec on 2026-08-15, because the absence of any trial handling here
+  was previously mistaken for the feature not existing:
+  - `platformSpecificData.trialParams.graduationStrategy` (`MANUAL` | `SS_PERFORMANCE`) on
+    `POST /v1/posts` *creates* a trial reel.
+  - `isTrialReel` and `trialGraduationStrategy` come back on such posts.
+  - The spec is explicit that this is creation-time intent only: *"Instagram's Graph API exposes
+    no readable trial field."* So a trial reel posted **from the Instagram app** is invisible to
+    Zernio and therefore to this project — permanently, not just until the next sync. It cannot
+    be listed and cannot carry an automation.
+  - Changing that would mean building post **publishing** into this project so trials are created
+    through Zernio. That is a phase of its own and contradicts
+    `docs/ADR/0005-simplified-mvp-architecture.md`, which retired publishing from scope — it
+    would also require the user to stop posting from the Instagram app for any reel they want to
+    automate. Not built; write an ADR first if it is ever wanted.
 - **Tenant-isolation note**: `listPosts`'s `accountId` filter means Zernio itself scopes list
   results to the requested account, but `getPost`'s fallback search only ever runs against
   that same accountId-scoped `listPosts` call (never a global, unscoped lookup), and
