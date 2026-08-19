@@ -160,32 +160,29 @@ describe('GET /api/admin/users', () => {
     expect(first).not.toHaveProperty('passwordHash');
   });
 
-  it('suggests the slug derived from the email verbatim, with no uniqueness suffix', async () => {
+  it('suggests no slug at all - the create form is filled in by hand', async () => {
     const admin = await createAdmin();
     await prisma.user.create({ data: { email: 'john@example.com' } });
 
-    const first = await request(app.getHttpServer())
+    const response = await request(app.getHttpServer())
       .get('/api/admin/users')
       .set('Authorization', bearerFor(admin.id, admin.email))
       .expect(200);
-    expect(
-      first.body.find((u: { email: string }) => u.email === 'john@example.com').suggestedSlug,
-    ).toBe('john');
 
-    // The suggestion used to step to `john-2` once `john` existed. That was removed: silently
-    // rewriting what the administrator sees is worse than letting the create fail loudly, given
-    // the slug is permanent and the Zernio profile name derives from it. The unique constraint
-    // is still the authority - `POST /api/admin/organizations` 409s on the collision below.
+    // The field is gone, not merely empty. It existed only to prefill the admin form; leaving a
+    // computed value on the response that nothing reads is dead weight that later reads as a
+    // contract someone might rely on.
+    const john = response.body.find((u: { email: string }) => u.email === 'john@example.com');
+    expect(john).not.toHaveProperty('suggestedSlug');
+  });
+
+  it('409s on a duplicate slug, which is now the only guard against a shared Zernio profile', async () => {
+    const admin = await createAdmin();
     await prisma.organization.create({ data: { name: 'John', slug: 'john' } });
 
-    const second = await request(app.getHttpServer())
-      .get('/api/admin/users')
-      .set('Authorization', bearerFor(admin.id, admin.email))
-      .expect(200);
-    expect(
-      second.body.find((u: { email: string }) => u.email === 'john@example.com').suggestedSlug,
-    ).toBe('john');
-
+    // With nothing suggesting or de-duplicating slugs any more, the unique constraint is the
+    // whole defence: the Zernio profile name derives from the slug, so two organizations
+    // sharing one would silently share a Zernio profile.
     await request(app.getHttpServer())
       .post('/api/admin/organizations')
       .set('Authorization', bearerFor(admin.id, admin.email))

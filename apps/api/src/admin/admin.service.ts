@@ -11,7 +11,6 @@ import { Prisma, type OrganizationRole, type UserRole } from '@automationdm/data
 import {
   addMembershipSchema,
   adminCreateOrganizationSchema,
-  slugFromEmail,
   updateUserRoleSchema,
 } from '@automationdm/validation';
 import { ZernioApiError, type InstagramProvider } from '@automationdm/zernio';
@@ -39,11 +38,6 @@ export interface AdminUserSummary {
   role: UserRole;
   createdAt: Date;
   organizations: AdminUserMembership[];
-  /** A slug the Administration UI can prefill when creating this user's organization, derived
-   * from their email and already checked for collisions (requirement 5). Computed here rather
-   * than in the browser because the collision check needs the database, and because
-   * requirement 19 puts this kind of derivation server-side on principle. */
-  suggestedSlug: string;
 }
 
 /** Everything behind `/api/admin/*` (Phase 15.2). Authorization is the AdminGuard's job, not
@@ -94,16 +88,6 @@ export class AdminService {
         slug: membership.organization.slug,
         role: membership.role,
       })),
-      // The raw slug derived from the email, with NO uniqueness suffix appended.
-      //
-      // It used to be run through a `base`, `base-2`, `base-3` sequence so the prefilled value
-      // was always free. That was removed deliberately: an administrator typing a name saw the
-      // field silently mutate into something they had not chosen, which is confusing precisely
-      // when it matters (the slug is permanent and the Zernio profile name derives from it).
-      // A collision is now surfaced honestly as a 409 from `createOrganization` instead of being
-      // quietly worked around - `organizations.slug`'s unique constraint was always the real
-      // authority, and this only ever produced a suggestion.
-      suggestedSlug: slugFromEmail(user.email),
     }));
   }
 
@@ -150,8 +134,10 @@ export class AdminService {
       };
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-        // The slug the UI prefilled can go stale between rendering the form and submitting it,
-        // so this is a normal outcome to report, not an unexpected one.
+        // A normal outcome to report, not an unexpected one. The UI no longer suggests a slug
+        // at all, so a collision is now the only thing standing between two organizations with
+        // the same name - and it matters, because the Zernio profile name derives from the slug
+        // and two organizations sharing one would share a Zernio profile.
         throw new ConflictException('An organization with that slug already exists.');
       }
       throw error;
