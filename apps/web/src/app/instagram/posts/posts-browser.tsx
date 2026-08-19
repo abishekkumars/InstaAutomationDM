@@ -3,12 +3,13 @@
 import { LoadingLink } from '../../loader';
 import { BoltIcon } from '@/app/icons';
 import { Pagination } from '@/app/pagination';
+import { formatDate } from '@/lib/format-date';
 import { useUrlNumberState, useUrlState } from '@/app/use-url-state';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 export interface InstagramPostSummary {
-  zernioPostId: string;
-  platformPostId: string | null;
+  /** Instagram's own media id - the pivot since Phase 17, and what the post route keys on. */
+  platformPostId: string;
   permalink: string | null;
   caption: string;
   mediaType: 'image' | 'video' | 'gif' | 'document' | null;
@@ -56,7 +57,7 @@ export function PostsBrowser({
 }: {
   posts: InstagramPostSummary[];
   accountId: string;
-  /** zernioPostId -> is that post's automation enabled. A missing key means the post has no
+  /** platformPostId -> is that post's automation enabled. A missing key means the post has no
    * automation at all, which is why this is a lookup rather than a boolean on each post: the
    * automations come from a separate call that is allowed to fail without failing the page. */
   automationsByPostId: Record<string, boolean>;
@@ -95,7 +96,7 @@ export function PostsBrowser({
       automationFilter === 'all'
         ? searched
         : searched.filter((post) => {
-            const hasAutomation = post.zernioPostId in automationsByPostId;
+            const hasAutomation = post.platformPostId in automationsByPostId;
             return automationFilter === 'automated' ? hasAutomation : !hasAutomation;
           });
 
@@ -434,9 +435,9 @@ function VirtualPostList({
         {visible.map((post) => {
           // `undefined` (key absent) means no automation; true/false means one exists and is
           // enabled/paused. All three states render differently.
-          const automationActive = automationsByPostId[post.zernioPostId];
+          const automationActive = automationsByPostId[post.platformPostId];
           return view === 'list' ? (
-            <li key={post.zernioPostId} className="min-h-0">
+            <li key={post.platformPostId} className="min-h-0">
               <PostListRow
                 post={post}
                 accountId={accountId}
@@ -445,7 +446,7 @@ function VirtualPostList({
               />
             </li>
           ) : (
-            <li key={post.zernioPostId} className="min-h-0">
+            <li key={post.platformPostId} className="min-h-0">
               <PostCard
                 post={post}
                 accountId={accountId}
@@ -526,7 +527,7 @@ function PostCard({
 }) {
   return (
     <LoadingLink
-      href={`/instagram/posts/${post.zernioPostId}?accountId=${accountId}${listQuery}`}
+      href={`/instagram/posts/${post.platformPostId}?accountId=${accountId}${listQuery}`}
       className="flex h-full flex-col overflow-hidden rounded-xl border border-border bg-surface shadow-sm transition hover:border-border-strong"
     >
       {/* relative so the badge can sit over the thumbnail's top-right corner. */}
@@ -548,7 +549,7 @@ function PostCard({
         </p>
         <p className="mt-1 truncate text-xs text-text-faint">
           {post.mediaType ?? 'unknown'}
-          {post.publishedAt && ` · ${new Date(post.publishedAt).toLocaleDateString()}`}
+          {formatDate(post.publishedAt) && ` · ${formatDate(post.publishedAt)}`}
         </p>
       </div>
     </LoadingLink>
@@ -568,7 +569,7 @@ function PostListRow({
 }) {
   return (
     <LoadingLink
-      href={`/instagram/posts/${post.zernioPostId}?accountId=${accountId}${listQuery}`}
+      href={`/instagram/posts/${post.platformPostId}?accountId=${accountId}${listQuery}`}
       className="flex h-full items-center gap-3 overflow-hidden rounded-xl border border-border bg-surface p-2 shadow-sm transition hover:border-border-strong"
     >
       <Thumbnail post={post} className="h-16 w-16 shrink-0 rounded-lg object-cover" />
@@ -577,7 +578,7 @@ function PostListRow({
         <div className="mt-1 flex items-center gap-2 text-xs text-text-faint">
           <span className="truncate">
             {post.mediaType ?? 'unknown'}
-            {post.publishedAt && ` · ${new Date(post.publishedAt).toLocaleDateString()}`}
+            {formatDate(post.publishedAt) && ` · ${formatDate(post.publishedAt)}`}
           </span>
           <AutomationBadge active={automationActive} variant="inline" />
         </div>

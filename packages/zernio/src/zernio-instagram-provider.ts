@@ -161,7 +161,10 @@ export class ZernioInstagramProvider implements InstagramProvider {
       page: 1,
       limit: 500,
     });
-    return posts.find((post) => post.zernioPostId === input.zernioPostId) ?? null;
+    // Matched on the Instagram media id since Phase 17, not Zernio's `_id`: that is the pivot
+    // the rest of the stack now keys on, and the only id a Meta-sourced post shares with this
+    // Zernio-sourced list.
+    return posts.find((post) => post.platformPostId === input.platformPostId) ?? null;
   }
 
   async createCommentAutomation(input: CreateCommentAutomationInput): Promise<CommentAutomation> {
@@ -173,12 +176,14 @@ export class ZernioInstagramProvider implements InstagramProvider {
         accountId: input.zernioAccountId,
         // Two DIFFERENT ids, per Zernio's own spec: `platformPostId` is "Platform media/post
         // ID" (Instagram's own media id - what an incoming comment reports), while `postId` is
-        // "Zernio post ID ... required only when also targeting a specific post via
-        // platformPostId", which this project always does. Sending Zernio's `_id` as
-        // `platformPostId` (as this did before) scopes the automation to an id Instagram never
-        // reports, so it can never fire.
+        // Zernio's own `_id`. Sending Zernio's `_id` as `platformPostId` (as this did before
+        // Phase 10.2b) scopes the automation to an id Instagram never reports, so it can never
+        // fire.
         platformPostId: input.platformPostId,
-        postId: input.zernioPostId,
+        // Omitted entirely when absent, rather than sent as null/undefined. Verified 2026-08-19:
+        // Zernio accepts a create with `platformPostId` alone and the automation fires - which
+        // is the only reason a post Zernio has not synced yet can be automated at all.
+        ...(input.zernioPostId ? { postId: input.zernioPostId } : {}),
         name: input.name,
         // Sent as-is, including `[]`. Zernio's spec is explicit that an empty keyword list means
         // "any comment triggers" (verified against the live OpenAPI spec, Phase 16.2), which is

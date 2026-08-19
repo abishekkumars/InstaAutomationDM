@@ -24,6 +24,16 @@ export interface InstagramAccountSummary {
   status: 'CONNECTED' | 'DISCONNECTED' | 'ERROR';
 }
 
+/** A direct Meta connection for one account (Phase 17). Note the absence of any token field -
+ * apps/api never sends it, encrypted or otherwise. */
+export interface MetaConnectionSummary {
+  instagramAccountId: string;
+  igUserId: string;
+  status: 'CONNECTED' | 'RECONNECT_REQUIRED';
+  expiresAt: string;
+  lastUsedAt: string | null;
+}
+
 // Every fetcher below is wrapped in React's `cache()`, which is what makes the dashboard's
 // Suspense split free rather than expensive.
 //
@@ -57,6 +67,20 @@ export const getInstagramAccounts = cache((organizationId: string) =>
     `/api/organizations/${organizationId}/instagram/accounts`,
     { tags: [cacheTags.accounts(organizationId)] },
   ),
+);
+
+/** Whether one account has a direct Meta connection (Phase 17), and whether it still works.
+ *
+ * Never carries the access token - apps/api's `MetaConnectionSummary` deliberately omits it in
+ * every form (see docs/SECURITY.md). Returns null both when there is no connection and when the
+ * lookup fails: the dashboard treats "not connected" as an ordinary state to offer a connect
+ * button for, not an error worth breaking the card over. Shares the accounts cache tag, so
+ * connecting or disconnecting Meta invalidates this alongside the account list itself. */
+export const getMetaConnection = cache((organizationId: string, accountId: string) =>
+  callApiCached<MetaConnectionSummary | null>(
+    `/api/organizations/${organizationId}/instagram/accounts/${accountId}/meta`,
+    { tags: [cacheTags.accounts(organizationId)] },
+  ).catch(() => null),
 );
 
 /** The slow one: apps/api enriches each row with live Zernio stats and post thumbnails, measured

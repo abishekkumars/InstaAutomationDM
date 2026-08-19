@@ -119,6 +119,7 @@ model Organization {
   memberships OrganizationMember[]
   instagramAccounts InstagramAccount[]
   automations Automation[]
+  metaConnections MetaConnection[]
 
   @@map("organizations")
 }
@@ -199,9 +200,77 @@ model InstagramAccount {
 
   automations Automation[]
 
+  metaConnection MetaConnection?
+
   /// "List an organization's connected accounts" - every account-picker UI load.
   @@index([organizationId])
   @@map("instagram_accounts")
+}
+
+/// Whether the stored Meta token can still be used.
+///
+/// RECONNECT_REQUIRED is set when Meta rejects the token itself (OAuthException code 190/102)
+/// or a refresh fails - not when a call merely errors. The distinction matters: a transient
+/// Meta outage must fall back to Zernio and recover on its own, while a dead token needs the
+/// user to act, and only the second should nag them.
+enum MetaConnectionStatus {
+  CONNECTED
+  RECONNECT_REQUIRED
+}
+
+/// A direct Meta Graph API connection for one Instagram account (Phase 17).
+///
+/// This exists alongside - not instead of - the Zernio connection on InstagramAccount. Zernio
+/// remains the system of record for automations; Meta is a read-only source for listing
+/// posts/reels, because Zernio's sync lags a newly published reel by hours and only retains
+/// ~12 months. See docs/ADR/0009-direct-meta-graph-api-for-post-listing.md.
+///
+/// One row per Instagram account (`@unique` on the FK, giving a true 1:1). An account either
+/// has a Meta connection or falls back to Zernio for listing; there is no meaning to a second
+/// connection for the same account.
+model MetaConnection {
+  id String @id @default(cuid())
+
+  /// Denormalised from InstagramAccount so every query can be organization-scoped without a
+  /// join, matching the tenant-scoping rule in CLAUDE.md ("every query touching tenant-owned
+  /// data enforces organization_id").
+  organizationId String @map("organization_id")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  instagramAccountId String @unique @map("instagram_account_id")
+  instagramAccount   InstagramAccount @relation(fields: [instagramAccountId], references: [id], onDelete: Cascade)
+
+  /// Instagram's own user id for this account, from Meta's `GET /me`. Not the same value as
+  /// InstagramAccount.zernioAccountId, which is Zernio's identifier for the same account.
+  igUserId String @map("ig_user_id")
+
+  /// The long-lived Instagram user access token, **encrypted at rest** with AES-256-GCM
+  /// (packages/shared/src/token-crypto.ts). Never stored, logged, or returned in plaintext -
+  /// see docs/SECURITY.md. The column holds the `v1.<iv>.<tag>.<ciphertext>` envelope, so no
+  /// separate IV column has to be kept in sync with it.
+  accessTokenEncrypted String @map("access_token_encrypted")
+
+  /// When the stored token expires (Meta long-lived tokens last 60 days). Drives the lazy
+  /// refresh: a token inside its last 7 days is refreshed on next use.
+  expiresAt DateTime @map("expires_at")
+
+  /// Scopes actually granted, as Meta reported them. Stored so a future feature needing a
+  /// scope this connection lacks can detect that and prompt a reconnect, rather than failing
+  /// with an opaque permissions error at call time.
+  scopes String[]
+
+  status MetaConnectionStatus @default(CONNECTED)
+
+  /// Last time a Meta call using this connection succeeded. Nullable until the first one - a
+  /// connection that has never been used is a different thing from one that used to work.
+  lastUsedAt DateTime? @map("last_used_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// "List an organization's Meta connections" - the settings/status view.
+  @@index([organizationId])
+  @@map("meta_connections")
 }
 
 /// How a keyword is compared against a comment's text (Zernio's own `matchMode` values,
@@ -251,9 +320,18 @@ model Automation {
   /// this id, and that lookup must be unambiguous.
   zernioAutomationId String @unique @map("zernio_automation_id")
 
-  /// Zernio's own post id (`platformPostId`) this automation is scoped to. The post/reel's
-  /// own content is never stored locally (docs/ADR/0005) - only this id.
-  zernioPostId String @map("zernio_post_id")
+  /// Instagram's own media id - the post/reel this automation is scoped to (Phase 17).
+  ///
+  /// This is the identifier an incoming comment actually reports, the one Zernio's
+  /// `POST /v1/comment-automations` takes as `platformPostId`, and the only one both the Meta
+  /// and Zernio listing paths can produce. Verified by hand on 2026-08-19: Zernio accepts it
+  /// **without** a companion `postId` and the automation fires correctly, which is what makes
+  /// automating a post Zernio has not synced yet possible at all.
+  ///
+  /// It replaced `zernio_post_id` as the pivot because Zernio only mints its own `_id` once its
+  /// poll-driven sync catches up - hours after publishing - which made a freshly published reel
+  /// unautomatable. See docs/ADR/0009-direct-meta-graph-api-for-post-listing.md.
+  platformPostId String @map("platform_post_id")
 
   name String
 
@@ -299,7 +377,10 @@ model Automation {
 
   /// Mirrors Zernio's own "only one active per-post automation" rule (docs/ZERNIO-INTEGRATION.md) -
   /// enforced at our own data layer too, not just trusted from Zernio's 409.
-  @@unique([instagramAccountId, zernioPostId])
+  ///
+  /// Keyed on `platformPostId` since Phase 17 - Instagram's media id, which is what an incoming
+  /// comment reports and therefore what "one automation per post" actually means.
+  @@unique([instagramAccountId, platformPostId])
   /// "List an organization's automations" - a future dashboard/history view (Phase 12).
   @@index([organizationId])
   @@map("automations")

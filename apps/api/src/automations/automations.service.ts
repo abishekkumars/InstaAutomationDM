@@ -29,7 +29,8 @@ export interface AutomationButton {
 
 export interface AutomationSummary {
   id: string;
-  zernioPostId: string;
+  /** Instagram's own media id - the pivot since Phase 17, and what the post routes key on. */
+  platformPostId: string;
   name: string;
   /** Empty means "any comment triggers" (Phase 16.2, requirement 12). */
   keywords: string[];
@@ -125,17 +126,18 @@ export class AutomationsService {
     return account;
   }
 
+  /** `platformPostId` is Instagram's own media id - the pivot since Phase 17. */
   async listForPost(
     userId: string,
     organizationId: string,
     accountId: string,
-    zernioPostId: string,
+    platformPostId: string,
   ): Promise<AutomationSummary[]> {
     await this.requireMembership(userId, organizationId);
     const account = await this.requireOwnAccount(organizationId, accountId);
 
     const local = await this.prisma.client.automation.findMany({
-      where: { instagramAccountId: accountId, zernioPostId },
+      where: { instagramAccountId: accountId, platformPostId },
     });
     if (local.length > 0) {
       return local.map(toSummary);
@@ -147,7 +149,7 @@ export class AutomationsService {
     // a request whose local insert failed after the Zernio call already succeeded. Reading
     // only our own table made those invisible, which is why a post with a real, working
     // automation still rendered "No automation yet".
-    const reconciled = await this.reconcileFromZernio(organizationId, account, zernioPostId);
+    const reconciled = await this.reconcileFromZernio(organizationId, account, platformPostId);
     return reconciled ? [reconciled] : [];
   }
 
@@ -158,7 +160,7 @@ export class AutomationsService {
   private async reconcileFromZernio(
     organizationId: string,
     account: { id: string; zernioAccountId: string },
-    zernioPostId: string,
+    platformPostId: string,
   ): Promise<AutomationSummary | null> {
     const organization = await this.prisma.client.organization.findUniqueOrThrow({
       where: { id: organizationId },
@@ -175,22 +177,15 @@ export class AutomationsService {
       // Zernio only filters by profileId, so narrow to this account AND this post ourselves -
       // a profile can hold automations for several accounts/posts. Matching on the account too
       // (not just the post id) keeps the same tenant-isolation discipline used elsewhere.
-      // Match on EITHER id. Zernio's `postId` (its own post id) is only present on automations
-      // created with that field set, and `platformPostId` holds Instagram's media id - older
-      // automations, and any created directly in Zernio's dashboard, may carry only one of the
-      // two, so keying on just one silently misses them.
-      const post = await this.provider
-        .getPost({
-          zernioProfileId: organization.zernioProfileId,
-          zernioAccountId: account.zernioAccountId,
-          zernioPostId,
-        })
-        .catch(() => null);
+      //
+      // Matched on `platformPostId` alone since Phase 17. The previous version also resolved
+      // Zernio's own `_id` via a getPost round trip and matched either id; that round trip is
+      // exactly what could not be satisfied for a post Zernio has not synced, and the media id
+      // is present on every automation this project has ever created.
       remote = all.find(
         (item) =>
           item.zernioAccountId === account.zernioAccountId &&
-          (item.zernioPostId === zernioPostId ||
-            (post?.platformPostId != null && item.platformPostId === post.platformPostId)),
+          item.platformPostId === platformPostId,
       );
     } catch (error) {
       console.error('[automations] Zernio reconciliation failed:', error);
@@ -206,7 +201,7 @@ export class AutomationsService {
           organizationId,
           instagramAccountId: account.id,
           zernioAutomationId: remote.zernioAutomationId,
-          zernioPostId,
+          platformPostId,
           name: remote.name,
           keywords: remote.keywords,
           matchMode: toMatchMode(remote.matchMode),
@@ -273,7 +268,7 @@ export class AutomationsService {
       const remote = remoteByAutomationId.get(automation.zernioAutomationId);
       const post = postsByAccount
         .get(automation.instagramAccount.zernioAccountId)
-        ?.get(automation.zernioPostId);
+        ?.get(automation.platformPostId);
       return {
         ...toSummary(automation),
         instagramAccountId: automation.instagramAccountId,
@@ -329,7 +324,19 @@ export class AutomationsService {
             page: 1,
             limit: 500,
           });
-          byAccount.set(zernioAccountId, new Map(posts.map((post) => [post.zernioPostId, post])));
+          // Keyed on the Instagram media id since Phase 17 - the pivot automations now carry.
+          // Posts Zernio reports without one cannot be matched to an automation and are
+          // dropped from the map rather than keyed on null.
+          byAccount.set(
+            zernioAccountId,
+            new Map(
+              posts
+                .filter((post): post is InstagramPost & { platformPostId: string } =>
+                  Boolean(post.platformPostId),
+                )
+                .map((post) => [post.platformPostId, post]),
+            ),
+          );
         } catch (error) {
           console.error('[automations] could not load posts for the dashboard:', error);
         }
@@ -338,11 +345,12 @@ export class AutomationsService {
     return byAccount;
   }
 
+  /** `platformPostId` is Instagram's own media id, taken straight from the post listing. */
   async create(
     userId: string,
     organizationId: string,
     accountId: string,
-    zernioPostId: string,
+    platformPostId: string,
     input: unknown,
   ): Promise<AutomationSummary> {
     await this.requireMembership(userId, organizationId);
@@ -372,39 +380,33 @@ export class AutomationsService {
     // own "only one active per-post automation" rule (docs/ZERNIO-INTEGRATION.md).
     const existing = await this.prisma.client.automation.findUnique({
       where: {
-        instagramAccountId_zernioPostId: { instagramAccountId: accountId, zernioPostId },
+        instagramAccountId_platformPostId: { instagramAccountId: accountId, platformPostId },
       },
     });
     if (existing) {
       throw new ConflictException('An automation already exists for this post.');
     }
 
-    // Zernio needs Instagram's OWN media id in `platformPostId` (see the provider's comment) -
-    // that's the id an incoming comment carries. Resolve it from the post itself rather than
-    // reusing Zernio's `_id`, which is a different id entirely.
-    const post = await this.provider.getPost({
-      zernioProfileId: organization.zernioProfileId,
-      zernioAccountId: account.zernioAccountId,
-      zernioPostId,
-    });
-    if (!post) {
-      throw new NotFoundException('Post not found.');
-    }
-    if (!post.platformPostId) {
-      // Without it the automation could only be created account-wide, which would silently
-      // apply to every post on the account - never do that implicitly.
-      throw new BadRequestException(
-        'This post has no Instagram media id yet, so an automation cannot be scoped to it.',
-      );
-    }
-
+    // No getPost round trip here any more (Phase 17). It previously existed only to translate
+    // Zernio's `_id` into Instagram's media id - and it was the single thing that made a
+    // freshly published reel unautomatable, because Zernio cannot resolve a post it has not
+    // synced yet. The media id now arrives from the listing directly.
+    //
+    // Not re-validating that the post exists is deliberate. `platformPostId` comes from a
+    // listing this same organization is authorised to read, and Zernio scopes the automation to
+    // this account's own `accountId` regardless - an automation pointed at a media id belonging
+    // to someone else's account can never receive that account's comment webhooks, so it is
+    // inert rather than dangerous. Re-validating would reintroduce exactly the dependency this
+    // phase removed.
     let created;
     try {
       created = await this.provider.createCommentAutomation({
         zernioProfileId: organization.zernioProfileId,
         zernioAccountId: account.zernioAccountId,
-        zernioPostId,
-        platformPostId: post.platformPostId,
+        // `postId` deliberately omitted - verified 2026-08-19 that Zernio accepts
+        // `platformPostId` alone and the automation fires. See packages/zernio's
+        // CreateCommentAutomationInput.
+        platformPostId,
         name: parsed.name,
         keywords: parsed.keywords,
         matchMode: parsed.matchMode,
@@ -421,7 +423,7 @@ export class AutomationsService {
       // the next page load shows the real automation instead of "No automation yet" plus a
       // create button that can never succeed.
       if (error instanceof ZernioApiError && error.status === 409) {
-        await this.reconcileFromZernio(organizationId, account, zernioPostId);
+        await this.reconcileFromZernio(organizationId, account, platformPostId);
         throw new ConflictException('An automation already exists for this post.');
       }
       throw error;
@@ -433,7 +435,7 @@ export class AutomationsService {
           organizationId,
           instagramAccountId: accountId,
           zernioAutomationId: created.zernioAutomationId,
-          zernioPostId,
+          platformPostId,
           name: created.name,
           keywords: created.keywords,
           matchMode: toMatchMode(created.matchMode),
@@ -592,7 +594,7 @@ export class AutomationsService {
 
 function toSummary(automation: {
   id: string;
-  zernioPostId: string;
+  platformPostId: string;
   name: string;
   keywords: string[];
   matchMode: AutomationMatchMode;
@@ -605,7 +607,7 @@ function toSummary(automation: {
 }): AutomationSummary {
   return {
     id: automation.id,
-    zernioPostId: automation.zernioPostId,
+    platformPostId: automation.platformPostId,
     name: automation.name,
     keywords: automation.keywords,
     matchMode: automation.matchMode,

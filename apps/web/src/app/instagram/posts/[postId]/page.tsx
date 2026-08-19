@@ -2,12 +2,13 @@ import { LoadingLink } from '../../../loader';
 import { redirect } from 'next/navigation';
 import { ApiError, callApi } from '@/lib/api';
 import { getPrimaryOrganizationId } from '@/lib/organization';
+import { formatDateTime } from '@/lib/format-date';
 import { CreateAutomationModal } from './create-automation-modal';
 import { EditAutomationModal } from '@/app/edit-automation-modal';
 
 interface InstagramPostDetail {
-  zernioPostId: string;
-  platformPostId: string | null;
+  /** Instagram's own media id - the pivot since Phase 17, and what the post route keys on. */
+  platformPostId: string;
   permalink: string | null;
   caption: string;
   mediaType: 'image' | 'video' | 'gif' | 'document' | null;
@@ -17,7 +18,7 @@ interface InstagramPostDetail {
 
 interface AutomationSummary {
   id: string;
-  zernioPostId: string;
+  platformPostId: string;
   name: string;
   /** Empty means the automation triggers on any comment (Phase 16.2, requirement 12). */
   keywords: string[];
@@ -117,7 +118,7 @@ export default async function InstagramPostDetailPage({
           <p className="whitespace-pre-wrap text-sm text-text">{post.caption || '(no caption)'}</p>
           <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-text-muted">
             <span>{post.mediaType ?? 'unknown'}</span>
-            {post.publishedAt && <span>{new Date(post.publishedAt).toLocaleString()}</span>}
+            {formatDateTime(post.publishedAt) && <span>{formatDateTime(post.publishedAt)}</span>}
             {post.permalink && (
               <a
                 href={post.permalink}

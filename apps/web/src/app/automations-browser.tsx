@@ -20,7 +20,7 @@ export interface AutomationPostPreview {
 
 export interface AutomationListItem {
   id: string;
-  zernioPostId: string;
+  platformPostId: string;
   instagramAccountId: string;
   accountUsername: string | null;
   name: string;
@@ -295,7 +295,7 @@ export function AutomationsBrowser({
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-1">
                       <LoadingLink
-                        href={`/instagram/posts/${automation.zernioPostId}?accountId=${automation.instagramAccountId}`}
+                        href={`/instagram/posts/${automation.platformPostId}?accountId=${automation.instagramAccountId}`}
                         className="rounded-md p-1.5 text-text-muted hover:bg-muted-bg hover:text-text"
                         title="View automation"
                         aria-label={`View ${automation.name}`}
@@ -381,7 +381,7 @@ export function AutomationsBrowser({
                 </div>
                 <div className="mt-2 flex items-center gap-1">
                   <LoadingLink
-                    href={`/instagram/posts/${automation.zernioPostId}?accountId=${automation.instagramAccountId}`}
+                    href={`/instagram/posts/${automation.platformPostId}?accountId=${automation.instagramAccountId}`}
                     className="rounded-md p-1.5 text-text-muted hover:bg-muted-bg hover:text-text"
                     title="View automation"
                     aria-label={`View ${automation.name}`}

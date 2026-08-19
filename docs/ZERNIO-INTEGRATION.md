@@ -157,9 +157,17 @@ is now resolved, not assumed.
 
     Sending Zernio's `_id` as `platformPostId` (what this project did until Phase 10.2b)
     creates an automation scoped to an id Instagram never reports, so **it can never fire**,
-    while still returning a perfectly successful-looking `201`. `apps/api` resolves the real
-    media id via `getPost` before creating, and rejects the create if the post has none rather
-    than silently falling back to an account-wide automation.
+    while still returning a perfectly successful-looking `201`.
+
+    - **`postId` is optional in practice** — verified by hand on 2026-08-19, and load-bearing
+      for Phase 17. A `POST /v1/comment-automations` carrying `platformPostId` and **no**
+      `postId` returns `201`, and the resulting automation **fires correctly on a real
+      comment**. The spec's "required only when also targeting a specific post via
+      platformPostId" had been read here as mandatory; it is not enforced.
+    - This is what makes a post Zernio has never synced automatable: Zernio's `_id` does not
+      exist until sync, but Instagram's media id is available from Meta immediately. Since
+      Phase 17, `apps/api` sends `platformPostId` alone and no longer resolves a `zernioPostId`
+      first.
 
     Setting `platformPostId` scopes the automation to one specific post/reel (omit for
     account-wide - **only one active per-post automation is allowed per post**, enforced by
@@ -285,8 +293,37 @@ account connection, comment-automations, messages, and webhooks, not media listi
   synced posts) and searches the result for the matching `_id`. This is a real, load-bearing
   workaround for a genuine gap in Zernio's API, not a stylistic choice.
 - A Reel is just a video-`mediaType` post on Instagram's own data model — Zernio exposes no
-  separate "is this a reel" flag, so this project doesn't invent one either; the UI labels a
-  post by its `mediaType` (`image`/`video`/`gif`/`document`).
+  separate "is this a reel" flag for synced posts, so this project doesn't invent one either; the
+  UI labels a post by its `mediaType` (`image`/`video`/`gif`/`document`).
+- **Content Zernio has not synced cannot be listed, and there is no way to force a sync.**
+  Worth stating explicitly because it is the first question a user asks when a post is missing:
+  - Sync is **poll-driven**, and the spec has **no re-sync/refresh endpoint** to hurry it along.
+    The spec's own wording is "roughly hourly"; **observed behaviour on a real account is
+    considerably slower** — a reel published 2026-08-18 14:31 UTC was still missing many hours
+    later and appeared the following day. Do not promise users an hour.
+    This latency, not any trial-reel exclusion, is the reason Phase 17 added a direct Meta
+    Graph API read path — see `docs/ADR/0009-direct-meta-graph-api-for-post-listing.md`.
+  - Anything not in the account's public feed is never synced at all: Instagram's Graph API is
+    the only source, and it does not expose drafts or unpublished media.
+- **Trial Reels: creation is a Zernio feature; *listing* them is not a problem at all.**
+  Corrected in Phase 17 — the previous version of this bullet claimed a trial reel posted from
+  the Instagram app was "invisible to Zernio and therefore to this project — permanently, not
+  just until the next sync". **That was wrong**, and was never tested before being written down:
+  - **Trial reels posted from the Instagram app do sync.** Verified 2026-08-19 on a real
+    account: a trial reel published 2026-08-18 was absent at first and present the next day. It
+    is subject to the ordinary sync latency above, nothing more.
+  - `platformSpecificData.trialParams.graduationStrategy` (`MANUAL` | `SS_PERFORMANCE`) on
+    `POST /v1/posts` *creates* a trial reel, and `isTrialReel` / `trialGraduationStrategy` come
+    back on posts Zernio itself published. This project has no publishing feature, so those
+    fields are never set and never populated here.
+  - **No source can tell you a synced reel is a trial reel** — Zernio's spec says so
+    (*"Instagram's Graph API exposes no readable trial field"*) and Meta's own IG Media field
+    list confirms it: no trial field, no graduation field. `is_shared_to_feed` is the "Also
+    share to Feed" toggle, **not** a trial marker (22 of 57 reels on the test account have it
+    `false`, spanning 13 months). Do not attempt to infer it; see
+    `docs/ADR/0009-direct-meta-graph-api-for-post-listing.md`.
+  - The product does not need the label. It needs the reel **listed** so an automation can be
+    attached, which `media_product_type: REELS` already delivers.
 - **Tenant-isolation note**: `listPosts`'s `accountId` filter means Zernio itself scopes list
   results to the requested account, but `getPost`'s fallback search only ever runs against
   that same accountId-scoped `listPosts` call (never a global, unscoped lookup), and

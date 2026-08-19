@@ -79,14 +79,14 @@ class FakeInstagramProvider implements InstagramProvider {
     };
   }
 
-  // Any post id resolves, and its Instagram media id is deliberately DIFFERENT from Zernio's
-  // own post id (`ig-media-<zernioPostId>`) - these really are two different ids in Zernio's
-  // API, and a fake that returned the same value for both would hide a swap between them.
+  // Any media id resolves. Zernio's own post id is deliberately a DIFFERENT value
+  // (`zernio-<platformPostId>`) - these really are two different ids in Zernio's API, and a
+  // fake returning the same value for both would hide a swap between them.
   async getPost(input: GetPostInput): Promise<InstagramPost | null> {
     return {
-      zernioPostId: input.zernioPostId,
+      zernioPostId: `zernio-${input.platformPostId}`,
       zernioAccountId: input.zernioAccountId,
-      platformPostId: `ig-media-${input.zernioPostId}`,
+      platformPostId: input.platformPostId,
       permalink: null,
       caption: '',
       mediaType: null,
@@ -97,17 +97,19 @@ class FakeInstagramProvider implements InstagramProvider {
 
   async createCommentAutomation(input: CreateCommentAutomationInput): Promise<CommentAutomation> {
     this.lastCreateInput = input;
-    if (this.postsWithAutomation.has(input.zernioPostId)) {
+    // Keyed on the media id since Phase 17 - the pivot, and the only id a create is guaranteed
+    // to carry now that `postId` is omitted for posts Zernio has not synced.
+    if (this.postsWithAutomation.has(input.platformPostId)) {
       throw new ZernioApiError('POST', '/comment-automations', 409, {
         error: 'Active per-post automation already exists',
       });
     }
     this.automationCounter += 1;
-    this.postsWithAutomation.add(input.zernioPostId);
+    this.postsWithAutomation.add(input.platformPostId);
     const automation: CommentAutomation = {
       zernioAutomationId: `fake-automation-${this.automationCounter}`,
       zernioAccountId: input.zernioAccountId,
-      zernioPostId: input.zernioPostId,
+      zernioPostId: input.zernioPostId ?? null,
       platformPostId: input.platformPostId,
       name: input.name,
       keywords: input.keywords,
@@ -143,19 +145,21 @@ class FakeInstagramProvider implements InstagramProvider {
   // Simulates a per-post automation that already exists on Zernio's side (e.g. created
   // directly in Zernio's own dashboard) without this app's database knowing about it.
   simulateExistingZernioAutomation(
-    zernioPostId: string,
+    platformPostId: string,
     remote?: Omit<Partial<CommentAutomation>, 'stats'> & {
       zernioAccountId: string;
       stats?: CommentAutomation['stats'];
     },
   ): void {
-    this.postsWithAutomation.add(zernioPostId);
+    this.postsWithAutomation.add(platformPostId);
     if (remote) {
       this.automationCounter += 1;
       this.remoteAutomations.push({
         zernioAutomationId: `zernio-dashboard-${this.automationCounter}`,
-        zernioPostId,
-        platformPostId: `ig-media-${zernioPostId}`,
+        // Zernio may or may not know its own post id for this automation; the media id is the
+        // one always present, and the one reconciliation matches on since Phase 17.
+        zernioPostId: `zernio-${platformPostId}`,
+        platformPostId,
         name: 'Made in Zernio',
         keywords: ['price'],
         matchMode: 'contains',
@@ -214,8 +218,8 @@ class FakeInstagramProvider implements InstagramProvider {
     const removed = this.remoteAutomations.splice(index, 1)[0];
     // Frees the post so a later create for the same post succeeds, matching Zernio's real
     // behaviour (its one-active-automation-per-post rule only counts existing automations).
-    if (removed?.zernioPostId) {
-      this.postsWithAutomation.delete(removed.zernioPostId);
+    if (removed?.platformPostId) {
+      this.postsWithAutomation.delete(removed.platformPostId);
     }
   }
 
@@ -371,7 +375,7 @@ describe('POST .../instagram/accounts/:accountId/posts/:postId/automations', () 
       .expect(201);
 
     expect(response.body).toMatchObject({
-      zernioPostId: 'post-1',
+      platformPostId: 'post-1',
       name: 'Watch giveaway',
       keywords: ['LINK', 'link', 'price'],
       matchMode: 'CONTAINS',
@@ -380,14 +384,16 @@ describe('POST .../instagram/accounts/:accountId/posts/:postId/automations', () 
       isActive: true,
     });
     expect(fakeProvider.lastCreateInput?.keywords).toEqual(['LINK', 'link', 'price']);
-    // The two post ids must go to their own fields, not be swapped: Zernio's `platformPostId`
-    // means Instagram's media id, while its `postId` means Zernio's own post id. Sending
-    // Zernio's `_id` as `platformPostId` (the original bug) produces an automation scoped to
-    // an id Instagram never reports on an incoming comment, so it can never fire.
-    expect(fakeProvider.lastCreateInput?.zernioPostId).toBe('post-1');
-    expect(fakeProvider.lastCreateInput?.platformPostId).toBe('ig-media-post-1');
+    // Zernio's `platformPostId` means Instagram's media id - the id an incoming comment
+    // actually carries, and the route's own `:postId` segment since Phase 17.
+    expect(fakeProvider.lastCreateInput?.platformPostId).toBe('post-1');
+    // `postId` (Zernio's own `_id`) is deliberately NOT sent. Verified against the live API on
+    // 2026-08-19: omitting it still creates a working automation, which is the only reason a
+    // reel Zernio has not synced yet can be automated at all. Asserting its absence keeps a
+    // well-meaning "resolve the Zernio id first" change from silently reintroducing the block.
+    expect(fakeProvider.lastCreateInput?.zernioPostId).toBeUndefined();
 
-    const stored = await prisma.automation.findFirst({ where: { zernioPostId: 'post-1' } });
+    const stored = await prisma.automation.findFirst({ where: { platformPostId: 'post-1' } });
     expect(stored?.keywords).toEqual(['LINK', 'link', 'price']);
     expect(stored?.organizationId).toBe(organization.id);
   });
@@ -527,7 +533,7 @@ describe('POST .../instagram/accounts/:accountId/posts/:postId/automations', () 
       { title: 'Sizing', url: 'https://example.com/sizing' },
     ]);
 
-    const stored = await prisma.automation.findFirst({ where: { zernioPostId: 'post-1' } });
+    const stored = await prisma.automation.findFirst({ where: { platformPostId: 'post-1' } });
     expect(stored?.buttons).toEqual([
       { title: 'Shop now', url: 'https://example.com/shop' },
       { title: 'Sizing', url: 'https://example.com/sizing' },
@@ -635,7 +641,7 @@ describe('POST .../instagram/accounts/:accountId/posts/:postId/automations', () 
     // "No automation yet" plus a create button that can only ever 409.
     const stored = await prisma.automation.findMany();
     expect(stored).toHaveLength(1);
-    expect(stored[0]).toMatchObject({ name: 'Made in Zernio', zernioPostId: 'post-1' });
+    expect(stored[0]).toMatchObject({ name: 'Made in Zernio', platformPostId: 'post-1' });
   });
 });
 
@@ -744,7 +750,7 @@ describe('GET .../instagram/accounts/:accountId/posts/:postId/automations', () =
 
     expect(response.body).toHaveLength(1);
     expect(response.body[0]).toMatchObject({
-      zernioPostId: 'post-1',
+      platformPostId: 'post-1',
       keywords: AUTOMATION_BODY.keywords,
     });
   });
@@ -789,9 +795,11 @@ describe('GET .../organizations/:organizationId/automations', () => {
     );
     fakeProvider.setPosts('ig-acct-1', [
       {
-        zernioPostId: 'post-1',
+        zernioPostId: 'zernio-post-1',
         zernioAccountId: 'ig-acct-1',
-        platformPostId: 'ig-media-post-1',
+        // Must match the automation's own platformPostId - the dashboard's thumbnail lookup is
+        // keyed on the media id since Phase 17, not on Zernio's post id.
+        platformPostId: 'post-1',
         permalink: 'https://instagram.com/p/abc',
         caption: 'Handmade tote reel',
         mediaType: 'video',
@@ -909,12 +917,12 @@ describe('GET .../organizations/:organizationId/automations', () => {
     expect(response.body).toHaveLength(2);
     expect(response.body[0]).toMatchObject({
       name: 'Restock alert',
-      zernioPostId: 'post-2',
+      platformPostId: 'post-2',
       instagramAccountId: accountA,
       accountUsername: 'studio_a',
     });
     expect(response.body[1]).toMatchObject({
-      zernioPostId: 'post-1',
+      platformPostId: 'post-1',
       instagramAccountId: accountA,
     });
   });

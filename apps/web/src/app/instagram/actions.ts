@@ -50,3 +50,59 @@ export async function connectInstagramAction(formData: FormData): Promise<void> 
   // redirect to an external origin, not a route within this app.
   redirect(result.authUrl);
 }
+
+/** Starts the *direct Meta* connection for one already-Zernio-connected account (Phase 17).
+ *
+ * This is a second, separate OAuth flow, and deliberately so: Zernio runs the automations,
+ * while Meta is what makes a just-published reel listable immediately instead of hours later.
+ * See docs/ADR/0009-direct-meta-graph-api-for-post-listing.md. */
+export async function connectMetaAction(formData: FormData): Promise<void> {
+  const organizationId = formData.get('organizationId');
+  const accountId = formData.get('accountId');
+  if (typeof organizationId !== 'string' || !organizationId) {
+    redirect('/?meta=error');
+  }
+  if (typeof accountId !== 'string' || !accountId) {
+    redirect('/?meta=error');
+  }
+
+  let result: { authUrl: string };
+  try {
+    result = await callApi<{ authUrl: string }>(
+      `/api/organizations/${organizationId}/instagram/accounts/${accountId}/meta/connect`,
+      { method: 'POST' },
+    );
+  } catch (error) {
+    // Same reasoning as the Zernio connect action above: without this, a Meta app that is not
+    // configured (or a caller who lost membership) is a dead end with nothing in the logs.
+    console.error('[meta] connect failed:', error);
+    redirect('/?meta=error');
+  }
+
+  redirect(result.authUrl);
+}
+
+/** Removes the Meta connection. Listing falls back to Zernio; automations are untouched, since
+ * they live in Zernio regardless. */
+export async function disconnectMetaAction(formData: FormData): Promise<void> {
+  const organizationId = formData.get('organizationId');
+  const accountId = formData.get('accountId');
+  if (typeof organizationId !== 'string' || !organizationId) {
+    redirect('/?meta=error');
+  }
+  if (typeof accountId !== 'string' || !accountId) {
+    redirect('/?meta=error');
+  }
+
+  try {
+    await callApi(`/api/organizations/${organizationId}/instagram/accounts/${accountId}/meta`, {
+      method: 'DELETE',
+    });
+  } catch (error) {
+    console.error('[meta] disconnect failed:', error);
+    redirect('/?meta=error');
+  }
+
+  invalidateOrganizationCaches(organizationId, '/');
+  redirect('/?meta=disconnected');
+}

@@ -3,15 +3,36 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { z } from 'zod';
 import { Prisma, type InstagramAccountStatus } from '@automationdm/database';
 import { instagramCallbackSchema, listInstagramPostsQuerySchema } from '@automationdm/validation';
 import type { InstagramPost, InstagramProvider, ListPostsResult } from '@automationdm/zernio';
+import { MetaApiError, type MetaInstagramClient, type MetaPost } from '@automationdm/meta';
 import { PrismaService } from '../database/prisma.service';
 import { getAppUrl } from '../config/app-url';
 import { INSTAGRAM_PROVIDER } from './instagram-provider.token';
+import { MetaConnectionService } from './meta-connection.service';
+
+/** Maps a Meta media object into the shared domain shape the UI already renders.
+ *
+ * `zernioPostId` is null by construction: a post read from Meta has no Zernio `_id` until
+ * Zernio's own sync catches up, which is precisely the lag this path exists to bypass. Nothing
+ * downstream needs it - the pivot is `platformPostId`. */
+function metaPostToInstagramPost(post: MetaPost, zernioAccountId: string): InstagramPost {
+  return {
+    zernioPostId: null,
+    zernioAccountId,
+    platformPostId: post.platformPostId,
+    permalink: post.permalink,
+    caption: post.caption,
+    mediaType: post.mediaType,
+    thumbnailUrl: post.thumbnailUrl,
+    publishedAt: post.publishedAt,
+  };
+}
 
 export interface InstagramAccountSummary {
   id: string;
@@ -28,11 +49,26 @@ export type ConnectResult =
   | { alreadyConnected: false; authUrl: string }
   | { alreadyConnected: true; account: InstagramAccountSummary };
 
+/** The safe, outward-facing view of a Meta connection.
+ *
+ * Note what is absent: the access token, in any form. It never leaves apps/api, encrypted or
+ * otherwise - see docs/SECURITY.md. */
+export interface MetaConnectionSummary {
+  instagramAccountId: string;
+  igUserId: string;
+  status: 'CONNECTED' | 'RECONNECT_REQUIRED';
+  expiresAt: string;
+  lastUsedAt: string | null;
+}
+
 @Injectable()
 export class InstagramService {
+  private readonly logger = new Logger(InstagramService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     @Inject(INSTAGRAM_PROVIDER) private readonly provider: InstagramProvider,
+    private readonly metaConnections: MetaConnectionService,
   ) {}
 
   private async requireMembership(userId: string, organizationId: string): Promise<void> {
@@ -89,6 +125,14 @@ export class InstagramService {
       throw error;
     }
 
+    // Meta first (ADR 0009): it returns the account's media immediately and in full, where
+    // Zernio's poll-driven sync lags a newly published reel by hours and retains only ~12
+    // months. Measured on one real account at one moment: Meta 62 posts, Zernio 47.
+    const fromMeta = await this.listPostsFromMeta(account.id, account.zernioAccountId, page, limit);
+    if (fromMeta) {
+      return fromMeta;
+    }
+
     const organization = await this.prisma.client.organization.findUniqueOrThrow({
       where: { id: organizationId },
     });
@@ -106,14 +150,93 @@ export class InstagramService {
     });
   }
 
+  /** Lists from Meta, or returns null to mean "fall back to Zernio".
+   *
+   * Null covers both "this account has no Meta connection" (the ordinary case for an account
+   * that never connected one) and "the Meta call failed". Listing is a read path: a Meta outage
+   * must degrade to Zernio's slightly staler list, never fail the page. Only a token-level
+   * rejection marks the connection for reconnect - a transient failure has to be able to
+   * recover on its own. */
+  private async listPostsFromMeta(
+    instagramAccountId: string,
+    zernioAccountId: string,
+    page: number,
+    limit: number,
+  ): Promise<ListPostsResult | null> {
+    let client: MetaInstagramClient | null;
+    try {
+      client = await this.metaConnections.getClient(instagramAccountId);
+    } catch (error) {
+      this.logger.warn(
+        `Could not resolve a Meta client for account ${instagramAccountId}; falling back to Zernio.`,
+        error instanceof Error ? error.message : undefined,
+      );
+      return null;
+    }
+    if (!client) {
+      return null;
+    }
+
+    try {
+      const { posts, truncated } = await client.listMedia();
+      if (truncated) {
+        // Never let a bounded walk read as "this is everything".
+        this.logger.warn(
+          `Meta media list for account ${instagramAccountId} hit the page cap; ` +
+            'older posts beyond 500 items are not shown.',
+        );
+      }
+
+      // Meta paginates by cursor while this API (and the web UI built on it) is page/limit.
+      // The full list is walked in the client and sliced here rather than leaking a second
+      // pagination model into the UI - see packages/meta.
+      const total = posts.length;
+      const start = (page - 1) * limit;
+      const slice = posts.slice(start, start + limit);
+
+      await this.metaConnections.recordSuccess(instagramAccountId);
+
+      return {
+        posts: slice.map((post) => metaPostToInstagramPost(post, zernioAccountId)),
+        pagination: { page, limit, total, pages: Math.max(1, Math.ceil(total / limit)) },
+      };
+    } catch (error) {
+      if (error instanceof MetaApiError && error.isAuthError) {
+        await this.metaConnections.markReconnectRequired(
+          instagramAccountId,
+          'Meta rejected the token while listing media',
+        );
+      } else {
+        this.logger.warn(
+          `Meta listMedia failed for account ${instagramAccountId}; falling back to Zernio.`,
+          error instanceof Error ? error.message : undefined,
+        );
+      }
+      return null;
+    }
+  }
+
+  /** Fetches one post by **Instagram's media id** (the pivot since Phase 17), not Zernio's `_id`. */
   async getPost(
     userId: string,
     organizationId: string,
     accountId: string,
-    postId: string,
+    platformPostId: string,
   ): Promise<InstagramPost> {
     await this.requireMembership(userId, organizationId);
     const account = await this.requireOwnAccount(organizationId, accountId);
+
+    // Meta first, same reasoning as listPosts. Note this is a genuine single-object read -
+    // Zernio's GET /v1/posts/{postId} 404s for synced posts, which is why its own getPost has
+    // to scan a 500-item list instead (docs/ZERNIO-INTEGRATION.md).
+    const fromMeta = await this.getPostFromMeta(
+      account.id,
+      account.zernioAccountId,
+      platformPostId,
+    );
+    if (fromMeta) {
+      return fromMeta;
+    }
 
     const organization = await this.prisma.client.organization.findUniqueOrThrow({
       where: { id: organizationId },
@@ -126,7 +249,7 @@ export class InstagramService {
     const post = await this.provider.getPost({
       zernioProfileId: organization.zernioProfileId,
       zernioAccountId: account.zernioAccountId,
-      zernioPostId: postId,
+      platformPostId,
     });
     // Defense in depth on top of listPosts's own accountId scoping (see getPost's doc comment
     // in packages/zernio) - same "never trust an unscoped id" discipline as the callback
@@ -135,6 +258,51 @@ export class InstagramService {
       throw new NotFoundException('Post not found.');
     }
     return post;
+  }
+
+  /** Reads one post from Meta, or null to fall back to Zernio. Same degradation rules as
+   * listPostsFromMeta - a missing connection and a failed call are both "try Zernio", and only
+   * a rejected token marks the connection for reconnect.
+   *
+   * A post Meta genuinely does not have (deleted, or belonging to another account) also returns
+   * null here rather than throwing, so the Zernio path still gets its turn before the caller
+   * concludes the post does not exist. */
+  private async getPostFromMeta(
+    instagramAccountId: string,
+    zernioAccountId: string,
+    platformPostId: string,
+  ): Promise<InstagramPost | null> {
+    let client: MetaInstagramClient | null;
+    try {
+      client = await this.metaConnections.getClient(instagramAccountId);
+    } catch {
+      return null;
+    }
+    if (!client) {
+      return null;
+    }
+
+    try {
+      const post = await client.getMedia(platformPostId);
+      if (!post) {
+        return null;
+      }
+      await this.metaConnections.recordSuccess(instagramAccountId);
+      return metaPostToInstagramPost(post, zernioAccountId);
+    } catch (error) {
+      if (error instanceof MetaApiError && error.isAuthError) {
+        await this.metaConnections.markReconnectRequired(
+          instagramAccountId,
+          'Meta rejected the token while reading media',
+        );
+      } else {
+        this.logger.warn(
+          `Meta getMedia failed for account ${instagramAccountId}; falling back to Zernio.`,
+          error instanceof Error ? error.message : undefined,
+        );
+      }
+      return null;
+    }
   }
 
   async createConnectUrl(userId: string, organizationId: string): Promise<ConnectResult> {
@@ -319,6 +487,97 @@ export class InstagramService {
       throw error;
     }
   }
+
+  // --- Direct Meta connection (Phase 17) -------------------------------------------------
+  // Separate from the Zernio connect flow above. An account needs both: Zernio to run the
+  // automations, Meta so a just-published reel is listable now rather than in a few hours.
+
+  async createMetaConnectUrl(
+    userId: string,
+    organizationId: string,
+    accountId: string,
+  ): Promise<{ authUrl: string }> {
+    await this.requireMembership(userId, organizationId);
+    const account = await this.requireOwnAccount(organizationId, accountId);
+
+    return {
+      authUrl: this.metaConnections.createAuthorizeUrl(userId, organizationId, account.id),
+    };
+  }
+
+  async handleMetaCallback(
+    userId: string,
+    organizationId: string,
+    body: unknown,
+  ): Promise<MetaConnectionSummary> {
+    await this.requireMembership(userId, organizationId);
+
+    const parsed = metaCallbackSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.issues[0]?.message ?? 'Invalid callback payload.');
+    }
+
+    // The connection is bound using the organization and account named by the *signed* state,
+    // not the route's organizationId. Those must agree: a callback whose state names a
+    // different organization must not bind a connection just because the caller happens to be
+    // a member of this one.
+    const result = await this.metaConnections.handleCallback(parsed.data.code, parsed.data.state);
+    if (result.organizationId !== organizationId) {
+      throw new NotFoundException('Instagram account not found.');
+    }
+
+    const connection = await this.prisma.client.metaConnection.findUnique({
+      where: { instagramAccountId: result.instagramAccountId },
+    });
+    if (!connection) {
+      throw new NotFoundException('Meta connection not found after callback.');
+    }
+    return toMetaSummary(connection);
+  }
+
+  async getMetaConnection(
+    userId: string,
+    organizationId: string,
+    accountId: string,
+  ): Promise<MetaConnectionSummary | null> {
+    await this.requireMembership(userId, organizationId);
+    const account = await this.requireOwnAccount(organizationId, accountId);
+
+    const connection = await this.prisma.client.metaConnection.findUnique({
+      where: { instagramAccountId: account.id },
+    });
+    return connection ? toMetaSummary(connection) : null;
+  }
+
+  async disconnectMeta(userId: string, organizationId: string, accountId: string): Promise<void> {
+    await this.requireMembership(userId, organizationId);
+    const account = await this.requireOwnAccount(organizationId, accountId);
+
+    // Deleting the connection is not destructive to anything the user can see: listing simply
+    // falls back to Zernio, and automations are unaffected because they live in Zernio anyway.
+    await this.metaConnections.disconnect(organizationId, account.id);
+  }
+}
+
+const metaCallbackSchema = z.object({
+  code: z.string().min(1, 'Missing authorization code.'),
+  state: z.string().min(1, 'Missing OAuth state.'),
+});
+
+function toMetaSummary(connection: {
+  instagramAccountId: string;
+  igUserId: string;
+  status: string;
+  expiresAt: Date;
+  lastUsedAt: Date | null;
+}): MetaConnectionSummary {
+  return {
+    instagramAccountId: connection.instagramAccountId,
+    igUserId: connection.igUserId,
+    status: connection.status === 'RECONNECT_REQUIRED' ? 'RECONNECT_REQUIRED' : 'CONNECTED',
+    expiresAt: connection.expiresAt.toISOString(),
+    lastUsedAt: connection.lastUsedAt?.toISOString() ?? null,
+  };
 }
 
 function toSummary(account: {

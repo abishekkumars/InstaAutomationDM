@@ -138,6 +138,17 @@ for no benefit. Roadmap order is therefore not execution order for these two —
   - [x] Phase 16.3 — visible outline on the enable toggle, and mobile viewport/scroll fixes.
     Requirements 14-15.
 
+- [x] **Phase 17 — direct Meta Graph API read path** (`docs/ADR/0009-direct-meta-graph-api-for-post-listing.md`)
+  - [x] ADR 0009 + correction of a false claim in `docs/ZERNIO-INTEGRATION.md` (trial reels
+    posted from the Instagram app **do** sync; they were never permanently invisible).
+  - [x] `packages/meta` — read-only Graph client and Business Login OAuth.
+  - [x] `MetaConnection` table, token encrypted at rest, and the `zernioPostId` →
+    `platformPostId` pivot (two staged migrations).
+  - [x] Meta-first `listPosts`/`getPost` with Zernio fallback.
+  - [x] Automations keyed on the media id, with the blocking `getPost` round trip removed.
+  - See the "Phase 17 report" below, including **what still has to be done by hand before
+    production**.
+
 All 20 requirements of the 2026-08-14 change request are implemented. **Phases 11-14 below
 remain outstanding** — the webhook ingestion that makes automations actually record their
 results is still the next real piece of product work.
@@ -2577,3 +2588,215 @@ typecheck and a production build - **not** by clicking through it. The session-e
 the mobile viewport fix, and the reworked automation wizard are the three worth exercising by
 hand before trusting them.
 
+
+## Phase 17 report
+
+**Direct Meta Graph API read path.** Full reasoning and measurements:
+`docs/ADR/0009-direct-meta-graph-api-for-post-listing.md`.
+
+### The requirement was based on a false premise, and the premise was corrected first
+
+It arrived as *"trial reels aren't listed, Zernio says they're out of scope."* Two things were
+established against Meta's live docs and a real account on 2026-08-19:
+
+- **Trial reels do sync.** One published 2026-08-18 appeared the next day.
+  `docs/ZERNIO-INTEGRATION.md` had claimed such reels were *"invisible to Zernio and therefore
+  to this project - permanently, not just until the next sync."* That was written without ever
+  being tested, and it was wrong. Corrected.
+- **No API can label a reel as a trial.** Meta's IG Media object has no trial or graduation
+  field; `trial_params` is publish-time only. `is_shared_to_feed` was evaluated as a proxy and
+  rejected on evidence - it is the "Also share to Feed" toggle, and 22 of 57 reels on the test
+  account carry `false` across 13 months. Do not reintroduce an inference for it.
+
+The real problem was **sync latency**, which affects every new post equally:
+
+| Source | Posts | Freshness |
+|---|---|---|
+| Meta `GET /me/media` | 62 (57 `REELS`, 5 `FEED`) | immediate |
+| Zernio `GET /v1/posts?source=external` | 47 | hours to a day behind |
+
+Following Meta's `after` cursor returned `{"data": []}`, confirming 62 as complete. The 15-item
+gap is 1 unsynced post plus ~14 older than Zernio's ~12-month retention. No trial-specific
+exclusion anywhere.
+
+### The finding the whole phase rests on
+
+Zernio's `POST /v1/comment-automations` accepts `platformPostId` **without** `postId`, and the
+automation fires on a real comment. Verified by hand. Zernio's `postId` is its own `_id`, which
+does not exist until its sync catches up - so without this, a Meta-sourced post could be
+displayed but never automated, which is worse than not showing it.
+
+### What changed
+
+- **`packages/meta`** (new): read-only Graph client + Business Login OAuth. Cursor pagination
+  walked internally, **bounded to 5 pages / 500 items**, reporting `truncated` rather than
+  silently cutting the list. All four OAuth endpoints verified against Meta's live docs before
+  any code was written, per `CLAUDE.md`.
+- **`MetaConnection` table** with the access token **encrypted at rest** (AES-256-GCM,
+  `packages/shared/src/token-crypto.ts`). This project previously stored no third-party token
+  at all, so `docs/SECURITY.md` gained an at-rest section.
+- **The pivot moved from `zernioPostId` to `platformPostId`** (Instagram's media id) across the
+  schema, the API routes, `apps/web`'s `/instagram/posts/[postId]` route, and the automations
+  table's unique constraint. Two staged migrations: `20260819154500` (additive) and
+  `20260819163000` (drops `zernio_post_id`).
+- **Meta-first `listPosts`/`getPost`, Zernio fallback.** A missing connection and a failed call
+  both fall back; only a token-level rejection sets `RECONNECT_REQUIRED`, so a Meta outage
+  recovers on its own instead of nagging the user to re-authorize.
+- **`AutomationsService.create` no longer calls `getPost`.** That round trip existed only to
+  translate Zernio's `_id` into a media id, and it was the single thing making a freshly
+  published reel unautomatable.
+
+### Commands executed and results
+
+| Command | Result |
+|---|---|
+| `prisma migrate deploy` (migration A, then B) | both applied to the local database |
+| `scripts/test.ps1` | **169/169 passed** (18 shared + 17 meta + 16 validation + 16 database + 102 api) |
+| `scripts/lint.ps1` | ESLint 0 errors; typecheck Done in all 9 projects; prettier clean |
+
+7 new e2e tests cover the Meta path against the real `AppModule`, with `fetch` stubbed - never
+a live Graph call, per `docs/TESTING.md`.
+
+### NOT DONE - required by hand before this reaches production
+
+1. **Create the Meta app and set `META_APP_ID` / `META_APP_SECRET` / `META_REDIRECT_URI` /
+   `META_TOKEN_ENCRYPTION_KEY`.** Documented in `.env.example` with no values. Until these are
+   set, every account silently falls back to Zernio - the feature is inert, not broken.
+2. **Run the migrations against production in order, with the backfill between them.** The
+   local database had **zero** automation rows, so migration B was trivially safe here and
+   proves nothing about production, which has real automations:
+   - apply migration A
+   - run `packages/database/dev/phase17-backfill-platform-post-id.mjs` (must exit 0)
+   - confirm with `packages/database/dev/phase17-backfill-check.mjs`
+   - only then apply migration B
+
+   Migration B's `SET NOT NULL` will **fail** on any un-backfilled row. That failure is the
+   safety net working.
+3. **Verify the end-to-end claim on a real account**: publish a reel, confirm it appears
+   immediately, create an automation on it *before* Zernio has synced it, comment, and confirm
+   the DM arrives. Nothing short of that proves the phase did what it exists to do.
+
+### Known limitations
+
+- **Users now connect twice** - once via Zernio for automations, once via Meta for listing.
+  Real friction, deliberately not hidden.
+- **Bookmarked `/instagram/posts/<zernio-id>` links no longer resolve.** Acceptable at 3-4
+  internal users; called out rather than silently accepted.
+- **Meta tokens expire in 60 days.** Refresh is lazy and best-effort; failure surfaces as
+  `RECONNECT_REQUIRED`. Zernio previously absorbed this entirely.
+- `apps/web` remains uncovered by automated tests. The Meta connect/disconnect actions and the
+  callback route are verified by typecheck and build only - **exercise them by hand.**
+- Whether a comment webhook fires for an ungraduated trial reel is **still untested**. It was
+  never established, and Phase 11 (webhook ingestion) has not been built regardless.
+
+### Phase 17 addendum — hydration fix on the posts list
+
+A **pre-existing** bug (present since Phase 10.2b, not introduced here) surfaced during Phase 17
+testing: `new Date(x).toLocaleDateString()` with no arguments resolves both the locale and the
+time zone from whatever environment it runs in, so Next's server rendered `19/08/2026` while the
+browser rendered `19/8/2026` — different ICU locale data, same code. React threw
+*"server rendered text didn't match the client"* and regenerated the whole post-list subtree on
+the client.
+
+Fixed with `apps/web/src/lib/format-date.ts`, which pins **both** the locale and the time zone.
+Pinning only the locale would leave a real mismatch: a reel published at 23:30 UTC falls on a
+different calendar day for a viewer east of it, so server and client would legitimately disagree
+about the date itself, not just its formatting.
+
+Dates now render as `18 Aug 2026` / `18 Aug 2026, 14:31 UTC` — stable across both runtimes, and
+free of the dd/mm-vs-mm/dd ambiguity the old format had. Applied to all three call sites
+(`posts-browser.tsx` grid and list cards, and the post detail page).
+
+### Phase 17 addendum 2 — `Invalid redirect_uri` on connect
+
+First real connect attempt failed with Instagram's `Invalid redirect_uri`. Root cause was
+configuration, not code, but the code made it undiagnosable - so the fix is a guard, not a
+workaround. Full reasoning in ADR 0009, "Amendment 2026-08-19b".
+
+- `META_REDIRECT_URI` was `https://localhost:3000/...` while `APP_URL` and `next dev` are plain
+  HTTP. `MetaConnectionService.assertUsableRedirectUri` now rejects a redirect URI whose origin
+  differs from `APP_URL`, naming both values. This catches the nastier variant of the bug, where
+  Meta accepts the URI and the flow instead dies *after* consent with the code already spent.
+- The exact `redirect_uri` / `client_id` / `scope` are now logged at connect time, because Meta's
+  error page names none of them. Fill the dashboard field by copy-paste.
+- `META_APP_ID` / `META_APP_SECRET` / `META_REDIRECT_URI` are `trim()`ed on read - one trailing
+  space produces the identical opaque error.
+- `.env` corrected to `http://localhost:3000/instagram/meta/callback`, matching `APP_URL`.
+
+4 new e2e tests cover the guard. **Still unresolved**: whether Meta's dashboard accepts a
+`localhost` redirect URI at all. Their docs do not say, and it was not tested - if it refuses,
+local development needs a tunnel or a deployed origin.
+
+### Phase 17 addendum 3 — the actual cause of `Invalid redirect_uri`
+
+Traced by calling the **running** API's connect endpoint directly and reading the
+`redirect_uri` it produced. It was sending `http://localhost:3000/...` while `.env` said
+`https://...`.
+
+**`.env` is read into `process.env` once, when the process starts.** Editing it leaves a
+long-running `nest start --watch` serving the old value indefinitely - a source-file recompile
+does not re-read it. So the dashboard could never match, no matter what was registered there,
+and Meta reported only its undiagnosable `Invalid redirect_uri`.
+
+Fixed:
+- `APP_URL` and `NEXT_PUBLIC_APP_URL` moved to `https://localhost:3000`, matching the
+  `next dev -p 3000 --experimental-https` the web app actually runs. `META_REDIRECT_URI` is
+  `https://localhost:3000/instagram/meta/callback`. All three now share one origin, which is what
+  `assertUsableRedirectUri` requires.
+- `MetaConnectionService.onModuleInit` logs the redirect URI in use at **startup**, so a stale
+  process announces itself without anyone having to click Connect. Verified on a real restart:
+  `Meta configured: redirect_uri=https://localhost:3000/instagram/meta/callback`.
+- `NEXT_PUBLIC_API_URL` deliberately left on plain HTTP. `apps/web/src/lib/api.ts` is
+  server-side only (it holds `API_INTERNAL_SECRET`), so there is no browser request to
+  `localhost:4000` and therefore no mixed-content block.
+
+**Still not verified: whether Meta accepts this URI.** Instagram validates `redirect_uri` only
+*after* the user logs in - confirmed by testing a deliberately unregistered URI, which reached
+the same login page rather than an error. So the authorize URL cannot be checked without signing
+into the account, and that is the account owner's to do. The remaining variable is entirely the
+App Dashboard's OAuth redirect URIs list.
+
+### Warning: the e2e suite wipes the local dev database
+
+Not new, and not specific to Phase 17 - `apps/api`'s e2e suites `deleteMany()` users,
+organizations, memberships, Instagram accounts and automations in `beforeEach`, described in
+their own comments as "a throwaway local dev database". Running `scripts/test.ps1` therefore
+destroys whatever local data you had, including a connected Instagram account.
+
+This bit during Phase 17 debugging: repeated test runs cleared the developer's own connected
+account and organization, and a probe against the API then 401'd purely because the user row was
+gone. Worth either pointing the suites at a separate database or being deliberate about when the
+full suite runs against a dev database holding a real connection.
+
+### Phase 17 addendum 4 — every page 404ing, and where the redirect_uri question stands
+
+**All pages 404 (fixed).** Self-inflicted: running `pnpm --filter web run build` while a
+`next dev` server was in play left `apps/web/.next` holding *both* a production build
+(`BUILD_ID`, `prerender-manifest.json`) and dev artifacts. The dev server then 404'd the public
+routes (`/sign-in`, `/sign-up`, `/status`) while the proxy kept redirecting every protected route
+*to* the 404ing sign-in page - so the whole app looked dead.
+
+Fix is `rm -rf apps/web/.next` and restart dev. Verified after: `/sign-in` 200, `/sign-up` 200,
+`/status` 200, `/admin` 307. **Do not run `next build` against a repo with a live dev server** -
+they share `.next`.
+
+**`apps/api`'s `start` script does not compile.** It is `node dist/main.js`, so
+`scripts/pnpm.ps1 --filter @automationdm/api run start` happily serves a stale `dist` after a
+source change. Cost 10 minutes of believing a code change had not taken effect. Run
+`run build` first, or use the `--watch` dev script.
+
+**The redirect_uri rejection is now confirmed server-side, not a config mismatch on our end.**
+The failure moved: it used to fire before Instagram login, and now fires *after* a successful
+login, which means Meta is genuinely validating and rejecting the URI rather than choking on the
+request shape. Our side is verified correct - the API announces
+`redirect_uri="https://localhost:3000/instagram/meta/callback"` at boot, and `APP_URL`,
+`NEXT_PUBLIC_APP_URL` and `META_REDIRECT_URI` all share that origin.
+
+What remains is the App Dashboard entry, which cannot be read from here. Meta's own docs name the
+most likely difference: *"the App Dashboard might have added a trailing slash to your URIs, so we
+recommend that you verify by checking the list."* The boot log now quotes the value so a trailing
+slash or trailing space is visible, and says to copy **from** the dashboard **into** `.env` rather
+than the reverse.
+
+`https://localhost` itself is not the blocker - it is a documented working setup with
+`next dev --experimental-https`, which is what this project already runs.
