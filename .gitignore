@@ -26,6 +26,11 @@ coverage/
 .tools/postgres-data/
 *.rdb
 
+# Self-signed dev certificates from `next dev --experimental-https` (mkcert). Per-machine,
+# and the key must never be committed. Needed locally because Meta's Business Login requires
+# an HTTPS redirect URI (META_REDIRECT_URI).
+apps/web/certificates/
+
 # Logs
 *.log
 npm-debug.log*

@@ -65,7 +65,14 @@ export interface ListPostsInput {
  * just a video-`mediaType` post on Instagram's own model; Zernio does not expose a separate
  * "is this a reel" flag, so none is invented here. */
 export interface InstagramPost {
-  zernioPostId: string;
+  /** Zernio's own post id.
+   *
+   * **Nullable since Phase 17.** A post sourced directly from Meta has no Zernio `_id` - Zernio
+   * only mints one once its own poll-driven sync catches up, which can be hours after
+   * publishing. Callers must key off `platformPostId` instead; this is retained only for
+   * reconciling against Zernio's own automation records. See
+   * docs/ADR/0009-direct-meta-graph-api-for-post-listing.md. */
+  zernioPostId: string | null;
   /** Which Zernio account this post is published under. Verified against ZernioInstagramProvider
    * before returning post data to a caller, the same "never trust an unscoped id" discipline as
    * Phase 8's callback handler - see getPost's doc comment below for why this still matters even
@@ -88,7 +95,9 @@ export interface ListPostsResult {
 export interface GetPostInput {
   zernioProfileId: string;
   zernioAccountId: string;
-  zernioPostId: string;
+  /** Instagram's own media id - the pivot since Phase 17, replacing Zernio's `_id`. It is the
+   * only identifier both the Meta and Zernio listing paths can produce. */
+  platformPostId: string;
 }
 
 /** An inline DM button - title + link only. Zernio's real `DmButton` schema also supports
@@ -110,10 +119,17 @@ export type AutomationAudience = 'any' | 'follower' | 'non_follower';
 export interface CreateCommentAutomationInput {
   zernioProfileId: string;
   zernioAccountId: string;
-  /** Zernio's own post id (the `_id` from listPosts). Sent as Zernio's `postId` field, which
-   * its spec marks "required only when also targeting a specific post via platformPostId" -
-   * which this project always does. */
-  zernioPostId: string;
+  /** Zernio's own post id (the `_id` from listPosts), sent as Zernio's `postId` field.
+   *
+   * **Optional since Phase 17, and this is load-bearing.** Zernio's spec marks `postId` as
+   * "required only when also targeting a specific post via platformPostId", which this project
+   * had read as mandatory. Verified by hand on 2026-08-19: a create carrying `platformPostId`
+   * and no `postId` returns 201 and the automation **fires correctly on a real comment**.
+   *
+   * That is what makes a freshly published reel automatable at all - Zernio's `_id` does not
+   * exist until its sync catches up hours later, while Instagram's media id is available from
+   * Meta immediately. Omitted whenever the post came from Meta. */
+  zernioPostId?: string;
   /** The *Instagram* media id (`InstagramPost.platformPostId`), which is what Zernio's
    * `platformPostId` field actually means ("Platform media/post ID"). These are two different
    * ids and must not be swapped: sending Zernio's own `_id` here creates an automation Zernio

@@ -194,6 +194,38 @@ callback handler, per `docs/ZERNIO-INTEGRATION.md`'s "Account connection" sectio
 - `@@index([organizationId])` — "list an organization's connected accounts," every
   account-picker UI load from Phase 8 on.
 
+## `MetaConnection` (table added Phase 17)
+
+A **direct** Meta Graph API connection for one Instagram account, alongside — not instead of —
+the Zernio connection on `InstagramAccount`. Zernio remains the system of record for
+automations; Meta is read-only and exists solely so a newly published reel is listable
+immediately rather than after Zernio's poll catches up. Full reasoning:
+`docs/ADR/0009-direct-meta-graph-api-for-post-listing.md`.
+
+- `organizationId` — denormalised from `InstagramAccount` so every query can be
+  organization-scoped without a join, per the tenant isolation rule above.
+- `instagramAccountId` — `@unique` FK, making this a true 1:1. An account either has a Meta
+  connection or falls back to Zernio for listing; a second connection for one account has no
+  meaning.
+- `igUserId` — Instagram's own user id from Meta's `GET /me`. **Not** the same value as
+  `InstagramAccount.zernioAccountId`, which is Zernio's identifier for the same account.
+- `accessTokenEncrypted` — the long-lived Instagram user access token, **encrypted at rest**
+  (AES-256-GCM, `packages/shared/src/token-crypto.ts`). Holds the whole
+  `v1.<iv>.<tag>.<ciphertext>` envelope, so no separate IV column has to be kept in sync with
+  it. Never logged, never returned to `apps/web` in any form — see `docs/SECURITY.md`.
+- `expiresAt` — Meta long-lived tokens last 60 days. Drives the lazy refresh: a token inside
+  its last 7 days is refreshed on next use.
+- `scopes` — what Meta actually granted, so a future feature needing a scope this connection
+  lacks can detect that and prompt a reconnect instead of failing with an opaque permissions
+  error at call time.
+- `status` — `CONNECTED` | `RECONNECT_REQUIRED`. Set to the latter only when Meta rejects the
+  **credential** (OAuthException 190/102) or a refresh fails — never for a transient error. A
+  Meta outage must recover on its own rather than nagging the user to re-authorize.
+- `lastUsedAt` — observability only; nullable until the first successful call, because "never
+  used" and "used to work" are different facts.
+- `@@index([organizationId])` — "list an organization's Meta connections," the settings/status
+  view.
+
 ## `Automation` (table added Phase 10)
 
 A comment-to-DM automation, one row per Zernio comment-automation this app created. See
@@ -207,8 +239,16 @@ the automation itself; this table only mirrors the config it was created with.
 - `zernioAutomationId` — **globally unique** `String`, same reasoning as
   `InstagramAccount.zernioAccountId`: an inbound webhook (Phase 11) identifies the automation
   only by this id, and that lookup must have exactly one answer.
-- `zernioPostId` — Zernio's own post id (`platformPostId`) this automation is scoped to. The
-  post/reel's own content is never stored locally (per ADR 0005) — only this id.
+- `platformPostId` — **Instagram's own media id**, the post/reel this automation is scoped to.
+  The post/reel's own content is never stored locally (per ADR 0005) — only this id.
+  - This replaced `zernioPostId` as the pivot in Phase 17, in a two-step migration (add +
+    backfill, then drop). Zernio only mints its own `_id` once its poll-driven sync catches up
+    — hours after publishing — which made a freshly published reel unautomatable. The media id
+    is available from Meta immediately, is what an incoming comment actually reports, and is
+    what Zernio's `POST /v1/comment-automations` takes as `platformPostId`. See
+    `docs/ADR/0009-direct-meta-graph-api-for-post-listing.md`.
+  - Zernio's own post id is **no longer stored at all**. It was only ever needed to translate
+    into this one, and requiring it is precisely what blocked unsynced posts.
 - `keywords` — `String[]` (Postgres text array), **not** a single `String` — Zernio's own
   `POST /v1/comment-automations` takes an array of keywords per automation
   (`docs/ZERNIO-INTEGRATION.md`), and this project's product model is "one keyword, or a
@@ -249,8 +289,10 @@ the automation itself; this table only mirrors the config it was created with.
   `packages/validation`'s `createAutomationSchema`, not by this column (Postgres has no
   conditional length constraint here).
 - `isActive` — `Boolean`, defaults `true`.
-- `@@unique([instagramAccountId, zernioPostId])` — mirrors Zernio's own "only one active
+- `@@unique([instagramAccountId, platformPostId])` — mirrors Zernio's own "only one active
   per-post automation" rule at our own data layer too, not just trusted from Zernio's `409`.
+  Keyed on the media id since Phase 17, which is what "one automation per post" actually means
+  once the post can arrive from either Meta or Zernio.
 - `@@index([organizationId])` — "list an organization's automations." Originally described
   here as a future Phase 12 dashboard view; the list endpoint itself
   (`GET /organizations/:organizationId/automations`, `AutomationsService.listForOrganization`)

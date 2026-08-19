@@ -5,12 +5,17 @@ import {
   getAutomations,
   getAutomationsWithMeta,
   getInstagramAccounts,
+  getMetaConnection,
   getMembers,
   getOrganizations,
   sumStats,
 } from './dashboard-data';
 import { DataAge } from './freshness';
-import { connectInstagramAction } from './instagram/actions';
+import {
+  connectInstagramAction,
+  connectMetaAction,
+  disconnectMetaAction,
+} from './instagram/actions';
 import { FormPendingOverlay, LoadingLink } from './loader';
 import { AutomationsTableSkeleton, CardSkeleton, StatCardsSkeleton } from './skeleton';
 import { SyncButton } from './sync-button';
@@ -238,16 +243,74 @@ async function AccountsSection({ organizationId }: { organizationId: string }) {
                 {account.status.toLowerCase()}
               </span>
             </span>
-            <LoadingLink
-              href={`/instagram/posts?accountId=${account.id}`}
-              className="shrink-0 text-accent hover:underline"
-            >
-              View posts →
-            </LoadingLink>
+            <span className="flex shrink-0 items-center gap-3">
+              <MetaConnectionControl organizationId={organizationId} accountId={account.id} />
+              <LoadingLink
+                href={`/instagram/posts?accountId=${account.id}`}
+                className="text-accent hover:underline"
+              >
+                View posts →
+              </LoadingLink>
+            </span>
           </li>
         ))}
       </ul>
     </div>
+  );
+}
+
+/** The direct-Meta connection control for one account (Phase 17).
+ *
+ * Deliberately understated: this is a *second* connection on top of Zernio's, and the only thing
+ * it buys the user is that a just-published reel shows up now instead of in a few hours. The
+ * copy says exactly that rather than implying the account is not properly connected without it —
+ * everything keeps working on the Zernio fallback.
+ * See docs/ADR/0009-direct-meta-graph-api-for-post-listing.md. */
+async function MetaConnectionControl({
+  organizationId,
+  accountId,
+}: {
+  organizationId: string;
+  accountId: string;
+}) {
+  const connection = await getMetaConnection(organizationId, accountId);
+
+  if (connection?.status === 'CONNECTED') {
+    return (
+      <form action={disconnectMetaAction}>
+        <input type="hidden" name="organizationId" value={organizationId} />
+        <input type="hidden" name="accountId" value={accountId} />
+        <button
+          type="submit"
+          title="Posts are read directly from Meta, so new reels appear immediately. Disconnecting falls back to Zernio's slower sync."
+          className="text-xs text-text-faint hover:text-text-muted hover:underline"
+        >
+          instant sync on
+        </button>
+      </form>
+    );
+  }
+
+  return (
+    <form action={connectMetaAction}>
+      <input type="hidden" name="organizationId" value={organizationId} />
+      <input type="hidden" name="accountId" value={accountId} />
+      <button
+        type="submit"
+        title={
+          connection?.status === 'RECONNECT_REQUIRED'
+            ? 'Meta rejected the stored token. Reconnect to keep new posts appearing immediately.'
+            : 'Connect Meta so newly published reels appear immediately instead of after Zernio syncs.'
+        }
+        className={
+          connection?.status === 'RECONNECT_REQUIRED'
+            ? 'text-xs text-danger hover:underline'
+            : 'text-xs text-text-faint hover:text-text-muted hover:underline'
+        }
+      >
+        {connection?.status === 'RECONNECT_REQUIRED' ? 'reconnect Meta' : 'enable instant sync'}
+      </button>
+    </form>
   );
 }
 

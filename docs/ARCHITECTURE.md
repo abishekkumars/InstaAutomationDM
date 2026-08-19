@@ -49,14 +49,23 @@ packages/
   shared/               cross-cutting types/utilities (e.g. the internal service token)
   validation/           Zod schemas (form + webhook validation)
   zernio/                InstagramProvider + ZernioInstagramProvider (real, Phase 8 - account connection)
+  meta/                  read-only Meta Graph client + Business Login OAuth (Phase 17, ADR 0009)
   automation-engine/     comment-automation matching (simplified shape, see docs/AUTOMATION-ENGINE.md)
 docs/        all artifacts described in the master prompt
 scripts/     PowerShell dev scripts (project-local tooling only)
 ```
 
-`packages/automation-engine` and `packages/zernio` are deliberately separate from
-`apps/api` so automation matching can be unit tested with no NestJS or database
-dependency, and so Zernio is never called directly from anywhere except `packages/zernio`.
+`packages/automation-engine`, `packages/zernio` and `packages/meta` are deliberately separate
+from `apps/api` so automation matching can be unit tested with no NestJS or database
+dependency, and so neither Zernio nor Meta is ever called directly from anywhere except its own
+package.
+
+**Two providers, one boundary** (Phase 17). Posts/reels are listed from Meta's Graph API when
+the account has a Meta connection, falling back to Zernio otherwise — Zernio's sync lags a newly
+published reel by hours and retains only ~12 months, which made a just-posted reel unautomatable
+exactly when it mattered. Automations still go through Zernio exclusively; Meta is read-only.
+The pivot for posts and automations is Instagram's own media id (`platformPostId`), the only
+identifier both sources carry. See `docs/ADR/0009-direct-meta-graph-api-for-post-listing.md`.
 
 `infra/docker/`, `infra/nginx/`, and the root `docker-compose.yml` exist as unused
 placeholders from Phase 0 (written before this project's actual scale was known) — not part

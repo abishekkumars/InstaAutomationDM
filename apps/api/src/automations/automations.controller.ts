@@ -18,6 +18,8 @@ import {
   type AutomationSummary,
 } from './automations.service';
 
+/** `:postId` is **Instagram's own media id** since Phase 17, matching the post routes it hangs
+ * off - see docs/ADR/0009-direct-meta-graph-api-for-post-listing.md. */
 @Controller('organizations/:organizationId/instagram/accounts/:accountId/posts/:postId/automations')
 @UseGuards(SessionGuard)
 export class AutomationsController {

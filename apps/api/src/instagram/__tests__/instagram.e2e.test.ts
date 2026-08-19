@@ -96,7 +96,7 @@ class FakeInstagramProvider implements InstagramProvider {
 
   async getPost(input: GetPostInput): Promise<InstagramPost | null> {
     for (const posts of this.postsByAccount.values()) {
-      const found = posts.find((p) => p.zernioPostId === input.zernioPostId);
+      const found = posts.find((p) => p.platformPostId === input.platformPostId);
       if (found) {
         return found;
       }
@@ -114,7 +114,7 @@ class FakeInstagramProvider implements InstagramProvider {
     return {
       zernioAutomationId: 'unused',
       zernioAccountId: input.zernioAccountId,
-      zernioPostId: input.zernioPostId,
+      zernioPostId: input.zernioPostId ?? null,
       platformPostId: input.platformPostId,
       name: input.name,
       keywords: input.keywords,
@@ -152,9 +152,11 @@ class FakeInstagramProvider implements InstagramProvider {
   }
 }
 
-function fakePost(overrides: Partial<InstagramPost> & { zernioPostId: string }): InstagramPost {
+// Keyed on `platformPostId` since Phase 17 - it is the pivot the post routes and automations
+// use, and the only id a Meta-sourced post has at all (`zernioPostId` is null for those).
+function fakePost(overrides: Partial<InstagramPost> & { platformPostId: string }): InstagramPost {
   return {
-    platformPostId: null,
+    zernioPostId: null,
     permalink: null,
     caption: '',
     mediaType: null,
@@ -534,8 +536,8 @@ describe('GET /api/organizations/:id/instagram/accounts/:accountId/posts', () =>
       'acme_ig',
     );
     fakeProvider.setPosts('ig-acct-1', [
-      fakePost({ zernioPostId: 'post-1', zernioAccountId: 'ig-acct-1', caption: 'First' }),
-      fakePost({ zernioPostId: 'post-2', zernioAccountId: 'ig-acct-1', caption: 'Second' }),
+      fakePost({ platformPostId: 'post-1', zernioAccountId: 'ig-acct-1', caption: 'First' }),
+      fakePost({ platformPostId: 'post-2', zernioAccountId: 'ig-acct-1', caption: 'Second' }),
     ]);
 
     const response = await request(app.getHttpServer())
@@ -545,7 +547,7 @@ describe('GET /api/organizations/:id/instagram/accounts/:accountId/posts', () =>
       .expect(200);
 
     expect(response.body.posts).toHaveLength(1);
-    expect(response.body.posts[0]).toMatchObject({ zernioPostId: 'post-1', caption: 'First' });
+    expect(response.body.posts[0]).toMatchObject({ platformPostId: 'post-1', caption: 'First' });
     expect(response.body.pagination).toMatchObject({ page: 1, limit: 1, total: 2, pages: 2 });
   });
 
@@ -598,7 +600,7 @@ describe('GET /api/organizations/:id/instagram/accounts/:accountId/posts/:postId
     );
     fakeProvider.setPosts('ig-acct-1', [
       fakePost({
-        zernioPostId: 'post-1',
+        platformPostId: 'post-1',
         zernioAccountId: 'ig-acct-1',
         caption: 'Hello world',
         permalink: 'https://instagram.com/p/abc123',
@@ -611,7 +613,7 @@ describe('GET /api/organizations/:id/instagram/accounts/:accountId/posts/:postId
       .expect(200);
 
     expect(response.body).toMatchObject({
-      zernioPostId: 'post-1',
+      platformPostId: 'post-1',
       caption: 'Hello world',
       permalink: 'https://instagram.com/p/abc123',
     });
@@ -620,12 +622,12 @@ describe('GET /api/organizations/:id/instagram/accounts/:accountId/posts/:postId
   it('404s for a post that belongs to a different account, even if the id is guessed correctly', async () => {
     // Zernio's own GET /v1/posts/{postId} has no accountId filter - it's scoped only by our
     // single, org-wide API key. Without apps/api's own ownership check, this would let any
-    // organization read any other organization's post by guessing its zernioPostId.
+    // organization read any other organization's post by guessing its media id.
     const { user: alice, organization: aliceOrg } = await createOrgWithOwner('alice@example.com');
     await connectAndConfirmAccount(app, alice, aliceOrg, 'ig-acct-alice', 'alice_ig');
     fakeProvider.setPosts('ig-acct-alice', [
       fakePost({
-        zernioPostId: 'post-secret',
+        platformPostId: 'post-secret',
         zernioAccountId: 'ig-acct-alice',
         caption: 'Private',
       }),

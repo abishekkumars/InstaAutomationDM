@@ -41,6 +41,9 @@ importers:
       '@automationdm/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@automationdm/meta':
+        specifier: workspace:*
+        version: link:../../packages/meta
       '@automationdm/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -187,6 +190,15 @@ importers:
       prisma:
         specifier: ^6.1.0
         version: 6.19.3(typescript@5.9.3)
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@24.13.3)(lightningcss@1.32.0)(terser@5.49.2)
+
+  packages/meta:
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.13.3
       vitest:
         specifier: ^2.1.0
         version: 2.1.9(@types/node@24.13.3)(lightningcss@1.32.0)(terser@5.49.2)

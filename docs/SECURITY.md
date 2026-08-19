@@ -16,8 +16,26 @@ from the very first line of code, not just at the end.
 - Zernio API key and webhook secret are used only inside `packages/zernio` /
   `apps/api`'s webhooks module — never sent to `apps/web`, never returned in any API
   response body.
-- Instagram passwords are never stored, never seen — connection is OAuth via Zernio; we
-  only ever hold Zernio-issued account identifiers/tokens server-side.
+- Instagram passwords are never stored, never seen — connection is OAuth via Zernio (and,
+  since Phase 17, Business Login for Instagram); we only ever hold issued tokens and account
+  identifiers server-side.
+- **Third-party access tokens are encrypted at rest** (Phase 17). Before it, this project
+  stored no third-party token at all — Zernio held the Instagram credentials and never handed
+  them over — so no at-rest requirement existed. `meta_connections.access_token_encrypted` now
+  holds a live Instagram user access token, valid 60 days and able to read the account's whole
+  media library, so it is encrypted with AES-256-GCM via
+  `packages/shared/src/token-crypto.ts`, keyed by `META_TOKEN_ENCRYPTION_KEY`.
+  - GCM, not CBC: it is authenticated, so a tampered ciphertext fails to decrypt rather than
+    silently yielding attacker-influenced plaintext.
+  - A fresh random IV per encryption is mandatory — IV reuse under one key breaks GCM outright.
+  - Rotating `META_TOKEN_ENCRYPTION_KEY` makes every stored token unreadable and forces every
+    account to reconnect. Decryption failure is deliberately loud (logged as an error, the
+    connection marked `RECONNECT_REQUIRED`) rather than being softened into "no connection",
+    which would silently downgrade every account to the Zernio fallback on a misconfigured key.
+  - `META_APP_SECRET` doubles as the HMAC key for the OAuth `state` parameter, keeping that key
+    to exactly one cryptographic purpose (this Meta flow) rather than reusing `AUTH_SECRET` or
+    `API_INTERNAL_SECRET` for a second job.
+  - Add `accessTokenEncrypted` to the redaction list above.
 
 ## Tenant isolation
 

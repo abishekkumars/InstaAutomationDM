@@ -89,7 +89,7 @@ async function PostsSection({
     );
   }
 
-  // Maps zernioPostId -> whether that post's automation is currently enabled, so the badge can
+  // Maps platformPostId -> whether that post's automation is currently enabled, so the badge can
   // distinguish an active automation from a paused one. Scoped to this account's automations:
   // the org-wide list covers every connected account, and a post id from another account could
   // otherwise badge a post it has nothing to do with.
@@ -99,8 +99,8 @@ async function PostsSection({
       if (automation.instagramAccountId !== accountId) continue;
       // Enabled wins if a post somehow has more than one: the badge answers "is this post
       // automated right now?", and one active automation makes that a yes.
-      automationsByPostId[automation.zernioPostId] =
-        automationsByPostId[automation.zernioPostId] || automation.isActive;
+      automationsByPostId[automation.platformPostId] =
+        automationsByPostId[automation.platformPostId] || automation.isActive;
     }
   }
 

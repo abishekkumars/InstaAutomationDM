@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@automationdm/database": "workspace:*",
+    "@automationdm/meta": "workspace:*",
     "@automationdm/shared": "workspace:*",
     "@automationdm/validation": "workspace:*",
     "@automationdm/zernio": "workspace:*",
