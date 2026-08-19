@@ -46,7 +46,11 @@ values.
 | `ZERNIO_API_KEY` | Server-side only. Never reaches `apps/web` or the browser. |
 | `ZERNIO_WEBHOOK_SECRET` | HMAC-SHA256 verification of `X-Zernio-Signature` on inbound webhooks (Phase 11). |
 | `API_INTERNAL_SECRET` | HS256 secret for the `apps/web` → `apps/api` bearer token. Must be **identical** in both projects. |
-| `APP_URL` | `apps/api`'s own view of where `apps/web` lives, used to build the Zernio OAuth `redirect_url` server-side so a client-supplied redirect target is never trusted. |
+| `APP_URL` | `apps/api`'s own view of where `apps/web` lives, used to build the Zernio OAuth `redirect_url` server-side so a client-supplied redirect target is never trusted. Since Phase 17 it must also share an origin with `META_REDIRECT_URI`, or `MetaConnectionService` refuses to start a Meta connect. |
+| `META_APP_ID` | Phase 17. The **Instagram** app id from App Dashboard > Instagram > API setup with Instagram login — *not* the Meta/Facebook app id on App Settings > Basic. Using the wrong one of the two fails as an opaque `Invalid redirect_uri`. |
+| `META_APP_SECRET` | Phase 17. The Instagram app secret from the same panel. Also the HMAC key for the OAuth `state`, keeping that key to one cryptographic purpose. |
+| `META_REDIRECT_URI` | Phase 17. `https://<apps/web domain>/instagram/meta/callback`. Must match the App Dashboard's *OAuth redirect URIs* entry **character for character, trailing slash included** — Meta's docs warn the dashboard may append one. The value in use is logged at API startup for exactly this reason. |
+| `META_TOKEN_ENCRYPTION_KEY` | Phase 17. 32 bytes base64. Encrypts the stored Meta access token at rest (AES-256-GCM). **Per-environment**: production must have its own, and rotating it makes every stored token unreadable and forces every account to reconnect. |
 
 **`apps/web` project**
 
@@ -210,6 +214,38 @@ without bumping that version would have the first request after a deploy read th
 
 Order matters only when a release changes the API contract: `apps/web` calls `apps/api` on every
 render, so deploying web first against an older API is the failure case to avoid.
+
+### Phase 17 release (the `platform_post_id` pivot) — a special case
+
+This release is **not** a single migrate-then-deploy step, because its second migration drops a
+column the currently-deployed code still writes. Running the two migrations back to back and then
+deploying would break automation writes in between.
+
+Migration A is deliberately backward-compatible so the **old** code keeps working after it: it
+only adds `platform_post_id` (nullable) and `meta_connections`, and relaxes `zernio_post_id` to
+nullable. That is what makes a no-downtime order possible:
+
+1. Apply **migration A** (`20260819154500_phase17_meta_connection_and_platform_post_id`) using
+   `DIRECT_URL`. The running production code is unaffected.
+2. Run the backfill against production — it reads `platformPostId` off Zernio's own
+   comment-automations list, so it does **not** depend on Zernio having synced the post:
+   `scripts/pnpm.ps1 --filter "@automationdm/database" exec node dev/phase17-backfill-platform-post-id.mjs`
+   It needs `DATABASE_URL` pointing at production and `ZERNIO_API_KEY`. It exits non-zero and
+   names every row it could not resolve rather than leaving a surprise for step 4.
+3. Verify with `dev/phase17-backfill-check.mjs` — it must report `missingPlatformPostId: 0`.
+4. Deploy `apps/api`, then `apps/web`. The new code writes `platform_post_id` and ignores the
+   still-present `zernio_post_id`.
+5. Apply **migration B** (`20260819163000_phase17_drop_zernio_post_id`), which drops
+   `zernio_post_id` and makes `platform_post_id` required. Destructive and not reversible;
+   Vercel's deployment rollback does not cover it.
+
+Doing step 5 before step 4 leaves the old code writing a column that no longer exists. Doing
+step 4 before steps 1-3 leaves the new code querying a column that does not exist yet. Neither
+is recoverable by rolling back the deployment alone.
+
+**The local database proves nothing here** — it had zero automation rows when both migrations
+were applied, so migration B succeeded trivially. Production has real automations, and step 5's
+`SET NOT NULL` will fail on any row the backfill missed. That failure is the safety net working.
 
 ## Rollback
 
