@@ -6,6 +6,7 @@ import { TrashIcon } from '../icons';
 import {
   addMembershipAction,
   createOrganizationForUserAction,
+  deleteOrganizationAction,
   removeMembershipAction,
   setUserRoleAction,
 } from './actions';
@@ -67,14 +68,15 @@ export function AdminBrowser({
             {organizations.map((organization) => (
               <li
                 key={organization.id}
-                className="flex flex-wrap items-baseline justify-between gap-2 px-4 py-2.5 text-sm"
+                className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 text-sm"
               >
-                <span className="font-medium text-text">{organization.name}</span>
-                <span className="text-xs text-text-faint">
-                  <code className="rounded bg-muted-bg px-1.5 py-0.5">{organization.slug}</code>
-                  {' · '}
-                  {organization.memberCount} {organization.memberCount === 1 ? 'member' : 'members'}
+                <span className="min-w-0">
+                  <span className="font-medium text-text">{organization.name}</span>{' '}
+                  <code className="rounded bg-muted-bg px-1.5 py-0.5 text-xs text-text-faint">
+                    {organization.slug}
+                  </code>
                 </span>
+                <DeleteOrganizationControl organization={organization} />
               </li>
             ))}
           </ul>
@@ -209,20 +211,13 @@ function UserRow({
               </label>
               <label className="min-w-0 flex-1">
                 <span className="sr-only">Slug</span>
-                {/* Prefilled with the server-derived suggestion (requirement 5): the email's
-                    local part, already stepped past any slug in use. Editable - the
-                    administrator has the final say - and re-checked by apps/api on submit,
-                    which is where a collision is actually caught. */}
-                <input
-                  type="text"
-                  name="slug"
-                  required
-                  defaultValue={user.suggestedSlug}
-                  placeholder="slug"
-                  pattern="[a-z0-9]+(-[a-z0-9]+)*"
-                  title="Lowercase letters, numbers and hyphens only."
-                  className="block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 font-mono text-sm text-text"
-                />
+                {/* Prefilled with the email's local part, verbatim. It no longer steps past
+                    slugs already in use: that used to turn a typed name into `acme-2` without
+                    saying so, which is worst precisely where it matters, since the slug is
+                    permanent and the Zernio profile name derives from it. A collision now
+                    surfaces honestly as a 409 from apps/api, which was always the real
+                    authority. */}
+                <SlugInput defaultValue={user.suggestedSlug} />
               </label>
               <button
                 type="submit"
@@ -280,5 +275,107 @@ function UserRow({
         </div>
       )}
     </li>
+  );
+}
+
+/** The slug field, lower-cased as the administrator types.
+ *
+ * A controlled input rather than CSS `text-transform: lowercase`: that only restyles the glyphs,
+ * so the value actually submitted would still carry the capitals and get silently rewritten
+ * server-side by `createOrganizationSchema`'s `.toLowerCase()`. Showing one thing and sending
+ * another is exactly the surprise this screen is meant to remove.
+ *
+ * Only case is corrected. Spaces and other invalid characters are deliberately left alone so the
+ * `pattern` below can reject them visibly - quietly deleting what someone typed is a worse
+ * experience than telling them it is not allowed. */
+function SlugInput({ defaultValue }: { defaultValue: string }) {
+  const [slug, setSlug] = useState(defaultValue);
+
+  return (
+    <input
+      type="text"
+      name="slug"
+      required
+      value={slug}
+      onChange={(event) => setSlug(event.target.value.toLowerCase())}
+      placeholder="slug"
+      pattern="[a-z0-9]+(-[a-z0-9]+)*"
+      title="Lowercase letters, numbers and hyphens only."
+      autoCapitalize="none"
+      autoCorrect="off"
+      spellCheck={false}
+      className="block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 font-mono text-sm text-text"
+    />
+  );
+}
+
+/** Delete control for an organization that has no members left.
+ *
+ * Two-step on purpose. This deletes the Zernio profile and disconnects its accounts as well as
+ * removing the local row, none of which can be undone, and the administration screen shows none
+ * of what is inside an organization (ADR 0007). Typing the slug is the only confirmation that
+ * proves the administrator knows *which* organization they are about to destroy - a plain
+ * confirm() dialog says yes to whichever row was clicked. */
+function DeleteOrganizationControl({ organization }: { organization: AdminOrganizationSummary }) {
+  const [arming, setArming] = useState(false);
+  const [typed, setTyped] = useState('');
+
+  if (organization.memberCount > 0) {
+    // Not merely disabled: apps/api rejects this outright while members remain, so offering a
+    // greyed-out button would advertise an action that can never succeed from here. Removing
+    // the last member is what reveals it.
+    return (
+      <span className="text-xs text-text-faint" title="Remove every member before deleting.">
+        {organization.memberCount} member{organization.memberCount === 1 ? '' : 's'}
+      </span>
+    );
+  }
+
+  if (!arming) {
+    return (
+      <button
+        type="button"
+        onClick={() => setArming(true)}
+        className="inline-flex items-center gap-1 rounded-md border border-danger/30 px-2 py-1 text-xs font-medium text-danger hover:bg-danger-bg"
+      >
+        <TrashIcon />
+        Delete
+      </button>
+    );
+  }
+
+  return (
+    <form action={deleteOrganizationAction} className="flex flex-wrap items-center gap-2">
+      <FormPendingOverlay />
+      <input type="hidden" name="organizationId" value={organization.id} />
+      <input
+        type="text"
+        value={typed}
+        onChange={(event) => setTyped(event.target.value.toLowerCase())}
+        placeholder={organization.slug}
+        aria-label={`Type ${organization.slug} to confirm deletion`}
+        autoCapitalize="none"
+        autoCorrect="off"
+        spellCheck={false}
+        className="w-40 rounded-md border border-border-strong bg-surface px-2 py-1 font-mono text-xs text-text"
+      />
+      <button
+        type="submit"
+        disabled={typed !== organization.slug}
+        className="rounded-md bg-danger px-2 py-1 text-xs font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        Delete permanently
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          setArming(false);
+          setTyped('');
+        }}
+        className="text-xs text-text-muted hover:underline"
+      >
+        Cancel
+      </button>
+    </form>
   );
 }

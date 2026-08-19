@@ -215,6 +215,17 @@ export class MetaConnectionService implements OnModuleInit {
     // pick in Meta's UI, labelled as the account they started from.
     const profile = await new MetaInstagramClient(token.accessToken).getProfile();
 
+    // Meta reports the handle authoritatively and live, where Zernio's is whatever it captured
+    // at connect time and never revisits - so a user who renamed their account sees the stale
+    // one until they reconnect. Refreshed here whenever Meta actually gives a handle; a missing
+    // one leaves the existing value alone rather than blanking a name that was correct.
+    if (profile.username && profile.username !== account.username) {
+      await this.prisma.client.instagramAccount.update({
+        where: { id: account.id },
+        data: { username: profile.username },
+      });
+    }
+
     await this.prisma.client.metaConnection.upsert({
       where: { instagramAccountId: account.id },
       create: {

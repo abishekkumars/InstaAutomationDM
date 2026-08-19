@@ -239,6 +239,14 @@ export interface DeleteCommentAutomationInput {
   zernioAutomationId: string;
 }
 
+export interface DisconnectAccountInput {
+  zernioAccountId: string;
+}
+
+export interface DeleteProfileInput {
+  zernioProfileId: string;
+}
+
 export interface InstagramProvider {
   /** Resolves the Zernio profile for an organization, creating one only if it doesn't
    * already exist. Idempotent on Zernio's side, not just the caller's: implementations must
@@ -291,4 +299,21 @@ export interface InstagramProvider {
   /** Permanently deletes an automation and all of its trigger logs
    * (`DELETE /v1/comment-automations/{automationId}`). Not reversible on Zernio's side. */
   deleteCommentAutomation(input: DeleteCommentAutomationInput): Promise<void>;
+
+  /** Disconnects a connected social account (`DELETE /v1/accounts/{accountId}`, "Disconnect
+   * account" - verified against Zernio's live OpenAPI spec on 2026-08-20).
+   *
+   * Destructive on Zernio's side: the account and the automations attached to it stop existing
+   * there, so every comment-to-DM on it stops firing. This project exposes no user-facing
+   * "disconnect Zernio" control for exactly that reason - it is used only as the first step of
+   * deleting an organization, where the profile delete below requires it. */
+  disconnectAccount(input: DisconnectAccountInput): Promise<void>;
+
+  /** Permanently deletes a Zernio profile (`DELETE /v1/profiles/{profileId}`).
+   *
+   * **Active connected accounts block this with a 400** - Zernio's own description says
+   * "disconnect them first", which is why `disconnectAccount` exists above and why the caller
+   * must run it for every account before calling this. Remaining *disconnected* accounts are
+   * moved to another profile by Zernio rather than deleted. */
+  deleteProfile(input: DeleteProfileInput): Promise<void>;
 }

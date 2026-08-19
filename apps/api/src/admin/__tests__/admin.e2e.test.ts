@@ -4,7 +4,9 @@ import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { prisma } from '@automationdm/database';
 import { signInternalServiceToken } from '@automationdm/shared';
+import { ZernioApiError } from '@automationdm/zernio';
 import { AppModule } from '../../app.module';
+import { INSTAGRAM_PROVIDER } from '../../instagram/instagram-provider.token';
 
 const INTERNAL_SECRET = process.env.API_INTERNAL_SECRET;
 if (!INTERNAL_SECRET) {
@@ -23,10 +25,43 @@ async function createNormalUser(email = 'alice@example.com') {
   return prisma.user.create({ data: { email } });
 }
 
+/** Records the Zernio calls that deleting an organization makes, without any live request.
+ *
+ * Only the two methods that path actually uses are implemented. The rest are unreachable here,
+ * and stubbing them all would be pretending this suite exercises more than it does - it is cast
+ * at the DI boundary instead, which is where the real provider would otherwise be injected. */
+class FakeZernio {
+  disconnectedAccounts: string[] = [];
+  deletedProfiles: string[] = [];
+  /** Set to make the profile delete fail, proving the local row survives a remote failure. */
+  failProfileDelete: ZernioApiError | null = null;
+
+  async disconnectAccount(input: { zernioAccountId: string }): Promise<void> {
+    this.disconnectedAccounts.push(input.zernioAccountId);
+  }
+
+  async deleteProfile(input: { zernioProfileId: string }): Promise<void> {
+    if (this.failProfileDelete) {
+      throw this.failProfileDelete;
+    }
+    this.deletedProfiles.push(input.zernioProfileId);
+  }
+
+  reset(): void {
+    this.disconnectedAccounts = [];
+    this.deletedProfiles = [];
+    this.failProfileDelete = null;
+  }
+}
+
 let app: INestApplication;
+const fakeProvider = new FakeZernio();
 
 beforeAll(async () => {
-  const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+  const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+    .overrideProvider(INSTAGRAM_PROVIDER)
+    .useValue(fakeProvider)
+    .compile();
   app = moduleRef.createNestApplication();
   app.setGlobalPrefix('api');
   await app.init();
@@ -38,6 +73,8 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  fakeProvider.reset();
+  await prisma.metaConnection.deleteMany();
   await prisma.instagramAccount.deleteMany();
   await prisma.organizationMember.deleteMany();
   await prisma.organization.deleteMany();
@@ -123,7 +160,7 @@ describe('GET /api/admin/users', () => {
     expect(first).not.toHaveProperty('passwordHash');
   });
 
-  it('suggests a slug derived from the email, avoiding one already taken', async () => {
+  it('suggests the slug derived from the email verbatim, with no uniqueness suffix', async () => {
     const admin = await createAdmin();
     await prisma.user.create({ data: { email: 'john@example.com' } });
 
@@ -135,8 +172,10 @@ describe('GET /api/admin/users', () => {
       first.body.find((u: { email: string }) => u.email === 'john@example.com').suggestedSlug,
     ).toBe('john');
 
-    // Once `john` exists, the same user's suggestion must move on rather than propose a slug
-    // that would collide - and, through the slug, share a Zernio profile.
+    // The suggestion used to step to `john-2` once `john` existed. That was removed: silently
+    // rewriting what the administrator sees is worse than letting the create fail loudly, given
+    // the slug is permanent and the Zernio profile name derives from it. The unique constraint
+    // is still the authority - `POST /api/admin/organizations` 409s on the collision below.
     await prisma.organization.create({ data: { name: 'John', slug: 'john' } });
 
     const second = await request(app.getHttpServer())
@@ -145,7 +184,13 @@ describe('GET /api/admin/users', () => {
       .expect(200);
     expect(
       second.body.find((u: { email: string }) => u.email === 'john@example.com').suggestedSlug,
-    ).toBe('john-2');
+    ).toBe('john');
+
+    await request(app.getHttpServer())
+      .post('/api/admin/organizations')
+      .set('Authorization', bearerFor(admin.id, admin.email))
+      .send({ name: 'John again', slug: 'john' })
+      .expect(409);
   });
 });
 
@@ -392,5 +437,81 @@ describe('PATCH /api/admin/users/:userId/role', () => {
       .set('Authorization', bearerFor(admin.id, admin.email))
       .send({ role: 'ADMIN' })
       .expect(404);
+  });
+});
+
+describe('DELETE /api/admin/organizations/:organizationId', () => {
+  it('refuses while the organization still has members', async () => {
+    const admin = await createAdmin();
+    const alice = await createNormalUser();
+    const organization = await prisma.organization.create({
+      data: { name: 'Acme', slug: 'acme-members' },
+    });
+    await prisma.organizationMember.create({
+      data: { organizationId: organization.id, userId: alice.id, role: 'OWNER' },
+    });
+
+    // The 0-members rule is the entire safety model: an organization someone still belongs to is
+    // a live workspace, and this screen cannot see what is inside it (ADR 0007).
+    const response = await request(app.getHttpServer())
+      .delete(`/api/admin/organizations/${organization.id}`)
+      .set('Authorization', bearerFor(admin.id, admin.email))
+      .expect(400);
+
+    // Asserted against the serialised body rather than a nested field: the point is that the
+    // refusal explains itself (it names the member count), not which envelope shape carries it.
+    expect(JSON.stringify(response.body)).toContain('member');
+    expect(await prisma.organization.count({ where: { id: organization.id } })).toBe(1);
+  });
+
+  it('deletes an empty organization, disconnecting its accounts before removing the profile', async () => {
+    const admin = await createAdmin();
+    const organization = await prisma.organization.create({
+      data: { name: 'Empty', slug: 'empty-org', zernioProfileId: 'zernio-profile-1' },
+    });
+    await prisma.instagramAccount.create({
+      data: {
+        organizationId: organization.id,
+        zernioAccountId: 'ig-acct-to-disconnect',
+        username: 'gone_soon',
+      },
+    });
+
+    await request(app.getHttpServer())
+      .delete(`/api/admin/organizations/${organization.id}`)
+      .set('Authorization', bearerFor(admin.id, admin.email))
+      .expect(204);
+
+    // Order is not stylistic: Zernio 400s on a profile delete while accounts are still
+    // connected, so the disconnect has to happen first.
+    expect(fakeProvider.disconnectedAccounts).toEqual(['ig-acct-to-disconnect']);
+    expect(fakeProvider.deletedProfiles).toEqual(['zernio-profile-1']);
+
+    expect(await prisma.organization.count({ where: { id: organization.id } })).toBe(0);
+    // Cascade, not a second delete call.
+    expect(await prisma.instagramAccount.count()).toBe(0);
+  });
+
+  it('404s for an organization that does not exist', async () => {
+    const admin = await createAdmin();
+
+    await request(app.getHttpServer())
+      .delete('/api/admin/organizations/does-not-exist')
+      .set('Authorization', bearerFor(admin.id, admin.email))
+      .expect(404);
+  });
+
+  it('is refused for a non-admin', async () => {
+    const alice = await createNormalUser();
+    const organization = await prisma.organization.create({
+      data: { name: 'Other', slug: 'other-org' },
+    });
+
+    await request(app.getHttpServer())
+      .delete(`/api/admin/organizations/${organization.id}`)
+      .set('Authorization', bearerFor(alice.id, alice.email))
+      .expect(403);
+
+    expect(await prisma.organization.count({ where: { id: organization.id } })).toBe(1);
   });
 });
