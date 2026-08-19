@@ -17,6 +17,7 @@ import {
   disconnectMetaAction,
 } from './instagram/actions';
 import { FormPendingOverlay, LoadingLink } from './loader';
+import { MetaMark, StatusPill, ZernioMark } from './platform-badge';
 import { AutomationsTableSkeleton, CardSkeleton, StatCardsSkeleton } from './skeleton';
 import { SyncButton } from './sync-button';
 
@@ -234,24 +235,33 @@ async function AccountsSection({ organizationId }: { organizationId: string }) {
   return (
     <div className="rounded-xl border border-border bg-surface p-4 shadow-sm">
       <h2 className="text-sm font-medium text-text">Connected accounts</h2>
-      <ul className="mt-2 space-y-1.5 text-sm text-text-muted">
+      <ul className="mt-3 space-y-3 text-sm text-text-muted">
         {accounts.map((account) => (
-          <li key={account.id} className="flex items-center justify-between gap-3">
-            <span>
-              @{account.username ?? account.zernioAccountId} —{' '}
-              <span className={account.status === 'CONNECTED' ? 'text-success' : 'text-text-faint'}>
-                {account.status.toLowerCase()}
+          <li
+            key={account.id}
+            className="rounded-lg border border-border bg-surface-2 p-3 shadow-sm"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              {/* The handle is refreshed from Meta on every connect, so a renamed account
+                  stops showing the stale name Zernio captured at its own connect time. */}
+              <span className="font-medium text-text">
+                @{account.username ?? account.zernioAccountId}
               </span>
-            </span>
-            <span className="flex shrink-0 items-center gap-3">
-              <MetaConnectionControl organizationId={organizationId} accountId={account.id} />
               <LoadingLink
                 href={`/instagram/posts?accountId=${account.id}`}
-                className="text-accent hover:underline"
+                className="shrink-0 text-accent hover:underline"
               >
                 View posts →
               </LoadingLink>
-            </span>
+            </div>
+
+            {/* One row per integration. They are genuinely different things - Zernio runs the
+                automations, Meta only makes newly published reels visible immediately - so they
+                get their own status and their own action rather than one blended "connected". */}
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <ZernioRow organizationId={organizationId} status={account.status} />
+              <MetaRow organizationId={organizationId} accountId={account.id} />
+            </div>
           </li>
         ))}
       </ul>
@@ -259,14 +269,52 @@ async function AccountsSection({ organizationId }: { organizationId: string }) {
   );
 }
 
-/** The direct-Meta connection control for one account (Phase 17).
+/** Zernio's row: status plus a Connect action, and deliberately **no Disconnect**.
  *
- * Deliberately understated: this is a *second* connection on top of Zernio's, and the only thing
- * it buys the user is that a just-published reel shows up now instead of in a few hours. The
- * copy says exactly that rather than implying the account is not properly connected without it —
- * everything keeps working on the Zernio fallback.
+ * Disconnecting Zernio would delete the account there along with every automation attached to
+ * it - a destructive, unrecoverable act sitting one click from a routine screen. Removing an
+ * account is done from the Administration surface, where deleting the organization is an
+ * explicit, gated operation. */
+function ZernioRow({
+  organizationId,
+  status,
+}: {
+  organizationId: string;
+  status: 'CONNECTED' | 'DISCONNECTED' | 'ERROR';
+}) {
+  const connected = status === 'CONNECTED';
+
+  return (
+    <span className="inline-flex items-center gap-2 rounded-lg border border-border bg-surface px-2.5 py-1.5">
+      <ZernioMark />
+      <span className="text-xs font-medium text-text">Zernio</span>
+      <StatusPill
+        connected={connected}
+        label={connected ? 'connected' : status.toLowerCase()}
+        tone={status === 'ERROR' ? 'warning' : 'default'}
+      />
+      {!connected && (
+        <form action={connectInstagramAction}>
+          <input type="hidden" name="organizationId" value={organizationId} />
+          <button
+            type="submit"
+            title="Reconnect this account through Zernio, which is what runs the comment-to-DM automations."
+            className="rounded-md bg-[#6D3BEB] px-2.5 py-1 text-xs font-medium text-white hover:opacity-90"
+          >
+            Connect
+          </button>
+        </form>
+      )}
+    </span>
+  );
+}
+
+/** Meta's row: status plus Connect **or** Disconnect.
+ *
+ * Disconnect is offered here, unlike Zernio's, because it is not destructive - listing simply
+ * falls back to Zernio's slower sync and every automation keeps running.
  * See docs/ADR/0009-direct-meta-graph-api-for-post-listing.md. */
-async function MetaConnectionControl({
+async function MetaRow({
   organizationId,
   accountId,
 }: {
@@ -274,43 +322,48 @@ async function MetaConnectionControl({
   accountId: string;
 }) {
   const connection = await getMetaConnection(organizationId, accountId);
-
-  if (connection?.status === 'CONNECTED') {
-    return (
-      <form action={disconnectMetaAction}>
-        <input type="hidden" name="organizationId" value={organizationId} />
-        <input type="hidden" name="accountId" value={accountId} />
-        <button
-          type="submit"
-          title="Posts are read directly from Meta, so new reels appear immediately. Disconnecting falls back to Zernio's slower sync."
-          className="text-xs text-text-faint hover:text-text-muted hover:underline"
-        >
-          instant sync on
-        </button>
-      </form>
-    );
-  }
+  const connected = connection?.status === 'CONNECTED';
+  const needsReconnect = connection?.status === 'RECONNECT_REQUIRED';
 
   return (
-    <form action={connectMetaAction}>
-      <input type="hidden" name="organizationId" value={organizationId} />
-      <input type="hidden" name="accountId" value={accountId} />
-      <button
-        type="submit"
-        title={
-          connection?.status === 'RECONNECT_REQUIRED'
-            ? 'Meta rejected the stored token. Reconnect to keep new posts appearing immediately.'
-            : 'Connect Meta so newly published reels appear immediately instead of after Zernio syncs.'
-        }
-        className={
-          connection?.status === 'RECONNECT_REQUIRED'
-            ? 'text-xs text-danger hover:underline'
-            : 'text-xs text-text-faint hover:text-text-muted hover:underline'
-        }
-      >
-        {connection?.status === 'RECONNECT_REQUIRED' ? 'reconnect Meta' : 'enable instant sync'}
-      </button>
-    </form>
+    <span className="inline-flex items-center gap-2 rounded-lg border border-border bg-surface px-2.5 py-1.5">
+      <MetaMark />
+      <span className="text-xs font-medium text-text">Meta</span>
+      <StatusPill
+        connected={connected}
+        label={needsReconnect ? 'reconnect needed' : connected ? 'instant sync on' : 'disconnected'}
+        tone={needsReconnect ? 'warning' : 'default'}
+      />
+      {connected ? (
+        <form action={disconnectMetaAction}>
+          <input type="hidden" name="organizationId" value={organizationId} />
+          <input type="hidden" name="accountId" value={accountId} />
+          <button
+            type="submit"
+            title="Stop reading posts directly from Meta. Automations are unaffected; the post list falls back to Zernio, which can lag a few hours."
+            className="rounded-md border border-border-strong px-2.5 py-1 text-xs font-medium text-text hover:bg-muted-bg"
+          >
+            Disconnect
+          </button>
+        </form>
+      ) : (
+        <form action={connectMetaAction}>
+          <input type="hidden" name="organizationId" value={organizationId} />
+          <input type="hidden" name="accountId" value={accountId} />
+          <button
+            type="submit"
+            title={
+              needsReconnect
+                ? 'Meta rejected the stored token. Reconnect to keep new posts appearing immediately.'
+                : 'Connect Meta so newly published reels appear immediately instead of after Zernio syncs.'
+            }
+            className="rounded-md bg-[#0081FB] px-2.5 py-1 text-xs font-medium text-white hover:opacity-90"
+          >
+            {needsReconnect ? 'Reconnect' : 'Connect'}
+          </button>
+        </form>
+      )}
+    </span>
   );
 }
 

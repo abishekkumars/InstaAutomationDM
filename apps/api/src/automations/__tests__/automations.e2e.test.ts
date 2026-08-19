@@ -223,6 +223,19 @@ class FakeInstagramProvider implements InstagramProvider {
     }
   }
 
+  // Present only to satisfy InstagramProvider's contract. Neither is exercised here - the
+  // organization-delete path that uses them is covered in admin.e2e.test.ts.
+  disconnectedAccounts: string[] = [];
+  deletedProfiles: string[] = [];
+
+  async disconnectAccount(input: { zernioAccountId: string }): Promise<void> {
+    this.disconnectedAccounts.push(input.zernioAccountId);
+  }
+
+  async deleteProfile(input: { zernioProfileId: string }): Promise<void> {
+    this.deletedProfiles.push(input.zernioProfileId);
+  }
+
   reset(): void {
     this.failListCommentAutomations = false;
     this.postsByAccount.clear();

@@ -308,15 +308,20 @@ describe('Meta connection endpoints', () => {
       .expect(404);
   });
 
-  it('disconnecting leaves listing to fall back to Zernio', async () => {
+  it('disconnecting answers 204 with no body, and leaves listing to fall back to Zernio', async () => {
     const { user, organization, account } = await seedAccount();
     await seedConnection(organization.id, account.id);
 
-    await request(app.getHttpServer())
+    const response = await request(app.getHttpServer())
       .delete(`/api/organizations/${organization.id}/instagram/accounts/${account.id}/meta`)
       .set('Authorization', bearerFor(user.id, user.email))
-      .expect(200);
+      // 204, not 200. A `Promise<void>` handler defaults to 200 with a zero-length body, and
+      // apps/web's callApi only skips JSON parsing on a 204 - so the disconnect succeeded here
+      // and then threw "Unexpected end of JSON input" in the caller, which the user saw as a
+      // failed disconnect on a connection that had in fact just been removed.
+      .expect(204);
 
+    expect(response.text).toBe('');
     expect(await prisma.metaConnection.count()).toBe(0);
   });
 });

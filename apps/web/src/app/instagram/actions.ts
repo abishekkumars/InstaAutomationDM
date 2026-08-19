@@ -100,7 +100,10 @@ export async function disconnectMetaAction(formData: FormData): Promise<void> {
     });
   } catch (error) {
     console.error('[meta] disconnect failed:', error);
-    redirect('/?meta=error');
+    // A distinct status from the connect failure above. Sharing the bare "error" value made a
+    // failed DISCONNECT announce "Could not connect Meta", pointing the user at the opposite
+    // action from the one that had just failed.
+    redirect('/?meta=disconnect-error');
   }
 
   invalidateOrganizationCaches(organizationId, '/');

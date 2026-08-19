@@ -1,4 +1,14 @@
-import { Body, Controller, Delete, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  Param,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import type { InstagramPost, ListPostsResult } from '@automationdm/zernio';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/authenticated-user.interface';
@@ -96,7 +106,12 @@ export class InstagramController {
     return this.instagram.getMetaConnection(user.id, organizationId, accountId);
   }
 
+  /** 204, not the default 200. A `Promise<void>` handler otherwise answers 200 with a
+   * zero-length body, and `apps/web`'s `callApi` only skips JSON parsing on a 204 - so the
+   * disconnect succeeded server-side and then blew up in the caller with "Unexpected end of JSON
+   * input", surfacing to the user as a failure. Same convention as `removeMembership`. */
   @Delete('accounts/:accountId/meta')
+  @HttpCode(204)
   disconnectMeta(
     @CurrentUser() user: AuthenticatedUser,
     @Param('organizationId') organizationId: string,

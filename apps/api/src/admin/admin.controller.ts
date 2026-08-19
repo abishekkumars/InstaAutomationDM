@@ -50,6 +50,14 @@ export class AdminController {
     return this.admin.createOrganization(body);
   }
 
+  /** Permanently deletes an empty organization and its Zernio profile. 400s while it still has
+   * members - see `AdminService.deleteOrganization` for why that gate exists. */
+  @Delete('organizations/:organizationId')
+  @HttpCode(204)
+  deleteOrganization(@Param('organizationId') organizationId: string): Promise<void> {
+    return this.admin.deleteOrganization(organizationId);
+  }
+
   @Post('users/:userId/memberships')
   addMembership(
     @Param('userId') userId: string,

@@ -25,13 +25,42 @@ const DISMISS_AFTER_MS: Record<ToastTone, number> = {
  * actions already redirect with, so the notification layer needs no new plumbing: the redirect
  * IS the notification. */
 const MESSAGES: Record<
-  'automation' | 'instagram' | 'admin',
+  'automation' | 'instagram' | 'admin' | 'meta',
   Record<string, { tone: ToastTone; message: string }>
 > = {
+  // The direct Meta connection (Phase 17), separate from `instagram` above, which is the Zernio
+  // connection. An account has both, and they fail for different reasons, so a shared namespace
+  // would produce a toast that names the wrong integration.
+  meta: {
+    connected: {
+      tone: 'success',
+      message: 'Meta connected. New posts now appear immediately.',
+    },
+    disconnected: {
+      tone: 'success',
+      message: 'Meta disconnected. Posts now come from Zernio, which can lag by a few hours.',
+    },
+    cancelled: {
+      tone: 'warning',
+      message: 'Meta connection cancelled - nothing was changed.',
+    },
+    error: {
+      tone: 'error',
+      message: 'Could not connect Meta. Please try again.',
+    },
+    'disconnect-error': {
+      tone: 'error',
+      message: 'Could not disconnect Meta. Please try again.',
+    },
+  },
   admin: {
     'role-granted': { tone: 'success', message: 'Administrator access granted.' },
     'role-revoked': { tone: 'success', message: 'Administrator access revoked.' },
     'org-created': { tone: 'success', message: 'Organization created and access granted.' },
+    'org-deleted': {
+      tone: 'success',
+      message: 'Organization deleted, along with its Zernio profile.',
+    },
     'access-granted': { tone: 'success', message: 'Access granted.' },
     'access-revoked': { tone: 'success', message: 'Access revoked.' },
     // Overridden by the `?message=` param when the action supplies one - apps/api's own text
@@ -106,14 +135,17 @@ export function ToastHost() {
   const automationStatus = searchParams.get('automation');
   const instagramStatus = searchParams.get('instagram');
   const adminStatus = searchParams.get('admin');
-  const namespace: 'automation' | 'instagram' | 'admin' | null = automationStatus
+  const metaStatus = searchParams.get('meta');
+  const namespace: 'automation' | 'instagram' | 'admin' | 'meta' | null = automationStatus
     ? 'automation'
     : instagramStatus
       ? 'instagram'
       : adminStatus
         ? 'admin'
-        : null;
-  const status = automationStatus ?? instagramStatus ?? adminStatus;
+        : metaStatus
+          ? 'meta'
+          : null;
+  const status = automationStatus ?? instagramStatus ?? adminStatus ?? metaStatus;
   // Only ever used to replace the *text* of an entry already matched from MESSAGES above, never
   // to conjure a toast of its own. That matters: this value comes from the URL, so a crafted
   // link could otherwise put arbitrary text on screen. React escapes it on render either way.
@@ -159,6 +191,7 @@ export function ToastHost() {
     next.delete('automation');
     next.delete('instagram');
     next.delete('admin');
+    next.delete('meta');
     next.delete('message');
     const query = next.toString();
     router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });

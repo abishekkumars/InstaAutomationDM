@@ -4,6 +4,8 @@ import type {
   ConnectedInstagramAccount,
   CreateCommentAutomationInput,
   DeleteCommentAutomationInput,
+  DeleteProfileInput,
+  DisconnectAccountInput,
   DmButton,
   EnsureProfileInput,
   EnsureProfileResult,
@@ -245,6 +247,20 @@ export class ZernioInstagramProvider implements InstagramProvider {
       'DELETE',
       `/comment-automations/${encodeURIComponent(input.zernioAutomationId)}`,
     );
+  }
+
+  async disconnectAccount(input: DisconnectAccountInput): Promise<void> {
+    // "Disconnect account" - verified against the live spec on 2026-08-20. Answers 200 with a
+    // `{ message }` body, not 204, so the response is read and discarded.
+    await this.request<unknown>('DELETE', `/accounts/${encodeURIComponent(input.zernioAccountId)}`);
+  }
+
+  async deleteProfile(input: DeleteProfileInput): Promise<void> {
+    // Zernio 400s here while the profile still has ACTIVE connected accounts ("disconnect them
+    // first"). The caller disconnects every account before reaching this; the 400 is left to
+    // propagate rather than being swallowed, because silently reporting a successful delete for
+    // a profile that still exists would strand it.
+    await this.request<unknown>('DELETE', `/profiles/${encodeURIComponent(input.zernioProfileId)}`);
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {

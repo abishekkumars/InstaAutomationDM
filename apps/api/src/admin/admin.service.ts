@@ -1,7 +1,9 @@
 import {
   BadRequestException,
   ConflictException,
+  Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { z } from 'zod';
@@ -12,7 +14,9 @@ import {
   slugFromEmail,
   updateUserRoleSchema,
 } from '@automationdm/validation';
+import { ZernioApiError, type InstagramProvider } from '@automationdm/zernio';
 import { PrismaService } from '../database/prisma.service';
+import { INSTAGRAM_PROVIDER } from '../instagram/instagram-provider.token';
 
 export interface AdminOrganizationSummary {
   id: string;
@@ -52,7 +56,12 @@ export interface AdminUserSummary {
  * the same table as everyone else, and is then subject to the same isolation rules. */
 @Injectable()
 export class AdminService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(AdminService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    @Inject(INSTAGRAM_PROVIDER) private readonly provider: InstagramProvider,
+  ) {}
 
   async listUsers(): Promise<AdminUserSummary[]> {
     const users = await this.prisma.client.user.findMany({
@@ -73,20 +82,6 @@ export class AdminService {
       orderBy: { createdAt: 'desc' },
     });
 
-    // One query for every existing slug, rather than a per-user collision check inside the
-    // loop below (which would be N round trips to render one page). The set is small - this is
-    // a tool for a handful of users.
-    //
-    // This only produces a *suggestion*, and it can go stale between rendering the screen and
-    // submitting the form. That is fine, and is why nothing here tries to reserve the slug:
-    // `organizations.slug`'s unique constraint is the real authority, and `createOrganization`
-    // turns a violation into a 409 the UI can show.
-    const taken = new Set(
-      (await this.prisma.client.organization.findMany({ select: { slug: true } })).map(
-        (organization) => organization.slug,
-      ),
-    );
-
     return users.map((user) => ({
       id: user.id,
       email: user.email,
@@ -99,7 +94,16 @@ export class AdminService {
         slug: membership.organization.slug,
         role: membership.role,
       })),
-      suggestedSlug: nextFreeSlug(slugFromEmail(user.email), taken),
+      // The raw slug derived from the email, with NO uniqueness suffix appended.
+      //
+      // It used to be run through a `base`, `base-2`, `base-3` sequence so the prefilled value
+      // was always free. That was removed deliberately: an administrator typing a name saw the
+      // field silently mutate into something they had not chosen, which is confusing precisely
+      // when it matters (the slug is permanent and the Zernio profile name derives from it).
+      // A collision is now surfaced honestly as a 409 from `createOrganization` instead of being
+      // quietly worked around - `organizations.slug`'s unique constraint was always the real
+      // authority, and this only ever produced a suggestion.
+      suggestedSlug: slugFromEmail(user.email),
     }));
   }
 
@@ -197,6 +201,83 @@ export class AdminService {
     await this.prisma.client.organizationMember.delete({ where: { id: membership.id } });
   }
 
+  /** Permanently deletes an organization that has no members left, along with its Zernio
+   * profile.
+   *
+   * **Members must be zero.** That is the whole safety model here: an organization someone still
+   * belongs to is somebody's live workspace, and the administrator screen has no view of what is
+   * inside it (ADR 0007 - being an admin grants no tenant data access). Requiring the memberships
+   * to be removed first makes the deletion a deliberate two-step act rather than one button that
+   * can vaporise an active tenant.
+   *
+   * The order below is dictated by Zernio's API, not chosen: its own description of
+   * `DELETE /v1/profiles/{profileId}` says *"Active connected accounts block deletion (returns
+   * 400) - disconnect them first"*. So every connected account is disconnected, then the profile
+   * goes, then the local row - whose cascades take the Instagram accounts, automations and Meta
+   * connections with it.
+   *
+   * Remote failures are **not** swallowed. Deleting our row while Zernio still holds a live
+   * profile and connected accounts would leave automations running that nothing in this app can
+   * see or stop - the precise failure mode Phase 10.2b existed to fix. A 404 is the exception:
+   * it means the remote object is already gone, which is the state we were trying to reach. */
+  async deleteOrganization(organizationId: string): Promise<void> {
+    const organization = await this.prisma.client.organization.findUnique({
+      where: { id: organizationId },
+      select: {
+        id: true,
+        slug: true,
+        zernioProfileId: true,
+        _count: { select: { memberships: true } },
+        instagramAccounts: { select: { id: true, zernioAccountId: true } },
+      },
+    });
+    if (!organization) {
+      throw new NotFoundException('Organization not found.');
+    }
+    if (organization._count.memberships > 0) {
+      throw new BadRequestException(
+        `"${organization.slug}" still has ${organization._count.memberships} member(s). ` +
+          'Remove them before deleting the organization.',
+      );
+    }
+
+    for (const account of organization.instagramAccounts) {
+      await this.disconnectRemoteAccount(account.zernioAccountId);
+    }
+
+    if (organization.zernioProfileId) {
+      try {
+        await this.provider.deleteProfile({ zernioProfileId: organization.zernioProfileId });
+      } catch (error) {
+        if (error instanceof ZernioApiError && error.status === 404) {
+          this.logger.warn(
+            `Zernio profile ${organization.zernioProfileId} was already gone; continuing.`,
+          );
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    // Cascades handle instagram_accounts, automations, meta_connections and memberships - see
+    // their onDelete: Cascade relations in docs/DATABASE.md.
+    await this.prisma.client.organization.delete({ where: { id: organization.id } });
+  }
+
+  private async disconnectRemoteAccount(zernioAccountId: string): Promise<void> {
+    try {
+      await this.provider.disconnectAccount({ zernioAccountId });
+    } catch (error) {
+      if (error instanceof ZernioApiError && error.status === 404) {
+        // Already disconnected on Zernio's side. Nothing to undo, and the profile delete that
+        // follows will no longer be blocked by it.
+        this.logger.warn(`Zernio account ${zernioAccountId} was already disconnected; continuing.`);
+        return;
+      }
+      throw error;
+    }
+  }
+
   /** Grants or revokes the global ADMIN role.
    *
    * `callerId` is used only for the last-admin check's error message - an admin IS allowed to
@@ -249,25 +330,6 @@ export class AdminService {
     }
     return user;
   }
-}
-
-/** First slug in the `base`, `base-2`, `base-3`, ... sequence that is not in `taken`.
- *
- * Bounded rather than an open `while (true)`: an unbounded loop here would be a hang if
- * `taken` ever contained a pathological run. 200 is far beyond this project's scale (a
- * few users), and the fallback still produces something well-formed and almost certainly
- * free rather than throwing in a suggestion path. */
-function nextFreeSlug(base: string, taken: Set<string>): string {
-  if (!taken.has(base)) {
-    return base;
-  }
-  for (let suffix = 2; suffix <= 200; suffix += 1) {
-    const candidate = `${base}-${suffix}`;
-    if (!taken.has(candidate)) {
-      return candidate;
-    }
-  }
-  return `${base}-${taken.size + 1}`;
 }
 
 /** Shared Zod-to-BadRequest translation, matching the pattern in organizations.service.ts and

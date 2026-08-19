@@ -116,3 +116,22 @@ export async function removeMembershipAction(formData: FormData): Promise<void> 
 
   succeedWith('access-revoked');
 }
+
+/** Permanently deletes an empty organization, along with its Zernio profile.
+ *
+ * The 0-members gate is enforced by apps/api, not here - a client-side check alone would be
+ * decoration, since this action is reachable by anyone who can craft a POST. The UI hides the
+ * button when members remain purely so the affordance matches what will actually succeed. */
+export async function deleteOrganizationAction(formData: FormData): Promise<void> {
+  const organizationId = requireString(formData, 'organizationId');
+
+  try {
+    await callApi(`/api/admin/organizations/${organizationId}`, { method: 'DELETE' });
+  } catch (error) {
+    // apps/api's own message is far more useful than a generic one here: it names the member
+    // count that blocked the delete, or the Zernio failure that stopped the profile going.
+    failWith(error, 'Could not delete that organization.');
+  }
+
+  succeedWith('org-deleted');
+}
