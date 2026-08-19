@@ -85,6 +85,11 @@ jobs:
       # tests sign/verify their own internal tokens with it) - not a real secret, same as the
       # fixed Postgres credentials above. Never used outside this job.
       API_INTERNAL_SECRET: ci-only-not-a-real-secret-1c9f3a7b2e4d6f81
+      # Phase 17. Must be 32 bytes base64 (packages/shared/src/token-crypto.ts validates the
+      # decoded length), or every test that seeds a meta_connections row fails on encryptToken.
+      # Throwaway like the two above: the Meta tests encrypt and decrypt within a single run and
+      # never read a token written by anything else, so the value only has to be well-formed.
+      META_TOKEN_ENCRYPTION_KEY: Y2ktb25seS1tZXRhLXRva2VuLWtleS0zMi1ieXRlcyE=
     steps:
       - uses: actions/checkout@v4
 
