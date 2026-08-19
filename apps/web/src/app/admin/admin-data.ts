@@ -17,7 +17,6 @@ export interface AdminUserSummary {
   role: GlobalUserRole;
   createdAt: string;
   organizations: AdminUserMembership[];
-  suggestedSlug: string;
 }
 
 export interface AdminOrganizationSummary {

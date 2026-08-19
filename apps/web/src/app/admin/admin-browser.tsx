@@ -200,24 +200,25 @@ function UserRow({
             <div className="flex flex-wrap gap-2">
               <label className="min-w-0 flex-1">
                 <span className="sr-only">Organization name</span>
+                {/* Blank, not prefilled from the email. A guessed name is only ever right by
+                    accident, and a prefilled field reads as a decision already made - so it got
+                    accepted unchanged and organizations ended up named after somebody's email
+                    local part. An empty required field asks the question honestly. */}
                 <input
                   type="text"
                   name="name"
                   required
-                  defaultValue={user.email.split('@')[0]}
                   placeholder="Organization name"
                   className="block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
                 />
               </label>
               <label className="min-w-0 flex-1">
                 <span className="sr-only">Slug</span>
-                {/* Prefilled with the email's local part, verbatim. It no longer steps past
-                    slugs already in use: that used to turn a typed name into `acme-2` without
-                    saying so, which is worst precisely where it matters, since the slug is
-                    permanent and the Zernio profile name derives from it. A collision now
-                    surfaces honestly as a 409 from apps/api, which was always the real
-                    authority. */}
-                <SlugInput defaultValue={user.suggestedSlug} />
+                {/* Blank too, for the same reason as the name. The slug is permanent and the
+                    Zernio profile name derives from it, so it is the last field that should
+                    arrive pre-decided. Still lower-cased as you type, and still re-checked by
+                    apps/api on submit, which is where a collision is actually caught. */}
+                <SlugInput />
               </label>
               <button
                 type="submit"
@@ -288,8 +289,8 @@ function UserRow({
  * Only case is corrected. Spaces and other invalid characters are deliberately left alone so the
  * `pattern` below can reject them visibly - quietly deleting what someone typed is a worse
  * experience than telling them it is not allowed. */
-function SlugInput({ defaultValue }: { defaultValue: string }) {
-  const [slug, setSlug] = useState(defaultValue);
+function SlugInput() {
+  const [slug, setSlug] = useState('');
 
   return (
     <input
