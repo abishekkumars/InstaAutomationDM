@@ -207,10 +207,52 @@ without bumping that version would have the first request after a deploy read th
 ## Release process
 
 1. CI green on `main` — `scripts/lint.ps1` (eslint + typecheck + prettier) and `scripts/test.ps1`.
-2. **Run Prisma migrations against the target database as an explicit, reviewed step**, using
-   `DIRECT_URL`. Never auto-applied by app startup.
-3. Deploy the `apps/api` project. Confirm `/api/health` (no DB) and `/api/ready` (SELECT 1).
-4. Deploy the `apps/web` project.
+2. Deploy the `apps/api` project. **Its production build applies pending migrations itself**
+   (ADR 0011), before the new code goes live. If a pending migration is destructive, the build
+   fails with the migration named and nothing applied; see "When the build blocks a migration"
+   below. Confirm `/api/health` (no DB) and `/api/ready` (SELECT 1).
+3. Deploy the `apps/web` project.
+
+To see what a deploy would do beforehand, run the same guard read-only against production
+(`$env:DIRECT_URL` set to production for that shell):
+
+```powershell
+scripts/pnpm.ps1 --filter "@automationdm/database" run migrate:check
+```
+
+### Automatic migrations: one-time Vercel setup (ADR 0011)
+
+In the **`api`** Vercel project:
+
+1. Settings → Environment Variables: `DIRECT_URL` must exist for the **Production** environment.
+   It is the Supabase session pooler / direct connection on port 5432. Migrations cannot use the
+   transaction pooler in `DATABASE_URL`.
+2. Settings → Build and Deployment → Build Command: turn on the override and put
+   `pnpm --filter @automationdm/database run migrate:vercel && ` in front of the existing command.
+   Keep the existing command exactly as it was after the `&&`. If the field was empty (Vercel's
+   default), use `pnpm --filter @automationdm/database run migrate:vercel && pnpm run build`.
+3. Redeploy production once and read the build log. It prints `[migrate] Database is up to
+   date` or lists what it applied. A preview deployment prints `[migrate] Skipped`.
+
+Do **not** add it to the `web` project. One project migrating is enough, and the API is the one
+whose code depends on the schema.
+
+### When the build blocks a migration
+
+`[migrate] BLOCKED: these pending migrations are destructive` means a pending migration drops,
+renames, truncates, deletes, retypes, or tightens something, and applying it before the code
+deploys could lose data or break the running app. The previous deployment is still live; nothing
+was applied. Apply it by hand, following the instructions at the top of its `migration.sql` and
+any release section below, with `prisma migrate deploy` from your machine against `DIRECT_URL`.
+Then redeploy.
+
+`[migrate] BLOCKED: a previous migration is recorded as failed` needs `prisma migrate resolve`
+by hand. Look at what the failed migration managed to change before choosing `--applied` or
+`--rolled-back`.
+
+Never run `prisma db push` against production. It changes the schema without recording the
+change, so the next deploy tries to apply the recorded migration again and fails. That is how
+production's history drifted before Phase 19.
 
 Order matters only when a release changes the API contract: `apps/web` calls `apps/api` on every
 render, so deploying web first against an older API is the failure case to avoid.
@@ -265,11 +307,20 @@ If either Phase 17 migration is still listed as pending in production, stop. Do 
 procedure above first. Running `migrate deploy` would otherwise apply Phase 17's destructive
 migration B with no backfill in between.
 
+**What actually happened (2026-09-25).** Production listed Phase 15, 16 and both Phase 17
+migrations as pending. `prisma migrate diff --from-url <DIRECT_URL> --to-schema-datamodel
+prisma/schema.prisma --script` showed their changes were already in the schema, so they were
+marked applied with `prisma migrate resolve --applied <name>` rather than run. Only Phase 19 was
+really missing. With automatic migrations (ADR 0011), that one is applied by the next production
+build of `apps/api`.
+
 ## Rollback
 
 Vercel keeps previous deployments; promoting an earlier one is the rollback path for either app.
 Database migrations are **not** covered by that — a migration that drops or rewrites data has no
-automatic inverse, which is why step 2 is explicit and reviewed rather than automatic.
+automatic inverse. That is why the production build auto-applies only additive migrations and
+blocks destructive ones for a person to apply (ADR 0011). An additive migration left in place
+under an older deployment is harmless: older code simply ignores the new table or column.
 
 ## Keep-alive (Supabase free-tier pausing)
 

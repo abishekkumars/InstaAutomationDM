@@ -17,6 +17,8 @@
     "migrate:dev": "prisma migrate dev",
     "migrate:deploy": "prisma migrate deploy",
     "migrate:reset": "prisma migrate reset --skip-seed",
+    "migrate:vercel": "node deploy/migrate-on-deploy.mjs",
+    "migrate:check": "node deploy/migrate-on-deploy.mjs --check",
     "validate": "prisma validate",
     "seed": "node prisma/seed.mjs",
     "seed:demo": "node dev/seed-demo.mjs",

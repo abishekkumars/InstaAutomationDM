@@ -265,6 +265,11 @@ approved "AutomationDM Mobile" design artifact. Branch: `feat/views-desktop-mobi
     picks another; switching off is manual entry.
   - [x] `/templates` on desktop (sidebar item under Dashboard; icon actions with tooltips on one
     line) and mobile (tab after +; Status moved into Settings - ADR 0010 amendment).
+  - [x] Release follow-ups: production's migration history had drifted (changes applied without
+    being recorded), resolved by hand; the Phase 17 backfill scripts rewritten with raw SQL; and
+    migrations now apply automatically on the `apps/api` production build, with destructive ones
+    blocked for a person to apply (ADR 0011, `packages/database/deploy/`). **Needs the one-time
+    Vercel setup in `docs/DEPLOYMENT.md`.**
 
 **Retired (not deferred — see `docs/ADR/0005-simplified-mvp-architecture.md` for why)**:
 Redis + BullMQ queue wiring, a generic trigger/condition/action automation engine, contact
