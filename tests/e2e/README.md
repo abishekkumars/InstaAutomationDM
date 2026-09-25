@@ -17,7 +17,12 @@ running** local dev stack. Full notes: [docs/TESTING.md](../../docs/TESTING.md),
 - `global-setup.ts`: checks the app is reachable, then seeds this suite's own local-only user
   and "E2E (test data)" organization (see `fixtures.ts`). It never touches other data, and
   refuses non-localhost databases.
-- `specs/mobile.spec.ts`: covers the tab bar, listing filters and search, the collapsed-header
+- `specs/mobile.spec.ts`: covers the tab bar (with Status reached from Settings), the Templates
+  tab (create, clone, set default, delete), listing filters and search, the collapsed-header
   focus regression, the enable switch rolling back on a failed save, the theme picker, and
   sign-out.
-- `specs/desktop.spec.ts`: checks the sidebar shell and that the mobile-only routes redirect.
+- `specs/desktop.spec.ts`: checks the sidebar shell, that the mobile-only routes redirect, and the
+  Templates page (create, edit, clone, set default, delete).
+- Template tests start from no templates: `global-setup.ts` clears them before any page loads, and
+  each template test deletes its last template through the UI. Never delete templates directly
+  mid-run: the web app caches the list, and a direct database write does not invalidate it.

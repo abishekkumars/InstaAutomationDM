@@ -9,6 +9,12 @@
 // Read-mostly and idempotent: it only ever writes rows whose platform_post_id is still null,
 // so re-running it after a partial failure is safe.
 //
+// The automations table is read and written with raw SQL, not the generated client. The client
+// follows the CURRENT schema.prisma, where platform_post_id is required and zernio_post_id no
+// longer exists (migration B's end state). The database this runs against is between A and B,
+// so neither is true there yet. The client version of this script failed with "Argument
+// platformPostId must not be null" before sending a query.
+//
 // Usage (from the repo root):
 //   scripts/pnpm.ps1 --filter "@automationdm/database" exec node dev/phase17-backfill-platform-post-id.mjs
 //
@@ -36,10 +42,30 @@ async function zernioGet(path) {
   return response.json();
 }
 
-const pending = await prisma.automation.findMany({
-  where: { platformPostId: null },
-  select: { id: true, zernioAutomationId: true, zernioPostId: true, organizationId: true },
-});
+const columns = await prisma.$queryRaw`
+  SELECT column_name FROM information_schema.columns
+  WHERE table_schema = current_schema() AND table_name = 'automations'
+    AND column_name IN ('platform_post_id', 'zernio_post_id')`;
+const has = new Set(columns.map((row) => row.column_name));
+if (!has.has('platform_post_id')) {
+  console.error(
+    'automations.platform_post_id does not exist: migration A ' +
+      '(20260819154500_phase17_meta_connection_and_platform_post_id) has not been applied here. ' +
+      'Apply it first.',
+  );
+  await prisma.$disconnect();
+  process.exit(1);
+}
+if (!has.has('zernio_post_id')) {
+  console.log('automations.zernio_post_id is already gone: migration B has run. Nothing to do.');
+  await prisma.$disconnect();
+  process.exit(0);
+}
+
+const pending = await prisma.$queryRaw`
+  SELECT id, zernio_automation_id AS "zernioAutomationId", zernio_post_id AS "zernioPostId",
+         organization_id AS "organizationId"
+  FROM automations WHERE platform_post_id IS NULL`;
 
 if (pending.length === 0) {
   console.log('Nothing to backfill - every automation already has a platform_post_id.');
@@ -79,10 +105,10 @@ for (const automation of pending) {
     unresolved.push(automation);
     continue;
   }
-  await prisma.automation.update({
-    where: { id: automation.id },
-    data: { platformPostId: mediaId },
-  });
+  // `AND platform_post_id IS NULL` keeps the write idempotent even if two runs overlap.
+  await prisma.$executeRaw`
+    UPDATE automations SET platform_post_id = ${mediaId}
+    WHERE id = ${automation.id} AND platform_post_id IS NULL`;
   updated += 1;
 }
 

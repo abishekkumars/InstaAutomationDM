@@ -134,3 +134,63 @@ export function InstagramIcon(props: IconProps) {
     </Svg>
   );
 }
+
+/** The Templates tab (Phase 19): a sheet with lines of pre-filled text. */
+export function TemplateIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="4" y="3" width="16" height="18" rx="3" />
+      <path d="M8 8h8M8 12h8M8 16h5" />
+    </Svg>
+  );
+}
+
+export function MoreIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M5 12h.01M12 12h.01M19 12h.01" />
+    </Svg>
+  );
+}
+
+export function EditIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </Svg>
+  );
+}
+
+export function CopyIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="9" y="9" width="12" height="12" rx="2" />
+      <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+    </Svg>
+  );
+}
+
+export function StarIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9Z" />
+    </Svg>
+  );
+}
+
+export function TrashIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14" />
+    </Svg>
+  );
+}
+
+export function ChevronRightIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="m9 18 6-6-6-6" />
+    </Svg>
+  );
+}

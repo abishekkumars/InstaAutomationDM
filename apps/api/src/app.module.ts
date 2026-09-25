@@ -8,6 +8,7 @@ import { HealthModule } from './health/health.module';
 import { OrganizationsModule } from './organizations/organizations.module';
 import { InstagramModule } from './instagram/instagram.module';
 import { AutomationsModule } from './automations/automations.module';
+import { AutomationTemplatesModule } from './automation-templates/automation-templates.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { AutomationsModule } from './automations/automations.module';
     OrganizationsModule,
     InstagramModule,
     AutomationsModule,
+    AutomationTemplatesModule,
   ],
 })
 export class AppModule {}

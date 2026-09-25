@@ -98,8 +98,9 @@ Real versions installed (pnpm-resolved, not hand-picked):
 ## Device-specific views (Phase 18, ADR 0010)
 
 `apps/web` renders one of two presentations per request: phones get a mobile view (a glass bottom
-tab bar for Listing, Dashboard, +, Status and Settings), and everything else gets the desktop
-sidebar layout. See `docs/ADR/0010-device-specific-views.md`.
+tab bar for Listing, Dashboard, +, Templates and Settings, with Status inside Settings since
+Phase 19), and everything else gets the desktop sidebar layout (Dashboard, Templates, Status).
+See `docs/ADR/0010-device-specific-views.md`.
 
 ```
 src/app/**/page.tsx        routes: params, redirects, metadata, which view to render
@@ -107,7 +108,9 @@ src/lib/device.ts          getView()/getViewInfo(): user agent, overridable by t
 src/views/desktop/**       the desktop UI, including the sidebar shell
 src/views/mobile/**        the mobile UI, including the tab-bar shell and collapsing page header
 src/views/shared/**        both trees: loader, toasts, theme, icons, org switcher, and the
-                           create/edit automation dialogs (`mobile:` variant styling)
+                           create/edit automation dialogs (`mobile:` variant styling), plus
+                           the automation form fields they share with the template editor
+                           (`automation/automation-fields.tsx`, Phase 19)
 ```
 
 - **One data layer.** `app/dashboard-data.ts`, `app/instagram/posts/posts-data.ts`,

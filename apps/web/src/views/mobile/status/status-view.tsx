@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { getInstagramAccounts, getMetaConnection } from '@/app/dashboard-data';
 import { getApiHealth } from '@/app/status/status-data';
 import { getActiveOrganization } from '@/lib/organization';
+import { LoadingLink } from '@/views/shared/loader';
 import { MetaMark, ZernioMark } from '@/views/shared/platform-badge';
 import { PulseIcon } from '../icons';
 import { MobilePageHeader } from '../page-header';
@@ -60,12 +61,39 @@ export async function MobileStatusView({ signedIn }: { signedIn: boolean }) {
 
   const needsAttention = rows.some((row) => row.tone === 'warn');
 
+  // Status is reached from Settings since Phase 19, so it offers the way back. Signed out there
+  // is no Settings page to return to.
+  const backButton = signedIn ? (
+    <LoadingLink
+      href="/settings"
+      aria-label="Back to settings"
+      className="flex h-11 items-center gap-1 rounded-[14px] border border-border bg-surface pr-3.5 pl-2 text-sm font-bold text-text"
+    >
+      <svg
+        width="20"
+        height="20"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="m15 18-6-6 6-6" />
+      </svg>
+      Settings
+    </LoadingLink>
+  ) : undefined;
+
   return (
     <div className="flex flex-col gap-4">
+      {backButton && <div>{backButton}</div>}
       <MobilePageHeader
         eyebrow="System"
         title="Status"
         compactSubtitle={needsAttention ? 'Needs attention' : 'All systems operational'}
+        compactLeading={backButton}
       />
 
       <section className="flex flex-col gap-4 rounded-[26px] border border-border bg-surface p-5 shadow-card">

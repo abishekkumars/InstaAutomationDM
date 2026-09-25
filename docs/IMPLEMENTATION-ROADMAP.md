@@ -253,6 +253,24 @@ approved "AutomationDM Mobile" design artifact. Branch: `feat/views-desktop-mobi
   with the mobile tree), `getActiveOrganization()` in `src/lib/organization.ts` (an `org` cookie
   re-validated against memberships), plus the brand logo, favicon, apple-icon and web manifest.
 
+- [x] **Phase 19 — Automation templates** (2026-09-25), approved on the "AutomationDM Templates"
+  prototype (https://claude.ai/artifact/ESv6x1Ei9s58R9HrJS3Esg). See the "Phase 19 report" below.
+  - [x] `automation_templates` table and `TemplateTriggerType` enum (additive migration),
+    `automationTemplateSchema` in `packages/validation`.
+  - [x] `/api/organizations/:id/automation-templates`: list, create, replace, set default, clone,
+    delete. Exactly one default per organization, kept under an organization row lock.
+  - [x] The create popup's fields extracted into `views/shared/automation/automation-fields.tsx`,
+    shared by the automation wizard and the new template editor.
+  - [x] The create popup opens with "Use a template" on and the default applied; a dropdown
+    picks another; switching off is manual entry.
+  - [x] `/templates` on desktop (sidebar item under Dashboard; icon actions with tooltips on one
+    line) and mobile (tab after +; Status moved into Settings - ADR 0010 amendment).
+  - [x] Release follow-ups: production's migration history had drifted (changes applied without
+    being recorded), resolved by hand; the Phase 17 backfill scripts rewritten with raw SQL; and
+    migrations now apply automatically on the `apps/api` production build, with destructive ones
+    blocked for a person to apply (ADR 0011, `packages/database/deploy/`). **Needs the one-time
+    Vercel setup in `docs/DEPLOYMENT.md`.**
+
 **Retired (not deferred — see `docs/ADR/0005-simplified-mvp-architecture.md` for why)**:
 Redis + BullMQ queue wiring, a generic trigger/condition/action automation engine, contact
 management/CRM, an analytics pipeline, a visual workflow builder UI, an inbox/conversations
@@ -2907,3 +2925,73 @@ than the reverse.
 
 `https://localhost` itself is not the blocker - it is a documented working setup with
 `next dev --experimental-https`, which is what this project already runs.
+
+## Phase 19 report
+
+**Automation templates.** Organization-wide, pre-filled starting points for the create-automation
+popup, so the same keywords, replies and DM do not have to be typed for every post. Decided with
+the user before building: templates are shared by the whole organization, a template pre-fills
+the popup but every field stays editable, and only the template name is required.
+
+### What was built
+
+- **Database**: `AutomationTemplate` (`automation_templates`) plus the `TemplateTriggerType` enum,
+  in migration `20260925124849_phase19_automation_templates`. It is purely additive and was applied
+  to the local dev database. See `docs/DATABASE.md`.
+- **Validation**: `automationTemplateSchema` and `TEMPLATE_LIMITS` (80-character name, 50 per
+  organization). Every shared field reuses `AUTOMATION_LIMITS`, so a template cannot hold a value
+  the popup would reject.
+- **API**: `AutomationTemplatesModule`, with six org-scoped endpoints (`docs/API-SPEC.md`).
+  - The first template becomes the default, "set default" moves it, and deleting the default
+    hands it to the oldest remaining template.
+  - Each write locks the organization row (`SELECT ... FOR UPDATE`) inside a transaction. That is
+    what keeps the one-default rule when two people save at once; the test for it saves four first
+    templates concurrently.
+  - Templates never call Zernio.
+- **Web**:
+  - `automation-fields.tsx` now holds the popup's fields: state hook, trigger, message, enabled,
+    and hidden inputs. The create wizard and the template editor both render it, so the two cannot
+    drift apart.
+  - The wizard gained the "Use a template" switch and a template dropdown. With no templates it
+    shows a pointer to the Templates page instead.
+  - Template actions return a result instead of redirecting. A redirect back to `/templates` would
+    leave the dialog's client state open over the refreshed page. The client closes the dialog and
+    toasts through the existing URL-driven `ToastHost` (new `template` namespace). A failed save
+    keeps the editor open with the reason shown.
+  - The template list is cached under a new `templates` tag and invalidated by every action.
+- **Navigation** (ADR 0010 amendment):
+  - Desktop sidebar: Dashboard, Templates, Status.
+  - Mobile tab bar: Listing, Dashboard, +, Templates, Settings.
+  - Status is the first row under App in Settings. Settings stays highlighted on `/status`, and the
+    page has a back button to Settings when signed in.
+- **Follow-up during the phase (user request)**: on the desktop Templates table, Edit, Clone and
+  Delete are icon buttons with a tooltip (hover and keyboard focus), and all actions sit on one
+  line. "Send to" (already in each row's summary line) hides below `xl` and the DM column below
+  `lg`, so a narrow window does not squeeze the DM into a sliver.
+
+### Tests run
+
+- `scripts/test.ps1`: all packages pass.
+  - `apps/api` 130 (12 new, `automation-templates.e2e.test.ts`).
+  - `packages/validation` 26 (10 new).
+  - database 16, shared 22, meta 17.
+- `scripts/e2e.ps1` against the running stack: **10/10**. Two tests are new (a mobile and a
+  desktop template flow), and the tab-bar test was updated for Templates and Status-in-Settings.
+  - The first run failed two tests, both from test isolation, not the app. `hasText: 'Default'`
+    also matched "Set default" buttons. A mid-run direct DB reset was hidden by the cached
+    template list.
+  - Fixed by resetting in `global-setup.ts` and having each test delete its last template through
+    the UI. Rerun: 10/10, and 10/10 again after the icon change.
+- ESLint, `tsc` (all 10 packages) and the Prettier check: clean.
+
+### Known issues / not verified
+
+- **The create popup's template switch and dropdown were not exercised in a browser.** Every
+  seeded post, in both the E2E and Demo organizations, already has an automation, so no page offers
+  "New automation". The popup is covered by typecheck and lint, and it uses the same
+  `automation-fields.tsx` that the passing template-editor tests drive. **Check it by hand** on a
+  post without an automation.
+- The one-default rule is enforced by the service, not by a database constraint. The reason, a
+  Prisma limitation, is in `docs/DATABASE.md`. A row edited by hand could leave zero or two
+  defaults; the popup then falls back to the first template.
+- `apps/web` still has no unit tests of its own.

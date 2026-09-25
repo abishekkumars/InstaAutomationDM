@@ -1,6 +1,7 @@
 import { ApiError } from '@/lib/api';
 import { formatDateTime } from '@/lib/format-date';
 import { getAutomations } from '@/app/dashboard-data';
+import { getTemplates } from '@/app/templates/templates-data';
 import {
   loadPostDetail,
   type AutomationSummary,
@@ -41,9 +42,11 @@ export async function MobilePostDetailView({
   const backHref = `/instagram/posts?${backQuery}`;
   // Stats come from the org-wide automations list, which is already cached and memoized; the
   // per-post endpoint does not carry them. Never fatal - without it the stats show as a dash.
-  const [result, allAutomations] = await Promise.all([
+  // Templates (Phase 19) pre-fill the create popup; a failed fetch just means a blank form.
+  const [result, allAutomations, templates] = await Promise.all([
     loadPostDetail(organizationId, accountId, postId),
     getAutomations(organizationId).catch(() => []),
+    getTemplates(organizationId).catch(() => []),
   ]);
 
   const backButton = (
@@ -246,6 +249,7 @@ export async function MobilePostDetailView({
               accountId={accountId}
               postId={postId}
               postCaption={post.caption}
+              templates={templates}
               trigger="mobile"
             />
           </div>

@@ -12,14 +12,14 @@ import { setViewPreferenceAction } from '@/app/view-actions';
 import { FormPendingOverlay, LoadingLink } from '@/views/shared/loader';
 import { OrganizationSwitcher } from '@/views/shared/organization-switcher';
 import { MetaMark, ZernioMark } from '@/views/shared/platform-badge';
-import { InstagramIcon } from '../icons';
+import { InstagramIcon, PulseIcon } from '../icons';
 import { MobilePageHeader } from '../page-header';
 import { SignOutSheet } from './sign-out-sheet';
 import { ThemePicker } from './theme-picker';
 
 /** The mobile Settings tab (Phase 18.5): who you are, which organization you are looking at,
- * appearance, the connected Instagram account, the team, and - at the bottom - "Use desktop
- * site" and Sign out.
+ * appearance, the connected Instagram account, the team, and - at the bottom - Status (moved
+ * here from the tab bar in Phase 19), "Use desktop site" and Sign out.
  *
  * Every lookup here degrades instead of failing the page: Settings is where the user goes to fix
  * things (reconnect an account, switch organization, sign out), so an API hiccup must never take
@@ -224,6 +224,17 @@ export async function MobileSettingsView() {
 
       <SectionTitle>App</SectionTitle>
       <Card>
+        {/* Phase 19: Status gave its tab-bar slot to Templates and lives here now. */}
+        <LoadingLink href="/status" className="flex items-center gap-3 px-4 py-3 text-text">
+          <IconTile>
+            <PulseIcon size={19} />
+          </IconTile>
+          <span className="flex flex-1 flex-col">
+            <span className="text-[14.5px] font-bold">Status</span>
+            <span className="text-[12.5px] text-text-muted">Service and connection health</span>
+          </span>
+          <Chevron />
+        </LoadingLink>
         {isAdmin && (
           <LoadingLink href="/admin" className="flex items-center gap-3 px-4 py-3 text-text">
             <IconTile>

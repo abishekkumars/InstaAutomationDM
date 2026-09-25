@@ -1,66 +1,23 @@
 'use client';
 
-import { useState, type KeyboardEvent } from 'react';
+import { useId, useState } from 'react';
 import { AUTOMATION_LIMITS } from '@automationdm/validation';
+import type { AutomationTemplate } from '@/app/templates/templates-data';
 import { FormPendingOverlay } from '@/views/shared/loader';
 import { Toggle } from '@/views/shared/toggle';
-import { ReplySuggestions } from './reply-suggestions';
 import { createAutomationAction } from '@/app/instagram/posts/[postId]/actions';
-
-interface ButtonRow {
-  key: number;
-  title: string;
-  url: string;
-}
-
-type MatchMode = 'contains' | 'word' | 'exact';
-type TriggerType = 'keywords' | 'any';
-type Audience = 'any' | 'follower' | 'non_follower';
-
-const MAX_REPLY_VARIATIONS = AUTOMATION_LIMITS.commentReplyVariationsMax;
-
-/** Requirement 12: the trigger is now a choice between matching keywords and answering every
- * comment. "Any comments" is not a separate Zernio feature - it is an empty `keywords` array,
- * which Zernio documents as "any comment triggers". */
-const TRIGGER_TYPES: { value: TriggerType; label: string; hint: string }[] = [
-  {
-    value: 'keywords',
-    label: 'Specific keyword',
-    hint: 'Only comments containing one of your keywords trigger the automation.',
-  },
-  {
-    value: 'any',
-    label: 'Any comments',
-    hint: 'Every comment on this post or reel triggers the automation.',
-  },
-];
-
-/** Requirement 11: Zernio's `audience.followerStatus`. */
-const AUDIENCES: { value: Audience; label: string; hint: string }[] = [
-  { value: 'any', label: 'Everyone', hint: 'Reply to any commenter.' },
-  {
-    value: 'follower',
-    label: 'Followers only',
-    hint: 'Only send to accounts that follow you.',
-  },
-  {
-    value: 'non_follower',
-    label: 'Non-followers',
-    hint: 'Only send to accounts that do not follow you yet.',
-  },
-];
-
-// Re-exported from packages/validation so the form and the schema can never disagree about a
-// limit - see AUTOMATION_LIMITS for why these are centralised.
-const MAX_BUTTONS = AUTOMATION_LIMITS.buttonsMax;
-const LIMIT_WITH_BUTTONS = AUTOMATION_LIMITS.dmMessageWithButtonsMax;
-const LIMIT_PLAIN = AUTOMATION_LIMITS.dmMessageMax;
-
-const MATCH_MODES: { value: MatchMode; label: string }[] = [
-  { value: 'contains', label: 'Contains' },
-  { value: 'word', label: 'Word' },
-  { value: 'exact', label: 'Exact' },
-];
+import {
+  AUDIENCES,
+  AutomationHiddenInputs,
+  ButtonChips,
+  EMPTY_FIELD_VALUES,
+  EnabledField,
+  MessageFields,
+  TriggerFields,
+  templateFieldValues,
+  useAutomationFields,
+  type AutomationFieldValues,
+} from './automation-fields';
 
 /** Derives a sensible default automation name from the post's own caption: first line, first
  * 75 characters, ellipsised. Falls back to a generic label for a captionless post. The user can
@@ -73,15 +30,27 @@ export function defaultAutomationName(caption: string): string {
   return firstLine.length > 75 ? `${firstLine.slice(0, 75)}...` : firstLine;
 }
 
+/** The template the wizard applies on open. apps/api keeps exactly one default whenever any
+ * template exists; the fallback to the first one only covers a row edited by hand. */
+function defaultTemplate(templates: AutomationTemplate[]): AutomationTemplate | null {
+  return templates.find((template) => template.isDefault) ?? templates[0] ?? null;
+}
+
 // A 3-step modal wizard (trigger -> message -> review), matching the reference mockup's shape.
 // One client component owns all the form state so the review step can echo back what steps 1-2
 // collected, and it submits through the same createAutomationAction server action the inline
 // form used - no backend change was needed for the wizard itself.
+//
+// Templates (Phase 19): with any template saved, the wizard opens with the "Use a template"
+// switch on and the organization's default applied. The dropdown swaps in another template;
+// switching off empties every field for manual entry. The fields stay editable either way, and
+// nothing here writes back to the template.
 export function CreateAutomationModal({
   organizationId,
   accountId,
   postId,
   postCaption,
+  templates = [],
   trigger = 'desktop',
 }: {
   organizationId: string;
@@ -89,99 +58,43 @@ export function CreateAutomationModal({
   postId: string;
   /** Seeds the name field - see defaultAutomationName. */
   postCaption: string;
+  /** The organization's templates, oldest first. Empty hides the template controls' switch. */
+  templates?: AutomationTemplate[];
   /** How the opener renders. The mobile post detail (Phase 18.4) uses a full-width, thumb-sized
    * button; the wizard itself is the same in both views, and is already full-screen on phones. */
   trigger?: 'desktop' | 'mobile';
 }) {
+  const initialTemplate = defaultTemplate(templates);
+  const initialValues = (): AutomationFieldValues =>
+    initialTemplate ? templateFieldValues(initialTemplate) : EMPTY_FIELD_VALUES;
+
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<1 | 2 | 3>(1);
-
   const [name, setName] = useState(() => defaultAutomationName(postCaption));
-  const [isActive, setIsActive] = useState(true);
-  const [triggerType, setTriggerType] = useState<TriggerType>('keywords');
-  const [keywords, setKeywords] = useState<string[]>([]);
-  const [keywordDraft, setKeywordDraft] = useState('');
-  const [matchMode, setMatchMode] = useState<MatchMode>('contains');
-  const [audience, setAudience] = useState<Audience>('any');
-  const [replyEnabled, setReplyEnabled] = useState(false);
-  const [commentReply, setCommentReply] = useState('');
-  /** Alternate public replies. Zernio rotates over `[commentReply, ...these]`, one picked at
-   * random per triggering comment - it does not post all of them. */
-  const [replyVariations, setReplyVariations] = useState<string[]>([]);
+  const [templateId, setTemplateId] = useState<string | null>(initialTemplate?.id ?? null);
+  const fields = useAutomationFields(initialValues());
+  const { values } = fields;
 
-  const [dmMessage, setDmMessage] = useState('');
-  const [buttons, setButtons] = useState<ButtonRow[]>([]);
-  const [nextButtonKey, setNextButtonKey] = useState(0);
-
-  const limit = buttons.length > 0 ? LIMIT_WITH_BUTTONS : LIMIT_PLAIN;
-  const overLimit = dmMessage.length > limit;
   // On the "Any comments" tab there are no keywords to require - that is the whole point of it.
-  const step1Valid = name.trim().length > 0 && (triggerType === 'any' || keywords.length > 0);
-  const step2Valid = dmMessage.trim().length > 0 && !overLimit;
+  const step1Valid =
+    name.trim().length > 0 && (values.triggerType === 'any' || values.keywords.length > 0);
+  const step2Valid = values.dmMessage.trim().length > 0 && !fields.overLimit;
 
-  /** What actually gets submitted. On the "Any comments" tab this is empty, which is how Zernio
-   * is told to trigger on everything - the typed keywords are kept in state rather than cleared,
-   * so switching tabs back and forth does not silently destroy them. */
-  const submittedKeywords = triggerType === 'any' ? [] : keywords;
-
-  /** Only non-blank alternates are worth sending, and only when there is a primary reply for
-   * Zernio to rotate them against (the API rejects variations without one). */
-  const submittedVariations =
-    replyEnabled && commentReply.trim().length > 0
-      ? replyVariations.map((reply) => reply.trim()).filter((reply) => reply.length > 0)
-      : [];
+  function applyTemplate(id: string | null) {
+    const template = id ? templates.find((t) => t.id === id) : undefined;
+    setTemplateId(template?.id ?? null);
+    fields.load(template ? templateFieldValues(template) : EMPTY_FIELD_VALUES);
+  }
 
   function reset() {
     setStep(1);
     setName(defaultAutomationName(postCaption));
-    setIsActive(true);
-    setTriggerType('keywords');
-    setKeywords([]);
-    setKeywordDraft('');
-    setMatchMode('contains');
-    setAudience('any');
-    setReplyEnabled(false);
-    setCommentReply('');
-    setReplyVariations([]);
-    setDmMessage('');
-    setButtons([]);
-    setNextButtonKey(0);
+    applyTemplate(initialTemplate?.id ?? null);
   }
 
   function close() {
     setOpen(false);
     reset();
-  }
-
-  function addKeyword() {
-    const value = keywordDraft.trim();
-    if (value.length === 0 || keywords.includes(value)) {
-      setKeywordDraft('');
-      return;
-    }
-    setKeywords([...keywords, value]);
-    setKeywordDraft('');
-  }
-
-  function onKeywordKeyDown(event: KeyboardEvent<HTMLInputElement>) {
-    if (event.key === 'Enter' || event.key === ',') {
-      event.preventDefault();
-      addKeyword();
-    }
-  }
-
-  function addButton() {
-    if (buttons.length >= MAX_BUTTONS) return;
-    setButtons([...buttons, { key: nextButtonKey, title: '', url: '' }]);
-    setNextButtonKey(nextButtonKey + 1);
-  }
-
-  function removeButton(key: number) {
-    setButtons(buttons.filter((b) => b.key !== key));
-  }
-
-  function updateButton(key: number, field: 'title' | 'url', value: string) {
-    setButtons(buttons.map((b) => (b.key === key ? { ...b, [field]: value } : b)));
   }
 
   return (
@@ -228,38 +141,15 @@ export function CreateAutomationModal({
                 element on screen before step 3, there is nothing that can submit: premature
                 creation is structurally impossible rather than merely guarded against. */}
             <StepShell isFinalStep={step === 3}>
-              {/* Every submitted value lives in a hidden field, NOT in the visible step-1/2
-                  inputs: those are conditionally rendered, so React unmounts them as the wizard
-                  advances, and an unmounted input never reaches FormData. */}
               <input type="hidden" name="organizationId" value={organizationId} />
               <input type="hidden" name="accountId" value={accountId} />
               <input type="hidden" name="postId" value={postId} />
               <input type="hidden" name="name" value={name} />
-              <input type="hidden" name="keywords" value={submittedKeywords.join(',')} />
-              <input type="hidden" name="matchMode" value={matchMode} />
-              <input type="hidden" name="audience" value={audience} />
-              <input type="hidden" name="commentReply" value={replyEnabled ? commentReply : ''} />
-              {/* One field per alternate, read back with getAll() - same positional convention as
-                  the button rows below. */}
-              {submittedVariations.map((reply, index) => (
-                <input key={index} type="hidden" name="commentReplyVariation" value={reply} />
-              ))}
-              <input type="hidden" name="dmMessage" value={dmMessage} />
-              <input type="hidden" name="isActive" value={isActive ? 'true' : 'false'} />
-              {buttons
-                .filter((button) => button.title.trim() && button.url.trim())
-                .map((button) => (
-                  <div key={button.key}>
-                    <input type="hidden" name="buttonTitle" value={button.title} />
-                    <input type="hidden" name="buttonUrl" value={button.url} />
-                  </div>
-                ))}
+              <AutomationHiddenInputs fields={fields} />
 
               {/* Grab handle - drawn only in the mobile bottom-sheet design. */}
-
               <span
                 aria-hidden="true"
-
                 className="mx-auto mt-2.5 hidden h-[5px] w-10 shrink-0 rounded-full bg-switch-off mobile:block"
               />
 
@@ -285,6 +175,12 @@ export function CreateAutomationModal({
               <div className="flex-1 overflow-y-auto px-4 py-4 mobile:space-y-5 mobile:px-5 mobile:py-5">
                 {step === 1 && (
                   <div className="space-y-4">
+                    <TemplateSource
+                      templates={templates}
+                      templateId={templateId}
+                      onChange={applyTemplate}
+                    />
+
                     <div>
                       <label
                         htmlFor="automation-name"
@@ -293,7 +189,7 @@ export function CreateAutomationModal({
                         Name
                       </label>
                       {/* No `name` attribute: the hidden field above is the single source of
-                          truth for what gets submitted (see the comment there). */}
+                          truth for what gets submitted (see AutomationHiddenInputs). */}
                       {/* maxLength stops the over-limit input at the source rather than letting
                           the API reject it after a round trip - the caption prefill can easily
                           exceed 200 characters on a long post. The counter appears only near the
@@ -313,366 +209,17 @@ export function CreateAutomationModal({
                       )}
                     </div>
 
-                    {/* Requirement 12: the two trigger tabs. Rendered as a tablist rather than a
-                        toggle because the choice changes which fields exist below it. */}
-                    <div>
-                      <div
-                        role="tablist"
-                        aria-label="What triggers this automation"
-                        className="flex rounded-md border border-border-strong p-0.5 mobile:flex mobile:rounded-[14px] mobile:border-0 mobile:bg-seg mobile:p-1"
-                      >
-                        {TRIGGER_TYPES.map((option) => (
-                          <button
-                            key={option.value}
-                            type="button"
-                            role="tab"
-                            aria-selected={triggerType === option.value}
-                            onClick={() => setTriggerType(option.value)}
-                            className={
-                              triggerType === option.value
-                                ? 'flex-1 rounded-[5px] bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink mobile:flex-1 mobile:rounded-[11px] mobile:bg-seg-selected mobile:py-2.5 mobile:text-[13.5px] mobile:font-bold mobile:text-text mobile:shadow-sm'
-                                : 'flex-1 rounded-[5px] px-3 py-1.5 text-xs font-medium text-text-muted hover:text-text mobile:flex-1 mobile:py-2.5 mobile:text-[13.5px] mobile:font-bold'
-                            }
-                          >
-                            {option.label}
-                          </button>
-                        ))}
-                      </div>
-                      <p className="mt-1 text-xs text-text-muted">
-                        {TRIGGER_TYPES.find((option) => option.value === triggerType)?.hint}
-                      </p>
-                    </div>
+                    <TriggerFields fields={fields} />
 
-                    {/* Match mode and the keyword list are hidden entirely on the "Any comments"
-                        tab, exactly as requirement 12 asks - with no keywords there is nothing
-                        for a match mode to apply to, so showing a disabled control would just
-                        raise a question it cannot answer. */}
-                    {triggerType === 'keywords' && (
-                      <>
-                        <div>
-                          <span className="block text-sm font-medium text-text mobile:text-[13px] mobile:font-bold">
-                            Match mode
-                          </span>
-                          <div className="mt-1 inline-flex rounded-md border border-border-strong p-0.5 mobile:flex mobile:rounded-[14px] mobile:border-0 mobile:bg-seg mobile:p-1">
-                            {MATCH_MODES.map((mode) => (
-                              <button
-                                key={mode.value}
-                                type="button"
-                                onClick={() => setMatchMode(mode.value)}
-                                className={
-                                  matchMode === mode.value
-                                    ? 'rounded-[5px] bg-accent px-3 py-1 text-xs font-semibold text-accent-ink mobile:flex-1 mobile:rounded-[11px] mobile:bg-seg-selected mobile:py-2.5 mobile:text-[13.5px] mobile:font-bold mobile:text-text mobile:shadow-sm'
-                                    : 'rounded-[5px] px-3 py-1 text-xs font-medium text-text-muted hover:text-text mobile:flex-1 mobile:py-2.5 mobile:text-[13.5px] mobile:font-bold'
-                                }
-                              >
-                                {mode.label}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div>
-                          <span className="block text-sm font-medium text-text mobile:text-[13px] mobile:font-bold">
-                            Should include any of these keywords
-                          </span>
-                          <div className="mt-1 flex gap-2">
-                            <input
-                              type="text"
-                              value={keywordDraft}
-                              onChange={(e) => setKeywordDraft(e.target.value)}
-                              onKeyDown={onKeywordKeyDown}
-                              placeholder="Type a keyword and press Enter"
-                              className="flex-1 rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text mobile:rounded-2xl mobile:border-border mobile:px-3.5 mobile:py-3 mobile:text-[15px]"
-                            />
-                            <button
-                              type="button"
-                              onClick={addKeyword}
-                              className="rounded-md border border-border-strong px-3 py-1.5 text-sm font-medium text-text-muted hover:bg-surface-2 mobile:h-[52px] mobile:rounded-2xl mobile:border-border mobile:px-5 mobile:text-[15px] mobile:font-bold mobile:text-text"
-                            >
-                              + Add
-                            </button>
-                          </div>
-                          {keywords.length > 0 && (
-                            <div className="mt-2 flex flex-wrap gap-1.5">
-                              {keywords.map((keyword) => (
-                                <span
-                                  key={keyword}
-                                  className="inline-flex items-center gap-1.5 rounded-full bg-muted-bg px-2.5 py-1 text-xs font-medium text-text mobile:bg-accent-soft mobile:px-3 mobile:py-1.5 mobile:text-[13px] mobile:font-bold mobile:text-accent"
-                                >
-                                  {keyword}
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      setKeywords(keywords.filter((k) => k !== keyword))
-                                    }
-                                    aria-label={`Remove ${keyword}`}
-                                    className="text-text-faint hover:text-text"
-                                  >
-                                    ✕
-                                  </button>
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                          <p className="mt-1 text-xs text-text-muted">
-                            Any comment matching one of these triggers the automation. At least one
-                            is required.
-                          </p>
-                        </div>
-                      </>
-                    )}
-
-                    {/* Requirement 11. Zernio only learns the follow relationship for people who
-                        have messaged the account before, so this is a best-effort filter - see
-                        docs/ZERNIO-INTEGRATION.md. */}
-                    <div>
-                      <span className="block text-sm font-medium text-text mobile:text-[13px] mobile:font-bold">
-                        Send to
-                      </span>
-                      <div className="mt-1 inline-flex rounded-md border border-border-strong p-0.5 mobile:flex mobile:rounded-[14px] mobile:border-0 mobile:bg-seg mobile:p-1">
-                        {AUDIENCES.map((option) => (
-                          <button
-                            key={option.value}
-                            type="button"
-                            onClick={() => setAudience(option.value)}
-                            className={
-                              audience === option.value
-                                ? 'rounded-[5px] bg-accent px-3 py-1 text-xs font-semibold text-accent-ink mobile:flex-1 mobile:rounded-[11px] mobile:bg-seg-selected mobile:py-2.5 mobile:text-[13.5px] mobile:font-bold mobile:text-text mobile:shadow-sm'
-                                : 'rounded-[5px] px-3 py-1 text-xs font-medium text-text-muted hover:text-text mobile:flex-1 mobile:py-2.5 mobile:text-[13.5px] mobile:font-bold'
-                            }
-                          >
-                            {option.label}
-                          </button>
-                        ))}
-                      </div>
-                      <p className="mt-1 text-xs text-text-muted">
-                        {AUDIENCES.find((option) => option.value === audience)?.hint}
-                        {audience !== 'any' &&
-                          ' Instagram only reveals this for people who have messaged you before; anyone else is still sent to.'}
-                      </p>
-                    </div>
-
-                    <div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm font-medium text-text mobile:text-[13px] mobile:font-bold">
-                          Public reply on the comment (optional)
-                        </span>
-                        <Toggle
-                          checked={replyEnabled}
-                          onChange={() => setReplyEnabled(!replyEnabled)}
-                          label="Enable public reply"
-                        />
-                      </div>
-                      {replyEnabled && (
-                        <>
-                          <textarea
-                            rows={2}
-                            value={commentReply}
-                            maxLength={AUTOMATION_LIMITS.commentReplyMax}
-                            onChange={(e) => setCommentReply(e.target.value)}
-                            placeholder="Thanks! Sent you a DM 🙌"
-                            className="mt-2 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text mobile:rounded-2xl mobile:border-border mobile:px-3.5 mobile:py-3 mobile:text-[15px]"
-                          />
-                          <ReplySuggestions value={commentReply} onAppend={setCommentReply} />
-
-                          {/* Requirement 13: up to 5 alternates on top of the reply above. */}
-                          {replyVariations.length > 0 && (
-                            <div className="mt-2 space-y-2">
-                              {replyVariations.map((reply, index) => (
-                                <div key={index} className="flex gap-2">
-                                  <input
-                                    type="text"
-                                    value={reply}
-                                    maxLength={AUTOMATION_LIMITS.commentReplyMax}
-                                    onChange={(e) =>
-                                      setReplyVariations(
-                                        replyVariations.map((existing, i) =>
-                                          i === index ? e.target.value : existing,
-                                        ),
-                                      )
-                                    }
-                                    placeholder={`Alternative reply ${index + 1}`}
-                                    className="flex-1 rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text mobile:rounded-2xl mobile:border-border mobile:px-3.5 mobile:py-3 mobile:text-[15px]"
-                                  />
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      setReplyVariations(
-                                        replyVariations.filter((_, i) => i !== index),
-                                      )
-                                    }
-                                    aria-label={`Remove alternative reply ${index + 1}`}
-                                    className="px-1 text-text-faint hover:text-text mobile:px-2 mobile:text-base"
-                                  >
-                                    ✕
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-
-                          {replyVariations.length < MAX_REPLY_VARIATIONS && (
-                            <button
-                              type="button"
-                              onClick={() => setReplyVariations([...replyVariations, ''])}
-                              // Disabled until there is a primary reply: Zernio rotates over
-                              // [commentReply, ...variations], so alternates with nothing to
-                              // rotate against are rejected by the API.
-                              disabled={commentReply.trim().length === 0}
-                              className="mt-2 w-full rounded-md border border-dashed border-border-strong px-3 py-2 text-xs font-medium text-text-muted hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40 mobile:h-11 mobile:rounded-2xl mobile:text-[13px] mobile:font-bold"
-                            >
-                              + Add another reply ({MAX_REPLY_VARIATIONS - replyVariations.length}{' '}
-                              left)
-                            </button>
-                          )}
-                        </>
-                      )}
-                      <p className="mt-1 text-xs text-text-muted">
-                        Posted publicly under the triggering comment. Leave the toggle off to skip a
-                        public reply.
-                        {replyEnabled && replyVariations.length > 0 && (
-                          <>
-                            {' '}
-                            With alternatives added, Instagram shows{' '}
-                            <strong className="font-medium">
-                              one of them picked at random
-                            </strong>{' '}
-                            per comment - not all of them - so repeat commenters do not all see the
-                            same wording.
-                          </>
-                        )}
-                      </p>
-                    </div>
-
-                    <div className="border-t border-border pt-4">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-sm font-medium text-text mobile:text-[13px] mobile:font-bold">
-                          Enabled
-                        </span>
-                        <Toggle
-                          checked={isActive}
-                          onChange={() => setIsActive(!isActive)}
-                          label="Enable automation"
-                        />
-                      </div>
-                      <p className="mt-1 text-xs text-text-muted">
-                        {isActive
-                          ? 'Starts replying to matching comments as soon as it is created.'
-                          : 'Created but paused - it will not reply until you enable it.'}
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                {step === 2 && (
-                  <div>
-                    <label
-                      htmlFor="dmMessage"
-                      className="block text-sm font-medium text-text mobile:text-[13px] mobile:font-bold"
-                    >
-                      DM message
-                    </label>
-                    {/* Capped at the *plain* limit, not `limit`: lowering maxLength to 640 while
-                        text longer than that is already in the box would leave the field in a
-                        state the user cannot see the end of. The counter turns red and Next
-                        disables instead, which is recoverable. */}
-                    <textarea
-                      id="dmMessage"
-                      rows={3}
-                      value={dmMessage}
-                      maxLength={AUTOMATION_LIMITS.dmMessageMax}
-                      onChange={(e) => setDmMessage(e.target.value)}
-                      className="mt-1 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text mobile:rounded-2xl mobile:border-border mobile:px-3.5 mobile:py-3 mobile:text-[15px]"
+                    <EnabledField
+                      fields={fields}
+                      onHint="Starts replying to matching comments as soon as it is created."
+                      offHint="Created but paused - it will not reply until you enable it."
                     />
-                    <p
-                      className={`mt-1 text-right text-xs ${overLimit ? 'text-danger' : 'text-text-faint'}`}
-                    >
-                      {dmMessage.length} / {limit}
-                      {buttons.length > 0 && ' — limit drops to 640 once a button is added'}
-                    </p>
-
-                    <div className="mt-3 flex items-baseline justify-between">
-                      <span className="text-sm font-medium text-text mobile:text-[13px] mobile:font-bold">
-                        Buttons (optional)
-                      </span>
-                      <span className="text-xs text-text-faint">
-                        {buttons.length} / {MAX_BUTTONS} used
-                      </span>
-                    </div>
-                    {buttons.length > 0 && (
-                      <div className="mt-1.5 space-y-2">
-                        {buttons.map((row) => (
-                          <div key={row.key} className="flex gap-2">
-                            <input
-                              type="text"
-                              value={row.title}
-                              onChange={(e) => updateButton(row.key, 'title', e.target.value)}
-                              maxLength={AUTOMATION_LIMITS.buttonTitleMax}
-                              placeholder="Label (max 20 chars)"
-                              className="w-32 rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-text mobile:rounded-2xl mobile:border-border mobile:px-3.5 mobile:py-3 mobile:text-[15px]"
-                            />
-                            <input
-                              type="text"
-                              value={row.url}
-                              onChange={(e) => updateButton(row.key, 'url', e.target.value)}
-                              placeholder="https://..."
-                              className="flex-1 rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-text mobile:rounded-2xl mobile:border-border mobile:px-3.5 mobile:py-3 mobile:text-[15px]"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => removeButton(row.key)}
-                              aria-label="Remove button"
-                              className="px-1 text-text-faint hover:text-text mobile:px-2 mobile:text-base"
-                            >
-                              ✕
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {buttons.length < MAX_BUTTONS && (
-                      <button
-                        type="button"
-                        onClick={addButton}
-                        className="mt-2 w-full rounded-md border border-dashed border-border-strong px-3 py-2 text-xs font-medium text-text-muted hover:bg-surface-2 mobile:h-11 mobile:rounded-2xl mobile:text-[13px] mobile:font-bold"
-                      >
-                        + Add button ({MAX_BUTTONS - buttons.length} left)
-                      </button>
-                    )}
-                    <p className="mt-1 text-xs text-text-muted">
-                      Up to 3 buttons, each a short label and a link, shown under the DM. Zernio
-                      tracks clicks on each link automatically.
-                    </p>
-
-                    {(dmMessage || buttons.length > 0) && (
-                      <div className="mt-4 overflow-hidden rounded-lg border border-border bg-muted-bg p-3 mobile:rounded-[18px] mobile:border-0 mobile:bg-seg mobile:p-3.5">
-                        <p className="mb-2 text-xs text-text-faint">Preview</p>
-                        {/* whitespace-pre-wrap keeps the user's own line breaks; break-words
-                            splits a long unbroken run (a pasted URL, a word with no spaces)
-                            that would otherwise render as one line wider than the bubble and
-                            overflow the modal. min-w-0 lets the bubble actually shrink inside
-                            its flex/grid parent instead of being sized by its content. */}
-                        <div className="min-w-0 whitespace-pre-wrap break-words rounded-2xl bg-surface px-3 py-2 text-sm text-text shadow-sm mobile:rounded-[18px] mobile:rounded-bl-md mobile:px-3.5 mobile:py-3">
-                          {dmMessage || '(your DM message)'}
-                        </div>
-                        {buttons.some((b) => b.title) && (
-                          <div className="mt-1.5 flex flex-wrap gap-1.5">
-                            {buttons
-                              .filter((b) => b.title)
-                              .map((b) => (
-                                <span
-                                  key={b.key}
-                                  className="max-w-full truncate rounded-full border border-border-strong px-2.5 py-1 text-xs font-medium text-text"
-                                >
-                                  {b.title}
-                                </span>
-                              ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
                   </div>
                 )}
+
+                {step === 2 && <MessageFields fields={fields} />}
 
                 {step === 3 && (
                   <div className="space-y-4 text-sm">
@@ -681,16 +228,18 @@ export function CreateAutomationModal({
                     </ReviewRow>
                     <ReviewRow
                       label={
-                        triggerType === 'any' ? 'with any text at all' : 'and the comment matches'
+                        values.triggerType === 'any'
+                          ? 'with any text at all'
+                          : 'and the comment matches'
                       }
                     >
-                      {triggerType === 'any' ? (
+                      {values.triggerType === 'any' ? (
                         <p className="text-text">Every comment triggers this automation</p>
                       ) : (
                         <>
-                          <p className="text-text-faint">{matchMode}</p>
+                          <p className="text-text-faint">{values.matchMode}</p>
                           <div className="mt-1 flex flex-wrap gap-1.5">
-                            {keywords.map((keyword) => (
+                            {values.keywords.map((keyword) => (
                               <span
                                 key={keyword}
                                 className="rounded-full bg-muted-bg px-2.5 py-0.5 text-xs font-medium text-text mobile:bg-accent-soft mobile:px-3 mobile:py-1.5 mobile:text-[13px] mobile:font-bold mobile:text-accent"
@@ -702,25 +251,25 @@ export function CreateAutomationModal({
                         </>
                       )}
                     </ReviewRow>
-                    {audience !== 'any' && (
+                    {values.audience !== 'any' && (
                       <ReviewRow label="but only for">
                         <p className="text-text">
-                          {AUDIENCES.find((option) => option.value === audience)?.label}
+                          {AUDIENCES.find((option) => option.value === values.audience)?.label}
                         </p>
                       </ReviewRow>
                     )}
-                    {replyEnabled && commentReply && (
+                    {values.replyEnabled && values.commentReply && (
                       <ReviewRow
                         label={
-                          submittedVariations.length > 0
-                            ? `reply publicly with one of these ${submittedVariations.length + 1}, at random`
+                          fields.submittedVariations.length > 0
+                            ? `reply publicly with one of these ${fields.submittedVariations.length + 1}, at random`
                             : 'reply publicly with'
                         }
                       >
                         <p className="whitespace-pre-wrap break-words rounded-lg bg-muted-bg px-3 py-2 text-text mobile:rounded-2xl mobile:bg-seg mobile:px-3.5 mobile:py-3">
-                          &quot;{commentReply}&quot;
+                          &quot;{values.commentReply}&quot;
                         </p>
-                        {submittedVariations.map((reply, index) => (
+                        {fields.submittedVariations.map((reply, index) => (
                           <p
                             key={index}
                             className="mt-1 whitespace-pre-wrap break-words rounded-lg bg-muted-bg px-3 py-2 text-text mobile:rounded-2xl mobile:bg-seg mobile:px-3.5 mobile:py-3"
@@ -732,24 +281,11 @@ export function CreateAutomationModal({
                     )}
                     <ReviewRow label="and send this DM">
                       <p className="whitespace-pre-wrap break-words rounded-lg bg-muted-bg px-3 py-2 text-text mobile:rounded-2xl mobile:bg-seg mobile:px-3.5 mobile:py-3">
-                        {dmMessage}
+                        {values.dmMessage}
                       </p>
-                      {buttons.some((b) => b.title) && (
-                        <div className="mt-1.5 flex flex-wrap gap-1.5">
-                          {buttons
-                            .filter((b) => b.title)
-                            .map((b) => (
-                              <span
-                                key={b.key}
-                                className="max-w-full truncate rounded-full border border-border-strong px-2.5 py-1 text-xs font-medium text-text"
-                              >
-                                {b.title}
-                              </span>
-                            ))}
-                        </div>
-                      )}
+                      <ButtonChips buttons={values.buttons} />
                     </ReviewRow>
-                    {buttons.some((b) => b.url) && (
+                    {values.buttons.some((b) => b.url) && (
                       <ReviewRow label="clicks on those links will be tracked">
                         <p className="text-xs text-text-faint">
                           Zernio wraps them in a tracked redirect (on by default) so this dashboard
@@ -760,12 +296,12 @@ export function CreateAutomationModal({
                     <ReviewRow label="and it starts">
                       <span
                         className={
-                          isActive
+                          values.isActive
                             ? 'inline-block rounded-full border border-success-border bg-success-bg px-2.5 py-0.5 text-xs font-semibold text-success'
                             : 'inline-block rounded-full bg-muted-bg px-2.5 py-0.5 text-xs font-semibold text-text-faint'
                         }
                       >
-                        {isActive ? 'Enabled' : 'Disabled'}
+                        {values.isActive ? 'Enabled' : 'Disabled'}
                       </span>
                     </ReviewRow>
                   </div>
@@ -821,6 +357,79 @@ export function CreateAutomationModal({
         </div>
       )}
     </>
+  );
+}
+
+/** "Use a template" switch plus the template dropdown (Phase 19). `templateId` null means
+ * manual. With no templates saved there is nothing to switch, so it only points at the
+ * Templates page. */
+function TemplateSource({
+  templates,
+  templateId,
+  onChange,
+}: {
+  templates: AutomationTemplate[];
+  templateId: string | null;
+  onChange: (templateId: string | null) => void;
+}) {
+  const selectId = useId();
+  const usingTemplate = templateId !== null;
+
+  if (templates.length === 0) {
+    return (
+      <p className="rounded-lg border border-border bg-surface-2 px-3 py-2.5 text-xs text-text-muted mobile:rounded-[18px] mobile:px-3.5 mobile:py-3 mobile:text-[13px]">
+        Filling in the same fields every time? Save them as a template on the Templates page and
+        they will be filled in here automatically.
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-2.5 rounded-lg border border-accent-soft-border bg-accent-soft p-3 mobile:rounded-[18px] mobile:p-3.5">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-text mobile:text-[14px] mobile:font-bold">
+            Use a template
+          </p>
+          <p className="mt-0.5 text-xs text-text-muted mobile:text-[12.5px]">
+            {usingTemplate
+              ? 'The fields below are filled in from the template. Change anything for this post; the template itself stays as it is.'
+              : 'Manual. Every field starts empty.'}
+          </p>
+        </div>
+        <Toggle
+          checked={usingTemplate}
+          onChange={() => onChange(usingTemplate ? null : (defaultTemplate(templates)?.id ?? null))}
+          label="Use a template"
+        />
+      </div>
+      {usingTemplate && (
+        <div>
+          <label
+            htmlFor={selectId}
+            className="block text-xs font-medium text-text mobile:text-[13px] mobile:font-bold"
+          >
+            Template
+          </label>
+          <select
+            id={selectId}
+            value={templateId}
+            onChange={(e) => onChange(e.target.value)}
+            className="mt-1 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text mobile:rounded-2xl mobile:border-border mobile:px-3.5 mobile:py-3 mobile:text-[15px]"
+          >
+            {templates.map((template) => (
+              <option key={template.id} value={template.id}>
+                {template.name}
+                {template.isDefault ? ' (default)' : ''}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-text-muted">
+            Picking another template replaces the fields below.
+          </p>
+        </div>
+      )}
+    </div>
   );
 }
 
