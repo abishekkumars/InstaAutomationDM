@@ -1,0 +1,18 @@
+{
+  "name": "@automationdm/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Playwright browser tests against a running local dev stack (Phase 18.6). Deliberately no `test` script: scripts/test.ps1 runs every package's `test`, and these need the web + api servers up. Run them with scripts/e2e.ps1.",
+  "scripts": {
+    "e2e": "playwright test",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@automationdm/database": "workspace:*",
+    "bcryptjs": "^3.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0",
+    "@types/node": "^24.0.0"
+  }
+}

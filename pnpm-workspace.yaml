@@ -1,3 +1,5 @@
 packages:
   - 'apps/*'
   - 'packages/*'
+  # Playwright browser tests (Phase 18.6) - see tests/e2e/README.md.
+  - 'tests/e2e'

@@ -153,6 +153,106 @@ All 20 requirements of the 2026-08-14 change request are implemented. **Phases 1
 remain outstanding** — the webhook ingestion that makes automations actually record their
 results is still the next real piece of product work.
 
+**Requested 2026-09-25, executing ahead of Phases 11-14.** A dedicated mobile UI, built from the
+approved "AutomationDM Mobile" design artifact. Branch: `feat/views-desktop-mobile`. See
+`docs/ADR/0010-device-specific-views.md`. **Status: complete (18.1-18.6).** Checked in the browser against the restored local organization, and covered by 8 Playwright tests (`scripts/e2e.ps1`). Still manual-only: editing a real automation and a successful pause/resume, which need a real Zernio automation to exist.
+
+- [x] **Phase 18 — Device-specific views (desktop + mobile)**
+  - [x] Phase 18.1 — move the existing UI into `src/views/desktop` (and shared pieces into
+    `src/views/shared`) with no behaviour change. Add `src/lib/device.ts`: `userAgent()` plus a
+    `view` cookie override. Split `layout.tsx` into a root layout plus `DesktopShell`. Mobile still
+    falls back to desktop at this point. `scripts/lint.ps1` and `scripts/test.ps1` must stay green and
+    unchanged.
+  - [x] Phase 18.2 — mobile shell: glass bottom tab bar, collapsing pinned header, the mobile
+    tokens in `globals.css`, and Plus Jakarta Sans via `next/font`. Then the **Listing** screen:
+    search that collapses to a header icon, All/Active/Paused filters, and automation cards with
+    the enable switch wired to the existing update action.
+    _Implemented:_ `views/mobile/{shell,tab-bar,page-header,switch,notice,icons}.tsx` and
+    `views/mobile/listing/*`. `app/layout.tsx` picks the shell and `app/page.tsx` picks the view
+    via `getView()`. The switch calls a new `setAutomationActiveAction`, which sends a partial
+    PATCH of `{ isActive }` only. It derives the organization server-side from the active
+    organization and returns a result instead of redirecting, so the switch can flip
+    optimistically and roll back on failure. Checked on a phone viewport: Android user agent,
+    shell, font, glass bar, active tab, no horizontal overflow, and the desktop view unchanged.
+    **Not yet checked with data:** the cards, search collapse and switch need an organization
+    with automations locally.
+    **Known gaps until later phases:** on a phone, the Dashboard and Settings tabs return 404
+    until 18.3 and 18.5, and **mobile has no sign-out until 18.5**. The + button and Status tab
+    show the desktop pages inside the mobile shell until 18.4 and 18.5.
+  - [x] Phase 18.3 — **Dashboard** (`/dashboard`; desktop redirects to `/`): the four stat cards,
+    the active/paused ring chart, top automations, and CTR, all from existing data. The per-day
+    DM bar and line charts wait for Phase 11/12 event history, per ADR 0010.
+    _Implemented:_ `app/dashboard/page.tsx` (desktop redirects to `/`),
+    `views/mobile/dashboard/{dashboard-view,charts}.tsx` (server-rendered SVG and HTML, no chart
+    library), and the `chart-1`/`chart-2` tokens. Both themes pass the dataviz palette validator;
+    dark mode needed its own steps, because the app's dark accent sits just above the chart
+    lightness band. **Not yet checked in the browser:** the idle session had expired, and the local
+    account has no organization.
+  - [x] Phase 18.4 — **+ / Posts**: the mobile posts grid (All/Reels/Posts, automation badges) and
+    post detail (automation card, DM preview, stats, pause/resume). The create and edit wizards
+    appear as mobile bottom sheets that reuse the existing server actions and validation.
+    _Implemented:_ `views/mobile/posts/*` (grid, All/Reels/Posts, Active/Paused badges, 60 tiles
+    per "Show more") and `views/mobile/post-detail/*` (automation card, DM preview, stats,
+    Pause/Resume). The create and edit dialogs moved to `views/shared/automation/` and are
+    shared, not copied; they were already full-screen on phones, so each gained only a `mobile`
+    opener. The fetches moved into `app/instagram/posts/posts-data.ts` and
+    `[postId]/post-detail-data.ts`, now that two views use them. **Checked in the browser with
+    real data** (58 posts): the grid, filters (53 reels + 5 posts), the collapsing header, post
+    detail, the create wizard opening and closing, and the desktop views unchanged. Also fixed
+    the shell's `scroll-pt`, so a navigation no longer scrolls the page's top gap away. **Not
+    checked:** edit, pause/resume and the listing switch, because the account has no
+    automations yet. Creating one to test would publish a real automation to live Instagram.
+  - [x] Phase 18.5 — **Status** (live health, Zernio and Meta connection state) and **Settings**
+    (`/settings`: profile, Light/Dark/System through the existing theme script, connected
+    account, Administration link for admins, "Use desktop site", and Sign out with a
+    confirmation sheet).
+    _Implemented:_ `views/mobile/status/*` (live API health with latency, Zernio and Meta state,
+    "Check now") and `views/mobile/settings/*` (profile, the shared OrganizationSwitcher,
+    ThemePicker on the same storage key and `applyTheme` as the desktop ThemeToggle, connected
+    account with the existing connect/disconnect actions, team, Administration for admins, "Use
+    desktop site", and a Sign out confirmation sheet). There is a new `app/view-actions.ts`
+    (`desktop` pins the view with a cookie, `auto` clears it), plus a "Use mobile site" button in
+    the desktop top bar, shown only to a phone. `lib/device.ts` gained `getViewInfo()`. The health
+    check moved to `app/status/status-data.ts`, and a `danger-ink` token keeps the filled Sign out
+    button readable in dark mode. The design's uptime bar, activity feed and notification
+    switches are not built: there is no recorded history and no notifications to back them.
+    **Checked in the browser:** status and "Check now", Settings with real data, all three
+    themes, the sign-out sheet (opened and cancelled, not submitted), and the round trip from
+    desktop site back to mobile site.
+  - [x] Phase 18.5a (follow-up, requested before 18.6):
+    - **Create and edit dialogs in the mobile design.** A Tailwind `@custom-variant mobile` in
+      `globals.css` applies `mobile:` classes inside `[data-variant="mobile"]`. The shared dialogs
+      set that attribute when opened with `trigger="mobile"`, so one component renders either
+      design: a bottom sheet with a grab handle, a round close button, segmented tabs, large
+      inputs, and full-width buttons with the step label stacked above them. The desktop design is
+      unchanged (checked: 6px inputs, no handle, no variant). **Checked in the
+      browser:** all three create steps, stopped at the review and closed without creating.
+      The edit dialog carries the same classes but was not seen, since no editable automation
+      exists (the demo organization cannot load post detail).
+    - **Demo data for UI testing:** `pnpm --filter @automationdm/database run seed:demo --
+      --email <you>` (`packages/database/dev/seed-demo.mjs`, localhost only, never the `_test`
+      database). It creates a separate "Demo (test data)" organization with `@demo.studio` and 18
+      automations (14 active), and adds the user as owner. `--remove` deletes it. The
+      organization has no Zernio profile, so apps/api skips Zernio: the listing, filters, counts
+      and dashboard health work, stats show "—", and anything that calls Zernio (posts, post
+      detail, enable/pause, edit) fails, which exercises the error paths.
+  - [x] Phase 18.6 — browser tests for the mobile view (`tests/e2e` is still a placeholder, so this
+    adds Playwright as a project-local dev dependency, with a phone user agent and viewport)
+    covering tab navigation, the theme switch, sign-out, and one automation toggle. Update
+    `docs/ARCHITECTURE.md` and `docs/TESTING.md`, and move ADR 0010 to Accepted.
+    _Implemented:_ `tests/e2e` became the `@automationdm/e2e` workspace package (Playwright 1.63),
+    run with `scripts/e2e.ps1` against the running stack, on the installed Edge, with no browser
+    download. **8 tests** (6 mobile, 2 desktop), passing on consecutive runs. The focus-regression
+    test was checked by removing the fix and watching it fail. The run also turned up two app
+    fixes: the enable switch and Pause/Resume now roll back when the save request itself fails
+    (offline), not only on an error result; and the Next dev badge (`devIndicators: false`) no
+    longer covers the Listing tab. ADR 0010 is Accepted; ARCHITECTURE, TESTING and the e2e README
+    are updated.
+- [x] **Organization switcher + brand assets** (2026-09-25, same branch, done in a parallel session):
+  switcher in the desktop sidebar and drawer (`views/shared/organization-switcher.tsx`, shared
+  with the mobile tree), `getActiveOrganization()` in `src/lib/organization.ts` (an `org` cookie
+  re-validated against memberships), plus the brand logo, favicon, apple-icon and web manifest.
+
 **Retired (not deferred — see `docs/ADR/0005-simplified-mvp-architecture.md` for why)**:
 Redis + BullMQ queue wiring, a generic trigger/condition/action automation engine, contact
 management/CRM, an analytics pipeline, a visual workflow builder UI, an inbox/conversations
@@ -766,7 +866,8 @@ plugin in `apps/api/vitest.config.ts`.
 **Known limitations / risks**
 - Dashboard shows only the caller's *first* organization (by `createdAt`) — no org-switcher
   UI. Not required by this phase's roadmap line; a real multi-org UX is deferred until a
-  phase that actually needs it.
+  phase that actually needs it. **Resolved 2026-09-25:** the organization switcher (a sidebar
+  dropdown backed by an `org` cookie; see `docs/SECURITY.md`'s Tenant isolation section).
 - No invite-by-email flow — `users`/`members` stay folded into `organizations` until that
   exists. Adding a member today would require direct DB access (there's no endpoint for it
   yet), which is fine since nothing in this phase needed one.
@@ -2767,6 +2868,12 @@ This bit during Phase 17 debugging: repeated test runs cleared the developer's o
 account and organization, and a probe against the API then 401'd purely because the user row was
 gone. Worth either pointing the suites at a separate database or being deliberate about when the
 full suite runs against a dev database holding a real connection.
+
+**Resolved 2026-09-25**, after the same thing happened again during Phase 18.1. The suites now run
+against a separate `*_test` database: `TEST_DATABASE_URL`, or `DATABASE_URL`'s localhost database
+with `_test` appended. `scripts/test.ps1` creates and migrates it first, and both vitest setup
+files refuse to start against any database whose name does not end in `_test`. CI's service
+database was renamed to `automationdm_test` to match. See `docs/TESTING.md`, "The test database".
 
 ### Phase 17 addendum 4 — every page 404ing, and where the redirect_uri question stands
 
