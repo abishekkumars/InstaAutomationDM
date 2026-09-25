@@ -1,7 +1,7 @@
 'use client';
 
 import { useActionState } from 'react';
-import { LoadingOverlay } from '../loader';
+import { LoadingOverlay } from '@/views/shared/loader';
 import { PasswordField } from './password-field';
 import { signInAction, type AuthActionResult } from './actions';
 

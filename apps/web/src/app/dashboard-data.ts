@@ -2,7 +2,42 @@ import { cache } from 'react';
 import type { OrganizationRole } from '@automationdm/database';
 import { callApi, callApiCached, callApiCachedWithMeta } from '@/lib/api';
 import { cacheTags } from '@/lib/cache-tags';
-import type { AutomationListItem } from './automations-browser';
+
+// The automations list shape. Defined here, in the shared data layer, rather than in a view:
+// both the desktop and mobile views render it (ADR 0010).
+export interface AutomationStats {
+  dmsSent: number;
+  linkClicks: number;
+  clickThroughRate: number | null;
+}
+
+export interface AutomationPostPreview {
+  caption: string;
+  thumbnailUrl: string | null;
+  permalink: string | null;
+}
+
+export interface AutomationListItem {
+  id: string;
+  platformPostId: string;
+  instagramAccountId: string;
+  accountUsername: string | null;
+  name: string;
+  /** Empty means the automation triggers on any comment (Phase 16.2, requirement 12). */
+  keywords: string[];
+  matchMode: 'CONTAINS' | 'WORD' | 'EXACT';
+  audience: 'ANY' | 'FOLLOWER' | 'NON_FOLLOWER';
+  isActive: boolean;
+  stats: AutomationStats | null;
+  post: AutomationPostPreview | null;
+  // Not rendered in the table itself - these are what the edit dialog pre-fills from, so the
+  // row can open a fully populated form without a second round trip. The API's
+  // AutomationListItem has always included them; this interface simply did not declare them.
+  commentReply: string | null;
+  commentReplyVariations: string[];
+  buttons: { title: string; url: string }[];
+  dmMessage: string;
+}
 
 export interface OrganizationSummary {
   id: string;

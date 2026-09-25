@@ -1,21 +1,12 @@
 'use client';
 
-import { LoadingLink } from '../../loader';
-import { BoltIcon } from '@/app/icons';
-import { Pagination } from '@/app/pagination';
+import { LoadingLink } from '@/views/shared/loader';
+import { BoltIcon } from '@/views/shared/icons';
+import { Pagination } from '@/views/desktop/pagination';
 import { formatDate } from '@/lib/format-date';
-import { useUrlNumberState, useUrlState } from '@/app/use-url-state';
+import { useUrlNumberState, useUrlState } from '@/views/shared/use-url-state';
 import { useEffect, useMemo, useRef, useState } from 'react';
-
-export interface InstagramPostSummary {
-  /** Instagram's own media id - the pivot since Phase 17, and what the post route keys on. */
-  platformPostId: string;
-  permalink: string | null;
-  caption: string;
-  mediaType: 'image' | 'video' | 'gif' | 'document' | null;
-  thumbnailUrl: string | null;
-  publishedAt: string | null;
-}
+import type { InstagramPostSummary } from '@/app/instagram/posts/posts-data';
 
 type ViewMode = 'grid' | 'list';
 type SortOrder = 'newest' | 'oldest';
@@ -71,7 +62,7 @@ export function PostsBrowser({
   const [sort, setSort] = useUrlState<SortOrder>('sort', 'newest', isSortOrder);
   const [pageSize, setPageSize] = useUrlNumberState('size', 24, PAGE_SIZE_OPTIONS);
   const [page, setPage] = useUrlNumberState('page', 1);
-  // Deliberately NOT named `automation`: ToastHost (app/toast.tsx) reads `?automation=` globally
+  // Deliberately NOT named `automation`: ToastHost (views/shared/toast.tsx) reads `?automation=` globally
   // as a create/update/delete status and would render a stray error toast for a filter value.
   const [automationFilter, setAutomationFilter] = useUrlState<AutomationFilter>(
     'automated',

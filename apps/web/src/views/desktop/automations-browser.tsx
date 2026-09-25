@@ -1,44 +1,11 @@
 'use client';
 
 import { useMemo, useRef, useState } from 'react';
-import { LoadingLink } from './loader';
-import { EyeIcon } from './icons';
-import { EditAutomationModal } from './edit-automation-modal';
+import { LoadingLink } from '@/views/shared/loader';
+import { EyeIcon } from '@/views/shared/icons';
+import { EditAutomationModal } from '@/views/shared/automation/edit-automation-modal';
 import { Pagination } from './pagination';
-
-export interface AutomationStats {
-  dmsSent: number;
-  linkClicks: number;
-  clickThroughRate: number | null;
-}
-
-export interface AutomationPostPreview {
-  caption: string;
-  thumbnailUrl: string | null;
-  permalink: string | null;
-}
-
-export interface AutomationListItem {
-  id: string;
-  platformPostId: string;
-  instagramAccountId: string;
-  accountUsername: string | null;
-  name: string;
-  /** Empty means the automation triggers on any comment (Phase 16.2, requirement 12). */
-  keywords: string[];
-  matchMode: 'CONTAINS' | 'WORD' | 'EXACT';
-  audience: 'ANY' | 'FOLLOWER' | 'NON_FOLLOWER';
-  isActive: boolean;
-  stats: AutomationStats | null;
-  post: AutomationPostPreview | null;
-  // Not rendered in the table itself - these are what the edit dialog pre-fills from, so the
-  // row can open a fully populated form without a second round trip. The API's
-  // AutomationListItem has always included them; this interface simply did not declare them.
-  commentReply: string | null;
-  commentReplyVariations: string[];
-  buttons: { title: string; url: string }[];
-  dmMessage: string;
-}
+import type { AutomationListItem, AutomationPostPreview } from '@/app/dashboard-data';
 
 const MATCH_MODE_LABEL: Record<AutomationListItem['matchMode'], string> = {
   CONTAINS: 'contains',

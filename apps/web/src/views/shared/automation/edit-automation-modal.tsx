@@ -2,11 +2,11 @@
 
 import { useState, type KeyboardEvent } from 'react';
 import { AUTOMATION_LIMITS } from '@automationdm/validation';
-import { FormPendingOverlay } from './loader';
-import { Toggle } from './toggle';
+import { FormPendingOverlay } from '@/views/shared/loader';
+import { Toggle } from '@/views/shared/toggle';
 import { ReplySuggestions } from './reply-suggestions';
-import { PencilIcon, TrashIcon } from './icons';
-import { updateAutomationAction, deleteAutomationAction } from './automation-actions';
+import { PencilIcon, TrashIcon } from '@/views/shared/icons';
+import { updateAutomationAction, deleteAutomationAction } from '@/app/automation-actions';
 
 export interface EditableAutomation {
   id: string;
@@ -56,14 +56,17 @@ const MATCH_MODES: { value: MatchMode; label: string }[] = [
   { value: 'exact', label: 'Exact' },
 ];
 
-type TriggerKind = 'button' | 'link' | 'icon' | 'delete-icon';
+type TriggerKind = 'button' | 'link' | 'icon' | 'delete-icon' | 'mobile';
 
 const TRIGGER_CLASS: Record<TriggerKind, string> = {
   button:
-    'rounded-md border border-border-strong px-3 py-1.5 text-sm font-medium text-text-muted hover:bg-surface-2',
+    'rounded-md border border-border-strong px-3 py-1.5 text-sm font-medium text-text-muted hover:bg-surface-2 mobile:h-[52px] mobile:rounded-2xl mobile:border-border mobile:px-5 mobile:text-[15px] mobile:font-bold mobile:text-text',
   link: 'text-xs font-medium text-text-muted hover:text-text hover:underline',
   icon: 'rounded-md p-1.5 text-text-muted hover:bg-muted-bg hover:text-text',
   'delete-icon': 'rounded-md p-1.5 text-text-muted hover:bg-danger-bg hover:text-danger',
+  // The mobile post detail's primary action (Phase 18.4): a thumb-sized filled button.
+  mobile:
+    'flex h-[50px] flex-1 items-center justify-center gap-2 rounded-2xl bg-accent text-[15px] font-bold text-accent-ink',
 };
 
 // Edit + delete for an existing automation, used by both the post detail page and the
@@ -202,7 +205,18 @@ export function EditAutomationModal({
           aria-label={deleteOnly ? `Delete ${automation.name}` : `Edit ${automation.name}`}
           className={TRIGGER_CLASS[trigger]}
         >
-          {trigger === 'delete-icon' ? <TrashIcon /> : trigger === 'icon' ? <PencilIcon /> : 'Edit'}
+          {trigger === 'delete-icon' ? (
+            <TrashIcon />
+          ) : trigger === 'icon' ? (
+            <PencilIcon />
+          ) : trigger === 'mobile' ? (
+            <>
+              <PencilIcon />
+              Edit automation
+            </>
+          ) : (
+            'Edit'
+          )}
         </button>
       )}
 
@@ -212,7 +226,10 @@ export function EditAutomationModal({
         //
         // `h-dvh` as well as `inset-0` - see create-automation-modal.tsx for why (Phase 16.3,
         // requirement 15).
-        <div className="fixed inset-0 z-50 flex h-dvh items-start justify-center overflow-y-auto bg-ink-950/60 p-0 sm:items-center sm:p-6">
+        <div
+          data-variant={trigger === 'mobile' ? 'mobile' : undefined}
+          className="fixed inset-0 z-50 flex h-dvh items-start justify-center overflow-y-auto bg-ink-950/60 p-0 text-left sm:items-center sm:p-6 mobile:items-end mobile:bg-ink-950/45"
+        >
           {/* Delete-only mode: opened from the dashboard's trash icon, so there is no edit to
               perform. Rendering just the confirmation - rather than the edit form with a
               confirmation layered on top of it - keeps the intent unambiguous and stops the
@@ -222,7 +239,7 @@ export function EditAutomationModal({
               role="dialog"
               aria-modal="true"
               aria-label="Delete automation"
-              className="m-auto w-full max-w-sm rounded-xl border border-border bg-surface p-4 shadow-lg"
+              className="m-auto w-full max-w-sm rounded-xl border border-border bg-surface p-4 shadow-lg mobile:rounded-[24px] mobile:p-5"
             >
               <DeleteConfirmation
                 organizationId={organizationId}
@@ -236,15 +253,22 @@ export function EditAutomationModal({
               role="dialog"
               aria-modal="true"
               aria-label="Edit automation"
-              className="relative flex h-full w-full flex-col overflow-hidden bg-surface shadow-lg sm:h-auto sm:max-h-[85dvh] sm:max-w-lg sm:rounded-xl sm:border sm:border-border"
+              className="relative flex h-full w-full flex-col overflow-hidden bg-surface shadow-lg sm:h-auto sm:max-h-[85dvh] sm:max-w-lg sm:rounded-xl sm:border sm:border-border mobile:h-[92dvh] mobile:rounded-t-[28px] mobile:border-t mobile:border-glass-border mobile:shadow-glass"
             >
-              <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-                <h2 className="flex-1 truncate text-sm font-semibold text-text">Edit automation</h2>
+              {/* Grab handle - drawn only in the mobile bottom-sheet design. */}
+              <span
+                aria-hidden="true"
+                className="mx-auto mt-2.5 hidden h-[5px] w-10 shrink-0 rounded-full bg-switch-off mobile:block"
+              />
+              <div className="flex items-center gap-2 border-b border-border px-4 py-3 mobile:px-5 mobile:pt-2 mobile:pb-4">
+                <h2 className="flex-1 truncate text-sm font-semibold text-text mobile:text-[17px] mobile:font-extrabold">
+                  Edit automation
+                </h2>
                 <button
                   type="button"
                   onClick={close}
                   aria-label="Close"
-                  className="text-text-faint hover:text-text"
+                  className="text-text-faint hover:text-text mobile:flex mobile:h-9 mobile:w-9 mobile:items-center mobile:justify-center mobile:rounded-full mobile:bg-seg mobile:text-text"
                 >
                   ✕
                 </button>
@@ -278,10 +302,12 @@ export function EditAutomationModal({
                     </div>
                   ))}
 
-                <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
-                  <div className="flex items-center justify-between gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2">
+                <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4 mobile:space-y-5 mobile:px-5 mobile:py-5">
+                  <div className="flex items-center justify-between gap-2 rounded-lg border border-border bg-surface-2 px-3 py-2 mobile:rounded-2xl mobile:px-4 mobile:py-3">
                     <div className="min-w-0">
-                      <span className="block text-sm font-medium text-text">Enabled</span>
+                      <span className="block text-sm font-medium text-text mobile:text-[13px] mobile:font-bold">
+                        Enabled
+                      </span>
                       <span className="text-xs text-text-muted">
                         {isActive
                           ? 'Replying to matching comments.'
@@ -296,7 +322,10 @@ export function EditAutomationModal({
                   </div>
 
                   <div>
-                    <label htmlFor="edit-name" className="block text-sm font-medium text-text">
+                    <label
+                      htmlFor="edit-name"
+                      className="block text-sm font-medium text-text mobile:text-[13px] mobile:font-bold"
+                    >
                       Name
                     </label>
                     <input
@@ -305,7 +334,7 @@ export function EditAutomationModal({
                       value={name}
                       maxLength={AUTOMATION_LIMITS.nameMax}
                       onChange={(e) => setName(e.target.value)}
-                      className="mt-1 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
+                      className="mt-1 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text mobile:rounded-2xl mobile:border-border mobile:px-3.5 mobile:py-3 mobile:text-[15px]"
                     />
                     {name.length > AUTOMATION_LIMITS.nameMax - 40 && (
                       <p className="mt-1 text-right text-xs text-text-faint">
@@ -320,7 +349,7 @@ export function EditAutomationModal({
                     <div
                       role="tablist"
                       aria-label="What triggers this automation"
-                      className="flex rounded-md border border-border-strong p-0.5"
+                      className="flex rounded-md border border-border-strong p-0.5 mobile:flex mobile:rounded-[14px] mobile:border-0 mobile:bg-seg mobile:p-1"
                     >
                       {TRIGGER_TYPES.map((option) => (
                         <button
@@ -331,8 +360,8 @@ export function EditAutomationModal({
                           onClick={() => setTriggerType(option.value)}
                           className={
                             triggerType === option.value
-                              ? 'flex-1 rounded-[5px] bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink'
-                              : 'flex-1 rounded-[5px] px-3 py-1.5 text-xs font-medium text-text-muted hover:text-text'
+                              ? 'flex-1 rounded-[5px] bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink mobile:flex-1 mobile:rounded-[11px] mobile:bg-seg-selected mobile:py-2.5 mobile:text-[13.5px] mobile:font-bold mobile:text-text mobile:shadow-sm'
+                              : 'flex-1 rounded-[5px] px-3 py-1.5 text-xs font-medium text-text-muted hover:text-text mobile:flex-1 mobile:py-2.5 mobile:text-[13.5px] mobile:font-bold'
                           }
                         >
                           {option.label}
@@ -347,8 +376,10 @@ export function EditAutomationModal({
                   </div>
 
                   <div>
-                    <span className="block text-sm font-medium text-text">Send to</span>
-                    <div className="mt-1 inline-flex rounded-md border border-border-strong p-0.5">
+                    <span className="block text-sm font-medium text-text mobile:text-[13px] mobile:font-bold">
+                      Send to
+                    </span>
+                    <div className="mt-1 inline-flex rounded-md border border-border-strong p-0.5 mobile:flex mobile:rounded-[14px] mobile:border-0 mobile:bg-seg mobile:p-1">
                       {AUDIENCES.map((option) => (
                         <button
                           key={option.value}
@@ -356,8 +387,8 @@ export function EditAutomationModal({
                           onClick={() => setAudience(option.value)}
                           className={
                             audience === option.value
-                              ? 'rounded-[5px] bg-accent px-3 py-1 text-xs font-semibold text-accent-ink'
-                              : 'rounded-[5px] px-3 py-1 text-xs font-medium text-text-muted hover:text-text'
+                              ? 'rounded-[5px] bg-accent px-3 py-1 text-xs font-semibold text-accent-ink mobile:flex-1 mobile:rounded-[11px] mobile:bg-seg-selected mobile:py-2.5 mobile:text-[13.5px] mobile:font-bold mobile:text-text mobile:shadow-sm'
+                              : 'rounded-[5px] px-3 py-1 text-xs font-medium text-text-muted hover:text-text mobile:flex-1 mobile:py-2.5 mobile:text-[13.5px] mobile:font-bold'
                           }
                         >
                           {option.label}
@@ -369,8 +400,10 @@ export function EditAutomationModal({
                   {triggerType === 'keywords' && (
                     <>
                       <div>
-                        <span className="block text-sm font-medium text-text">Match mode</span>
-                        <div className="mt-1 inline-flex rounded-md border border-border-strong p-0.5">
+                        <span className="block text-sm font-medium text-text mobile:text-[13px] mobile:font-bold">
+                          Match mode
+                        </span>
+                        <div className="mt-1 inline-flex rounded-md border border-border-strong p-0.5 mobile:flex mobile:rounded-[14px] mobile:border-0 mobile:bg-seg mobile:p-1">
                           {MATCH_MODES.map((mode) => (
                             <button
                               key={mode.value}
@@ -378,8 +411,8 @@ export function EditAutomationModal({
                               onClick={() => setMatchMode(mode.value)}
                               className={
                                 matchMode === mode.value
-                                  ? 'rounded-[5px] bg-accent px-3 py-1 text-xs font-semibold text-accent-ink'
-                                  : 'rounded-[5px] px-3 py-1 text-xs font-medium text-text-muted hover:text-text'
+                                  ? 'rounded-[5px] bg-accent px-3 py-1 text-xs font-semibold text-accent-ink mobile:flex-1 mobile:rounded-[11px] mobile:bg-seg-selected mobile:py-2.5 mobile:text-[13.5px] mobile:font-bold mobile:text-text mobile:shadow-sm'
+                                  : 'rounded-[5px] px-3 py-1 text-xs font-medium text-text-muted hover:text-text mobile:flex-1 mobile:py-2.5 mobile:text-[13.5px] mobile:font-bold'
                               }
                             >
                               {mode.label}
@@ -389,7 +422,9 @@ export function EditAutomationModal({
                       </div>
 
                       <div>
-                        <span className="block text-sm font-medium text-text">Keywords</span>
+                        <span className="block text-sm font-medium text-text mobile:text-[13px] mobile:font-bold">
+                          Keywords
+                        </span>
                         <div className="mt-1 flex gap-2">
                           <input
                             type="text"
@@ -397,12 +432,12 @@ export function EditAutomationModal({
                             onChange={(e) => setKeywordDraft(e.target.value)}
                             onKeyDown={onKeywordKeyDown}
                             placeholder="Type a keyword and press Enter"
-                            className="min-w-0 flex-1 rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
+                            className="min-w-0 flex-1 rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text mobile:rounded-2xl mobile:border-border mobile:px-3.5 mobile:py-3 mobile:text-[15px]"
                           />
                           <button
                             type="button"
                             onClick={addKeyword}
-                            className="shrink-0 rounded-md border border-border-strong px-3 py-1.5 text-sm font-medium text-text-muted hover:bg-surface-2"
+                            className="shrink-0 rounded-md border border-border-strong px-3 py-1.5 text-sm font-medium text-text-muted hover:bg-surface-2 mobile:h-[52px] mobile:rounded-2xl mobile:border-border mobile:px-5 mobile:text-[15px] mobile:font-bold mobile:text-text"
                           >
                             + Add
                           </button>
@@ -412,7 +447,7 @@ export function EditAutomationModal({
                             {keywords.map((keyword) => (
                               <span
                                 key={keyword}
-                                className="inline-flex max-w-full items-center gap-1.5 rounded-full bg-muted-bg px-2.5 py-1 text-xs font-medium text-text"
+                                className="inline-flex max-w-full items-center gap-1.5 rounded-full bg-muted-bg px-2.5 py-1 text-xs font-medium text-text mobile:bg-accent-soft mobile:px-3 mobile:py-1.5 mobile:text-[13px] mobile:font-bold mobile:text-accent"
                               >
                                 <span className="truncate">{keyword}</span>
                                 <button
@@ -433,7 +468,7 @@ export function EditAutomationModal({
 
                   <div>
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-medium text-text">
+                      <span className="text-sm font-medium text-text mobile:text-[13px] mobile:font-bold">
                         Public reply on the comment
                       </span>
                       <Toggle
@@ -450,7 +485,7 @@ export function EditAutomationModal({
                           maxLength={AUTOMATION_LIMITS.commentReplyMax}
                           onChange={(e) => setCommentReply(e.target.value)}
                           placeholder="Thanks! Sent you a DM 🙌"
-                          className="mt-2 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
+                          className="mt-2 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text mobile:rounded-2xl mobile:border-border mobile:px-3.5 mobile:py-3 mobile:text-[15px]"
                         />
                         <ReplySuggestions value={commentReply} onAppend={setCommentReply} />
 
@@ -470,7 +505,7 @@ export function EditAutomationModal({
                                     )
                                   }
                                   placeholder={`Alternative reply ${index + 1}`}
-                                  className="min-w-0 flex-1 rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
+                                  className="min-w-0 flex-1 rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text mobile:rounded-2xl mobile:border-border mobile:px-3.5 mobile:py-3 mobile:text-[15px]"
                                 />
                                 <button
                                   type="button"
@@ -480,7 +515,7 @@ export function EditAutomationModal({
                                     )
                                   }
                                   aria-label={`Remove alternative reply ${index + 1}`}
-                                  className="shrink-0 px-1 text-text-faint hover:text-text"
+                                  className="shrink-0 px-1 text-text-faint hover:text-text mobile:px-2 mobile:text-base"
                                 >
                                   ✕
                                 </button>
@@ -494,7 +529,7 @@ export function EditAutomationModal({
                             type="button"
                             onClick={() => setReplyVariations([...replyVariations, ''])}
                             disabled={commentReply.trim().length === 0}
-                            className="mt-2 w-full rounded-md border border-dashed border-border-strong px-3 py-2 text-xs font-medium text-text-muted hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
+                            className="mt-2 w-full rounded-md border border-dashed border-border-strong px-3 py-2 text-xs font-medium text-text-muted hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40 mobile:h-11 mobile:rounded-2xl mobile:text-[13px] mobile:font-bold"
                           >
                             + Add another reply ({MAX_REPLY_VARIATIONS - replyVariations.length}{' '}
                             left)
@@ -511,7 +546,10 @@ export function EditAutomationModal({
                   </div>
 
                   <div>
-                    <label htmlFor="edit-dm" className="block text-sm font-medium text-text">
+                    <label
+                      htmlFor="edit-dm"
+                      className="block text-sm font-medium text-text mobile:text-[13px] mobile:font-bold"
+                    >
                       DM message
                     </label>
                     <textarea
@@ -520,7 +558,7 @@ export function EditAutomationModal({
                       value={dmMessage}
                       maxLength={AUTOMATION_LIMITS.dmMessageMax}
                       onChange={(e) => setDmMessage(e.target.value)}
-                      className="mt-1 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
+                      className="mt-1 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text mobile:rounded-2xl mobile:border-border mobile:px-3.5 mobile:py-3 mobile:text-[15px]"
                     />
                     <p
                       className={`mt-1 text-right text-xs ${overLimit ? 'text-danger' : 'text-text-faint'}`}
@@ -531,7 +569,9 @@ export function EditAutomationModal({
 
                   <div>
                     <div className="flex items-baseline justify-between">
-                      <span className="text-sm font-medium text-text">Buttons</span>
+                      <span className="text-sm font-medium text-text mobile:text-[13px] mobile:font-bold">
+                        Buttons
+                      </span>
                       <span className="text-xs text-text-faint">
                         {buttons.length} / {MAX_BUTTONS} used
                       </span>
@@ -552,7 +592,7 @@ export function EditAutomationModal({
                               }
                               maxLength={AUTOMATION_LIMITS.buttonTitleMax}
                               placeholder="Label"
-                              className="w-32 shrink-0 rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-text"
+                              className="w-32 shrink-0 rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-text mobile:rounded-2xl mobile:border-border mobile:px-3.5 mobile:py-3 mobile:text-[15px]"
                             />
                             <input
                               type="text"
@@ -565,13 +605,13 @@ export function EditAutomationModal({
                                 )
                               }
                               placeholder="https://..."
-                              className="min-w-0 flex-1 rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-text"
+                              className="min-w-0 flex-1 rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-text mobile:rounded-2xl mobile:border-border mobile:px-3.5 mobile:py-3 mobile:text-[15px]"
                             />
                             <button
                               type="button"
                               onClick={() => setButtons(buttons.filter((b) => b.key !== row.key))}
                               aria-label="Remove button"
-                              className="shrink-0 px-1 text-text-faint hover:text-text"
+                              className="shrink-0 px-1 text-text-faint hover:text-text mobile:px-2 mobile:text-base"
                             >
                               ✕
                             </button>
@@ -586,7 +626,7 @@ export function EditAutomationModal({
                           setButtons([...buttons, { key: nextButtonKey, title: '', url: '' }]);
                           setNextButtonKey(nextButtonKey + 1);
                         }}
-                        className="mt-2 w-full rounded-md border border-dashed border-border-strong px-3 py-2 text-xs font-medium text-text-muted hover:bg-surface-2"
+                        className="mt-2 w-full rounded-md border border-dashed border-border-strong px-3 py-2 text-xs font-medium text-text-muted hover:bg-surface-2 mobile:h-11 mobile:rounded-2xl mobile:text-[13px] mobile:font-bold"
                       >
                         + Add button ({MAX_BUTTONS - buttons.length} left)
                       </button>
@@ -599,7 +639,7 @@ export function EditAutomationModal({
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between gap-2 border-t border-border px-4 py-3">
+                <div className="flex items-center justify-between gap-2 border-t border-border px-4 py-3 mobile:px-5 mobile:pt-3 mobile:pb-[calc(1rem+env(safe-area-inset-bottom))]">
                   <button
                     type="button"
                     onClick={() => setConfirmingDelete(true)}
@@ -611,7 +651,7 @@ export function EditAutomationModal({
                     <button
                       type="button"
                       onClick={close}
-                      className="rounded-md border border-border-strong px-3 py-1.5 text-sm font-medium text-text-muted hover:bg-surface-2"
+                      className="rounded-md border border-border-strong px-3 py-1.5 text-sm font-medium text-text-muted hover:bg-surface-2 mobile:h-[52px] mobile:rounded-2xl mobile:border-border mobile:px-5 mobile:text-[15px] mobile:font-bold mobile:text-text"
                     >
                       Cancel
                     </button>
@@ -619,7 +659,7 @@ export function EditAutomationModal({
                       type="submit"
                       data-confirm="true"
                       disabled={!canSave || overLimit}
-                      className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-accent-ink hover:opacity-90 disabled:opacity-40"
+                      className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-accent-ink hover:opacity-90 disabled:opacity-40 mobile:h-[52px] mobile:flex-1 mobile:rounded-2xl mobile:bg-accent mobile:px-6 mobile:text-[15px] mobile:font-bold mobile:text-accent-ink"
                     >
                       Save changes
                     </button>
@@ -629,7 +669,7 @@ export function EditAutomationModal({
 
               {confirmingDelete && (
                 <div className="absolute inset-0 z-10 flex items-center justify-center bg-ink-950/60 p-4">
-                  <div className="w-full max-w-sm rounded-xl border border-border bg-surface p-4 shadow-lg">
+                  <div className="w-full max-w-sm rounded-xl border border-border bg-surface p-4 shadow-lg mobile:rounded-[24px] mobile:p-5">
                     <DeleteConfirmation
                       organizationId={organizationId}
                       automation={automation}
@@ -674,7 +714,7 @@ function DeleteConfirmation({
         <button
           type="button"
           onClick={onCancel}
-          className="rounded-md border border-border-strong px-3 py-1.5 text-sm font-medium text-text-muted hover:bg-surface-2"
+          className="rounded-md border border-border-strong px-3 py-1.5 text-sm font-medium text-text-muted hover:bg-surface-2 mobile:h-[52px] mobile:rounded-2xl mobile:border-border mobile:px-5 mobile:text-[15px] mobile:font-bold mobile:text-text"
         >
           Keep it
         </button>
@@ -687,7 +727,7 @@ function DeleteConfirmation({
           <input type="hidden" name="redirectTo" value={redirectTo} />
           <button
             type="submit"
-            className="rounded-md bg-danger px-4 py-1.5 text-sm font-medium text-white hover:opacity-90"
+            className="rounded-md bg-danger px-4 py-1.5 text-sm font-medium text-white hover:opacity-90 mobile:h-12 mobile:rounded-2xl mobile:px-5 mobile:text-[15px] mobile:font-bold mobile:text-danger-ink"
           >
             Delete permanently
           </button>

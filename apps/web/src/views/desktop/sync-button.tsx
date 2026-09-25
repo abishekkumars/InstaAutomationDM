@@ -1,8 +1,8 @@
 'use client';
 
 import { useFormStatus } from 'react-dom';
-import { syncAutomationsAction } from './automation-actions';
-import { SyncIcon } from './icons';
+import { syncAutomationsAction } from '@/app/automation-actions';
+import { SyncIcon } from '@/views/shared/icons';
 
 /** Refetches the dashboard's live Zernio data (stats, thumbnails, and any automation created
  * directly in Zernio's dashboard) on demand, rather than making the user reload the page.

@@ -1,5 +1,11 @@
 @import 'tailwindcss';
 
+/* `mobile:` applies inside an element marked data-variant="mobile" (and to that element). The
+   shared automation dialogs (views/shared/automation) carry it when opened from the mobile view,
+   so one component renders in the desktop or the mobile design - Phase 18.5 follow-up, see
+   docs/ADR/0010-device-specific-views.md. */
+@custom-variant mobile (&:where([data-variant="mobile"], [data-variant="mobile"] *));
+
 /* Visual system agreed in the UI redesign mockup (2026-08-11) - dark sidebar shell, soft
    violet-tinted neutrals, one accent blue. Tailwind v4 turns each --color-* token into
    matching utilities (bg-ink-950, text-accent, border-success, ...) automatically. */
@@ -223,5 +229,81 @@
     --color-danger-bg: #33191a;
 
     --color-muted-bg: #1d2032;
+  }
+}
+
+/* Mobile view tokens (Phase 18.2, docs/ADR/0010-device-specific-views.md). Values match the
+   approved "AutomationDM Mobile" design artifact, which reuses the palette above; only what the
+   mobile tree adds is here. Appended rather than merged into the blocks above so the desktop
+   palette's history stays readable. Tailwind turns each into utilities (bg-glass, shadow-glass,
+   bg-seg, text-accent-2, ...). */
+@theme {
+  --color-glass: rgb(255 255 255 / 0.62);
+  --color-glass-border: rgb(255 255 255 / 0.9);
+  --color-seg: #ebebf3;
+  --color-seg-selected: #ffffff;
+  --color-accent-2: #c2600f;
+  --color-accent-2-soft: #fdeedf;
+  --color-warn: #9a5b06;
+  --color-warn-bg: #fdf1dc;
+  --color-switch-off: #d5d7e5;
+  --color-tile-icon: rgb(23 25 35 / 0.55);
+  /* Chart series 1 and 2 (active / paused). Validated with the dataviz palette checks in both modes:
+     lightness band, chroma, CVD separation, contrast against the card surface. */
+  --color-chart-1: #3652f0;
+  --color-chart-2: #c2600f;
+  /* Text on a filled danger button: white on the light theme's deep red, dark ink on the dark
+     theme's light red (white there would fail contrast). */
+  --color-danger-ink: #ffffff;
+
+  --shadow-glass: 0 14px 40px rgb(23 25 35 / 0.16), inset 0 1px 0 rgb(255 255 255 / 0.95);
+  --shadow-card: 0 1px 2px rgb(23 25 35 / 0.04), 0 6px 18px rgb(23 25 35 / 0.04);
+  --shadow-fab: 0 12px 26px rgb(54 82 240 / 0.4);
+  --shadow-header: 0 8px 24px rgb(23 25 35 / 0.08);
+}
+
+@layer theme {
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme='light']) {
+      --color-glass: rgb(30 32 48 / 0.6);
+      --color-glass-border: rgb(255 255 255 / 0.1);
+      --color-seg: #1f2232;
+      --color-seg-selected: #2b2f45;
+      --color-accent-2: #f5a462;
+      --color-accent-2-soft: #35240f;
+      --color-warn: #f5b861;
+      --color-warn-bg: #33260f;
+      --color-switch-off: #363a50;
+      --color-tile-icon: rgb(255 255 255 / 0.78);
+      --color-chart-1: #6f7ff2;
+      --color-chart-2: #d27a33;
+      --color-danger-ink: #2a0f0d;
+
+      --shadow-glass: 0 16px 40px rgb(0 0 0 / 0.55), inset 0 1px 0 rgb(255 255 255 / 0.07);
+      --shadow-card: none;
+      --shadow-fab: 0 12px 28px rgb(124 139 255 / 0.38);
+      --shadow-header: 0 8px 24px rgb(0 0 0 / 0.35);
+    }
+  }
+
+  :root[data-theme='dark'] {
+    --color-glass: rgb(30 32 48 / 0.6);
+    --color-glass-border: rgb(255 255 255 / 0.1);
+    --color-seg: #1f2232;
+    --color-seg-selected: #2b2f45;
+    --color-accent-2: #f5a462;
+    --color-accent-2-soft: #35240f;
+    --color-warn: #f5b861;
+    --color-warn-bg: #33260f;
+    --color-switch-off: #363a50;
+    --color-tile-icon: rgb(255 255 255 / 0.78);
+    --color-chart-1: #6f7ff2;
+    --color-chart-2: #d27a33;
+    --color-danger-ink: #2a0f0d;
+
+    --shadow-glass: 0 16px 40px rgb(0 0 0 / 0.55), inset 0 1px 0 rgb(255 255 255 / 0.07);
+    --shadow-card: none;
+    --shadow-fab: 0 12px 28px rgb(124 139 255 / 0.38);
+    --shadow-header: 0 8px 24px rgb(0 0 0 / 0.35);
   }
 }

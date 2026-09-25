@@ -45,16 +45,24 @@ export function LoadingLink({
   className,
   title,
   'aria-label': ariaLabel,
+  'aria-current': ariaCurrent,
   children,
 }: {
   href: string;
   className?: string;
   title?: string;
   'aria-label'?: string;
+  'aria-current'?: 'page';
   children: React.ReactNode;
 }) {
   return (
-    <Link href={href} className={className} title={title} aria-label={ariaLabel}>
+    <Link
+      href={href}
+      className={className}
+      title={title}
+      aria-label={ariaLabel}
+      aria-current={ariaCurrent}
+    >
       {children}
       <LinkPendingOverlay />
     </Link>

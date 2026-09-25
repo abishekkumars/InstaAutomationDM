@@ -1,16 +1,16 @@
 'use client';
 
 import { useState } from 'react';
-import { FormPendingOverlay } from '../loader';
-import { TrashIcon } from '../icons';
+import { FormPendingOverlay } from '@/views/shared/loader';
+import { TrashIcon } from '@/views/shared/icons';
 import {
   addMembershipAction,
   createOrganizationForUserAction,
   deleteOrganizationAction,
   removeMembershipAction,
   setUserRoleAction,
-} from './actions';
-import type { AdminOrganizationSummary, AdminUserSummary } from './admin-data';
+} from '@/app/admin/actions';
+import type { AdminOrganizationSummary, AdminUserSummary } from '@/app/admin/admin-data';
 
 /** The Administration table (Phase 15.2b).
  *

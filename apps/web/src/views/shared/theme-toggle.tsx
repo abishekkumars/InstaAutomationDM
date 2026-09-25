@@ -10,7 +10,7 @@ export const THEME_STORAGE_KEY = 'automationdm-theme';
  * never disagree about what a given stored value means. "system" deliberately removes the
  * attribute rather than resolving it to light/dark, which lets the CSS media query stay the
  * source of truth and keeps the theme following the OS if the user changes it later. */
-function applyTheme(theme: Theme): void {
+export function applyTheme(theme: Theme): void {
   const root = document.documentElement;
   if (theme === 'system') {
     root.removeAttribute('data-theme');
@@ -19,7 +19,7 @@ function applyTheme(theme: Theme): void {
   }
 }
 
-function readStoredTheme(): Theme {
+export function readStoredTheme(): Theme {
   try {
     const stored = localStorage.getItem(THEME_STORAGE_KEY);
     if (stored === 'light' || stored === 'dark' || stored === 'system') {

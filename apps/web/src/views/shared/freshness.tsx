@@ -20,7 +20,14 @@ import { useEffect, useState } from 'react';
  *    no hydration mismatch. Every later value adds only time elapsed in this browser, so a
  *    server/browser clock skew can never make freshly fetched data read as minutes old.
  */
-export function DataAge({ initialAgeSeconds }: { initialAgeSeconds: number }) {
+export function DataAge({
+  initialAgeSeconds,
+  className = 'hidden text-xs text-text-faint sm:inline',
+}: {
+  initialAgeSeconds: number;
+  /** The desktop header hides it on narrow screens; the mobile tree shows it in its own style. */
+  className?: string;
+}) {
   const [ageSeconds, setAgeSeconds] = useState(initialAgeSeconds);
 
   useEffect(() => {
@@ -35,7 +42,7 @@ export function DataAge({ initialAgeSeconds }: { initialAgeSeconds: number }) {
 
   return (
     <span
-      className="hidden text-xs text-text-faint sm:inline"
+      className={className}
       title="Stats and thumbnails are cached briefly. Press Sync to refetch from Zernio now."
     >
       Updated {formatAge(ageSeconds)}

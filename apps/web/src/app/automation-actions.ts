@@ -2,6 +2,7 @@
 
 import { redirect } from 'next/navigation';
 import { callApi } from '@/lib/api';
+import { getActiveOrganizationId } from '@/lib/organization';
 // Shared with the Instagram connect flow (lib/revalidate.ts) so "what a change invalidates" has
 // one definition - a route handler needs the same behaviour and cannot import it from a
 // 'use server' module.
@@ -77,6 +78,48 @@ export async function updateAutomationAction(formData: FormData): Promise<void> 
 
   invalidateOrganizationCaches(organizationId, target);
   redirect(`${target}${target.includes('?') ? '&' : '?'}automation=updated`);
+}
+
+/** Enables or pauses one automation without leaving the page (the mobile listing's switch,
+ * Phase 18.2).
+ *
+ * Unlike the form actions above it returns a result instead of redirecting, so the switch can
+ * flip optimistically and roll back on failure. The organization is derived server-side from the
+ * session's active organization - never taken from the caller - and apps/api re-checks both the
+ * membership and that the automation belongs to that organization. The PATCH is partial:
+ * `updateAutomationSchema` makes every field optional and Zernio leaves unsent fields untouched,
+ * so sending only `isActive` cannot clear anything else.
+ *
+ * Arguments are re-validated because a server action is a public endpoint whatever its caller's
+ * types say. */
+export async function setAutomationActiveAction(
+  automationId: unknown,
+  isActive: unknown,
+): Promise<{ ok: boolean }> {
+  if (
+    typeof automationId !== 'string' ||
+    automationId.length === 0 ||
+    typeof isActive !== 'boolean'
+  ) {
+    return { ok: false };
+  }
+  const organizationId = await getActiveOrganizationId().catch(() => null);
+  if (!organizationId) {
+    return { ok: false };
+  }
+
+  try {
+    await callApi(
+      `/api/organizations/${organizationId}/automations/${encodeURIComponent(automationId)}`,
+      { method: 'PATCH', body: JSON.stringify({ isActive }) },
+    );
+  } catch (error) {
+    console.error('[automations] enable/pause failed:', error);
+    return { ok: false };
+  }
+
+  invalidateOrganizationCaches(organizationId, '/');
+  return { ok: true };
 }
 
 /** Refetches the dashboard from Zernio.

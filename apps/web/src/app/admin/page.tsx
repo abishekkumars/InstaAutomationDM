@@ -1,8 +1,8 @@
 import { Suspense } from 'react';
 import { ApiError } from '@/lib/api';
 import { getCurrentUser } from '@/lib/me';
-import { CardSkeleton } from '../skeleton';
-import { AdminBrowser } from './admin-browser';
+import { CardSkeleton } from '@/views/desktop/skeleton';
+import { AdminBrowser } from '@/views/desktop/admin/admin-browser';
 import { getAdminOrganizations, getAdminUsers } from './admin-data';
 
 export const metadata = { title: 'Administration - AutomationDM' };
