@@ -80,6 +80,18 @@ test('templates: the first is the default, and clone, set default and delete mov
   await expect(page.getByRole('heading', { name: 'No templates yet' })).toBeVisible();
 });
 
+test('the mobile view locks zoom', async ({ page }) => {
+  // Viewport meta: no pinch zoom on Android, no zoom-on-focus on iOS.
+  const viewport = await page.locator('meta[name="viewport"]').getAttribute('content');
+  expect(viewport).toContain('maximum-scale=1');
+  expect(viewport).toContain('user-scalable=no');
+  // iOS ignores user-scalable, so pinch and double-tap are also blocked with touch-action.
+  await expect(page.locator('html')).toHaveAttribute('data-view', 'mobile');
+  expect(await page.evaluate(() => getComputedStyle(document.documentElement).touchAction)).toBe(
+    'pan-x pan-y',
+  );
+});
+
 test('the glass tab bar navigates between all five tabs', async ({ page }) => {
   const nav = page.getByRole('navigation', { name: 'Main' });
   await expect(nav).toBeVisible();

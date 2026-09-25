@@ -42,6 +42,19 @@ export async function getViewInfo(): Promise<ViewInfo> {
   };
 }
 
+/** Whether the current request comes from a phone, by user agent alone (the `view` cookie is a
+ * layout preference and is ignored here). Used at sign-in to choose the session's idle limit
+ * (auth.ts). Never throws: outside a request there is no user agent to read, and the safe answer
+ * is "not a phone", which gets the shorter 30-minute limit. */
+export async function isPhoneRequest(): Promise<boolean> {
+  try {
+    const { device } = userAgentFromString((await headers()).get('user-agent') ?? undefined);
+    return device.type === 'mobile';
+  } catch {
+    return false;
+  }
+}
+
 export async function getView(): Promise<ViewKind> {
   return (await getViewInfo()).view;
 }

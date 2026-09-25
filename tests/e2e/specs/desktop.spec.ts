@@ -15,6 +15,16 @@ test('a desktop browser gets the sidebar shell, not the tab bar', async ({ page 
   await expect(page.getByRole('button', { name: 'Use mobile site' })).toHaveCount(0);
 });
 
+test('a desktop browser keeps normal zoom', async ({ page }) => {
+  const viewport = await page.locator('meta[name="viewport"]').getAttribute('content');
+  expect(viewport).not.toContain('maximum-scale');
+  expect(viewport).not.toContain('user-scalable');
+  await expect(page.locator('html')).toHaveAttribute('data-view', 'desktop');
+  expect(await page.evaluate(() => getComputedStyle(document.documentElement).touchAction)).toBe(
+    'auto',
+  );
+});
+
 test('mobile-only routes redirect a desktop browser to the dashboard', async ({ page }) => {
   await page.goto('/dashboard');
   await expect(page).toHaveURL(/\/$/);

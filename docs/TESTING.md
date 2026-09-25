@@ -9,11 +9,11 @@ describes more than exists:
 | Package | Runner | Suites |
 |---|---|---|
 | `apps/api` | Vitest + Supertest | **130 tests** across 7 e2e suites (auth/session guard, admin, organizations, instagram, automations, automation templates, meta connection) |
-| `packages/database` | Vitest | 16 (schema constraints against real Postgres) |
+| `packages/database` | Vitest | 22 (schema constraints against real Postgres, and the deploy-time migration guard) |
 | `packages/validation` | Vitest (added Phase 15.2a) | 26 (`slugFromEmail`, the organization schema, and the automation template schema) |
-| `packages/shared` | Vitest (added Phase 15.1) | 22 (`ADMIN_EMAIL` bootstrap rules, active-organization choice, and more) |
+| `packages/shared` | Vitest (added Phase 15.1) | 29 (`ADMIN_EMAIL` bootstrap rules, active-organization choice, the per-device session window, and more) |
 | `packages/meta` | Vitest (added Phase 17) | 17 (Graph client and OAuth) |
-| `tests/e2e` | **Playwright** (added Phase 18.6) | **10 browser tests** against the running stack: 7 on a phone (Pixel 7 user agent), 3 on desktop. See "Browser tests" below |
+| `tests/e2e` | **Playwright** (added Phase 18.6) | **12 browser tests** against the running stack: 8 on a phone (Pixel 7 user agent), 4 on desktop. See "Browser tests" below |
 | `apps/web` | none of its own | covered only by `tests/e2e` |
 
 `apps/web` still has no unit tests. Since Phase 18.6 its device-specific views (ADR 0010) are

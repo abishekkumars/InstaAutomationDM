@@ -3,9 +3,10 @@ import NextAuth from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
 import Google from 'next-auth/providers/google';
 import { prisma } from '@automationdm/database';
-import { resolveRoleOnSignIn } from '@automationdm/shared';
+import { renewSessionWindow, resolveRoleOnSignIn } from '@automationdm/shared';
 import { credentialsSchema } from '@automationdm/validation';
 import { authConfig } from './auth.config';
+import { isPhoneRequest } from './lib/device';
 
 /** Google sign-in is configured only when both credentials are present (Phase 15.5,
  * requirement 1).
@@ -146,11 +147,19 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       return true;
     },
 
-    jwt({ token, user }) {
+    /** Runs on sign-in (with `user`) and on every session read after it (without). */
+    async jwt({ token, user }) {
       if (user?.id) {
         token.sub = user.id;
+        // Which idle limit this session gets, fixed for its whole life (ADR 0008 amendment):
+        // 5 days if it was started on a phone, 30 minutes otherwise. Read from the sign-in
+        // request's user agent - the same check that picks the mobile view (lib/device.ts), minus
+        // the "Use desktop site" override: that changes the layout, not what device this is.
+        token.phone = await isPhoneRequest();
+        // A fresh sign-in always starts a fresh window, whatever an older token held.
+        delete token.idleUntil;
       }
-      return token;
+      return renewSessionWindow(token, Math.floor(Date.now() / 1000));
     },
     session({ session, token }) {
       if (session.user && token.sub) {

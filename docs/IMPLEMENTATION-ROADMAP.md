@@ -270,6 +270,13 @@ approved "AutomationDM Mobile" design artifact. Branch: `feat/views-desktop-mobi
     migrations now apply automatically on the `apps/api` production build, with destructive ones
     blocked for a person to apply (ADR 0011, `packages/database/deploy/`). **Needs the one-time
     Vercel setup in `docs/DEPLOYMENT.md`.**
+- [x] **Mobile session and zoom** (2026-09-25, user request):
+  - [x] Phones stay signed in for 5 days without use, renewed to a full 5 days on every use;
+    desktop keeps the 30-minute idle limit (ADR 0008 amendment,
+    `packages/shared/src/session-lifetime.ts`, enforced in the Auth.js `jwt` callback).
+  - [x] Zoom locked in the mobile view only: viewport `maximum-scale=1, user-scalable=no` via
+    `generateViewport`, `touch-action: pan-x pan-y` on `html[data-view='mobile']`, and
+    `views/mobile/zoom-lock.tsx` for iOS Safari's pinch gesture.
 
 **Retired (not deferred — see `docs/ADR/0005-simplified-mvp-architecture.md` for why)**:
 Redis + BullMQ queue wiring, a generic trigger/condition/action automation engine, contact

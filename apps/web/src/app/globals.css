@@ -143,6 +143,14 @@
   }
 }
 
+/* No zoom in the mobile view (requested 2026-09-25): pinch and double-tap zoom are blocked,
+   scrolling in both directions still works. `data-view` is set on <html> by the root layout from
+   the same device check that picks the view, so this applies from the first paint. The viewport
+   meta tag and views/mobile/zoom-lock.tsx cover the browsers this alone does not. */
+html[data-view='mobile'] {
+  touch-action: pan-x pan-y;
+}
+
 /* Keeps native UI (scrollbars, form controls, the pre-hydration page background) in step with
    the chosen theme. Mirrors the same three-state logic as the color tokens below. */
 :root {

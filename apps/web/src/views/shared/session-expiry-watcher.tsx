@@ -2,9 +2,11 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-/** How often to check while the tab is visible. The session is a rolling 30-minute idle timeout
- * (auth.config.ts), so a minute of lag before the notice appears is immaterial - this exists to
- * stop someone typing into a form that can no longer be saved, not to be precise to the second. */
+/** How often to check while the tab is visible. The session is a rolling idle timeout - 30
+ * minutes on desktop, 5 days on a phone (auth.config.ts) - so a minute of lag before the notice
+ * appears is immaterial. This exists to stop someone typing into a form that can no longer be
+ * saved, not to be precise to the second. Each check also renews the session, the same as any
+ * other use of the app. */
 const POLL_INTERVAL_MS = 60_000;
 
 /** Watches for the session expiring while the user sits on a page (Phase 15.6, requirement 10).
