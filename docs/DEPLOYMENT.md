@@ -247,6 +247,24 @@ is recoverable by rolling back the deployment alone.
 were applied, so migration B succeeded trivially. Production has real automations, and step 5's
 `SET NOT NULL` will fail on any row the backfill missed. That failure is the safety net working.
 
+### Phase 19 release (automation templates)
+
+One additive migration, `20260925124849_phase19_automation_templates`: a new enum and a new
+`automation_templates` table. It changes no existing table, so the ordinary order above applies.
+Migrate first, then deploy `apps/api`, then `apps/web`. The new API code queries the table on the
+Templates page and on every post detail page, so deploying before migrating breaks those pages.
+
+**Check what is pending before you migrate.** `prisma migrate deploy` applies *every* pending
+migration in order, not just this one:
+
+```powershell
+scripts/pnpm.ps1 --filter "@automationdm/database" exec prisma migrate status
+```
+
+If either Phase 17 migration is still listed as pending in production, stop. Do the Phase 17
+procedure above first. Running `migrate deploy` would otherwise apply Phase 17's destructive
+migration B with no backfill in between.
+
 ## Rollback
 
 Vercel keeps previous deployments; promoting an earlier one is the rollback path for either app.

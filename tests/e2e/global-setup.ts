@@ -57,6 +57,12 @@ export default async function globalSetup(): Promise<void> {
 
     // Replaced every run so each test starts from the same rows (automations cascade).
     await prisma.instagramAccount.deleteMany({ where: { organizationId: organization.id } });
+
+    // The template tests (Phase 19) start from no templates. Cleared here, before any page has
+    // loaded, and never mid-run: the web app caches the template list, and a direct database
+    // delete does not invalidate that cache the way the app's own actions do. Each template test
+    // deletes its last template through the UI instead, which leaves the next one empty.
+    await prisma.automationTemplate.deleteMany({ where: { organizationId: organization.id } });
     const account = await prisma.instagramAccount.create({
       data: {
         organizationId: organization.id,

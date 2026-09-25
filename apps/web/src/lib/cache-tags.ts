@@ -12,6 +12,9 @@ export const cacheTags = {
   members: (organizationId: string) => `org:${organizationId}:members`,
   /** One connected account's synced posts. */
   posts: (instagramAccountId: string) => `acct:${instagramAccountId}:posts`,
+  /** The organization's automation templates (Phase 19). Separate from `automations`: a
+   * template change affects nothing an automation read shows, and vice versa. */
+  templates: (organizationId: string) => `org:${organizationId}:templates`,
 } as const;
 
 /** Everything a change to an automation can affect. Used by create/update/delete and by Sync.

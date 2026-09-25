@@ -8,17 +8,18 @@ describes more than exists:
 
 | Package | Runner | Suites |
 |---|---|---|
-| `apps/api` | Vitest + Supertest | **118 tests** across 6 e2e suites (auth/session guard, admin, organizations, instagram, automations, meta connection) |
+| `apps/api` | Vitest + Supertest | **130 tests** across 7 e2e suites (auth/session guard, admin, organizations, instagram, automations, automation templates, meta connection) |
 | `packages/database` | Vitest | 16 (schema constraints against real Postgres) |
-| `packages/validation` | Vitest (added Phase 15.2a) | 16 (`slugFromEmail` and the organization schema) |
+| `packages/validation` | Vitest (added Phase 15.2a) | 26 (`slugFromEmail`, the organization schema, and the automation template schema) |
 | `packages/shared` | Vitest (added Phase 15.1) | 22 (`ADMIN_EMAIL` bootstrap rules, active-organization choice, and more) |
 | `packages/meta` | Vitest (added Phase 17) | 17 (Graph client and OAuth) |
-| `tests/e2e` | **Playwright** (added Phase 18.6) | **8 browser tests** against the running stack: 6 on a phone (Pixel 7 user agent), 2 on desktop. See "Browser tests" below |
+| `tests/e2e` | **Playwright** (added Phase 18.6) | **10 browser tests** against the running stack: 7 on a phone (Pixel 7 user agent), 3 on desktop. See "Browser tests" below |
 | `apps/web` | none of its own | covered only by `tests/e2e` |
 
 `apps/web` still has no unit tests. Since Phase 18.6 its device-specific views (ADR 0010) are
 exercised end to end by `tests/e2e`: the tab bar, the listing (filters, search, the
-collapsed-header focus regression, the enable switch rolling back), the theme picker, sign-out,
+collapsed-header focus regression, the enable switch rolling back), the theme picker, sign-out, the
+Templates page on both views (create, edit, clone, set default, delete, Phase 19),
 and the desktop/mobile view choice. The rest of the web app - forms, server actions, the
 Administration screen, the create/edit wizards - is still verified only by TypeScript, a
 production build, and manual browser checks recorded in the phase reports.

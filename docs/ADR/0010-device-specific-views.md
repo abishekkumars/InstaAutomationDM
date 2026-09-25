@@ -92,3 +92,22 @@ full of breakpoint conditionals.
 - The Administration page and the sign-in and sign-up pages stay single-tree, as they already
   are, until someone asks for mobile versions.
 - Rollback is cheap: have `device.ts` always return `'desktop'`.
+
+## Amendment 2026-09-25: Templates tab, Status moves into Settings (Phase 19)
+
+Requested by the user with the automation templates feature, and approved on the "AutomationDM
+Templates" prototype (https://claude.ai/artifact/ESv6x1Ei9s58R9HrJS3Esg).
+
+- **Mobile tab bar**: Listing, Dashboard, **+**, **Templates**, Settings. Templates takes the slot
+  right after the + button, which Status used to hold.
+- **Status** is now the first row of the Settings page's App section. The `/status` route and page
+  are unchanged. On a phone the Settings tab stays highlighted while Status is open, and the page
+  has a back button to Settings when signed in. Signed out, `/status` is still public and shows
+  no back button, because there is no Settings page to return to.
+- **Desktop sidebar**: Dashboard, **Templates**, Status, and Administration for admins. Templates
+  sits directly under Dashboard.
+- `/templates` renders in both trees (`views/desktop/templates`, `views/mobile/templates`). This
+  follows decision 2 above: a thin route, two views, and one shared data layer
+  (`app/templates/templates-data.ts`, `app/templates/actions.ts`).
+
+The rest of this ADR stands. The tab bar still has five items, and device selection is unchanged.

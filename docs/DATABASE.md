@@ -2,7 +2,8 @@
 
 Status: Phase 10, scope simplified per
 `docs/ADR/0005-simplified-mvp-architecture.md`. `User`, `Organization`, `OrganizationMember`,
-`InstagramAccount`, `Automation` exist as real, migrated Prisma models
+`InstagramAccount`, `MetaConnection`, `Automation`, `AutomationTemplate` exist as real, migrated
+Prisma models
 (`packages/database/prisma/schema.prisma`). Every other table below is the (now much
 smaller) conceptual map for the remaining MVP phases — introduced only when the phase that
 needs it arrives, per this project's usual practice. Phase 9 (listing Instagram posts/reels)
@@ -299,6 +300,43 @@ the automation itself; this table only mirrors the config it was created with.
   was pulled forward into Phase 10.1 when the redesigned dashboard needed it — Phase 12 is
   now just the run/status records behind the same list, not the list itself.
 
+## `AutomationTemplate` (table added Phase 19)
+
+A saved, pre-filled starting point for the create-automation popup. Templates are shared by the
+whole organization. **Nothing in this table is ever sent to Zernio.** A template only fills in
+the form. The automation created from it is an ordinary `Automation` row with no reference back,
+so editing or deleting a template never changes an automation.
+
+- `id` — `cuid()`. `organizationId` — FK, `onDelete: Cascade`.
+- `name` — the template's own label, up to 80 characters (`TEMPLATE_LIMITS.nameMax`). It is not
+  the automation name, which still comes from the post caption.
+- `triggerType` — `TemplateTriggerType` enum (`KEYWORDS`, `ANY_COMMENT`), default `KEYWORDS`.
+  Automations do not need this column, because for them an empty `keywords` list already means
+  "any comment". A template may be incomplete, though, so "Specific keyword, none chosen yet"
+  and "Any comments" are different states that an empty array cannot tell apart. `keywords` is
+  always empty when this is `ANY_COMMENT`; `automationTemplateSchema` drops them.
+- `keywords`, `matchMode`, `audience`, `commentReply`, `commentReplyVariations`, `buttons`,
+  `isActive` — same types, defaults and limits as on `Automation`. The shared limits come from
+  `AUTOMATION_LIMITS`, so a template can never hold a value the create popup would reject.
+- `dmMessage` — **nullable**, unlike `Automation.dmMessage`. Only `name` is required in a
+  template; the popup fills in whatever the template left empty.
+- `isDefault` — `Boolean`, default `false`. **An organization with any templates has exactly one
+  default**:
+  - the first template created becomes it;
+  - "set default" moves it;
+  - deleting the default hands it to the oldest remaining template.
+
+  `AutomationTemplatesService` keeps this rule. Every write runs in a transaction that first takes
+  `SELECT ... FOR UPDATE` on the organization row, so concurrent template writes for one
+  organization run one after another. It is not a database constraint because the constraint
+  would be a partial unique index (`UNIQUE (organization_id) WHERE is_default`). Prisma cannot
+  declare that in `schema.prisma`, and hand-adding it to a migration would make every later
+  `migrate dev` try to drop it again.
+- `@@index([organizationId, createdAt])` — "list an organization's templates, oldest first". It
+  serves the Templates page, the popup's dropdown, and picking the successor default.
+- At most 50 templates per organization (`TEMPLATE_LIMITS.perOrganizationMax`), enforced by the
+  service. It keeps the dropdown usable and every query bounded.
+
 ## Conceptual tables (not yet built — introduced per-phase)
 
 Per ADR 0005, this is the **complete** remaining list — not a subset of a larger planned
@@ -370,6 +408,10 @@ Schema changes always go through a generated migration file committed to the rep
   `automations.comment_reply_variations TEXT[]`. Also additive: the enum default backfills
   existing rows to the behaviour they already had, and a Postgres text array defaults to
   empty. Safe to `migrate:deploy` against live data.
+
+- `20260925124849_phase19_automation_templates` (Phase 19) creates the `TemplateTriggerType`
+  enum and the `automation_templates` table. Purely additive: it changes no existing table and
+  needs no backfill. Safe to `migrate:deploy` against live data.
 
 Both Phase 15/16 migrations are additive by design. Nothing in this change set drops a column
 or a table, so no backup-and-restore step is required before deploying them — which is

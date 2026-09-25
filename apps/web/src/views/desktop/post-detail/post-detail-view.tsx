@@ -1,5 +1,6 @@
 import { ApiError } from '@/lib/api';
 import { loadPostDetail } from '@/app/instagram/posts/[postId]/post-detail-data';
+import { getTemplates } from '@/app/templates/templates-data';
 import { formatDateTime } from '@/lib/format-date';
 import { EditAutomationModal } from '@/views/shared/automation/edit-automation-modal';
 import { LoadingLink } from '@/views/shared/loader';
@@ -23,7 +24,11 @@ export async function DesktopPostDetailView({
 
   // The fetch (and why the post and its automations load together) lives in post-detail-data.ts,
   // shared with the mobile view.
-  const result = await loadPostDetail(organizationId, accountId, postId);
+  // Templates (Phase 19) pre-fill the create popup; a failed fetch just means a blank form.
+  const [result, templates] = await Promise.all([
+    loadPostDetail(organizationId, accountId, postId),
+    getTemplates(organizationId).catch(() => []),
+  ]);
 
   if (!result.ok) {
     const error: unknown = result.error;
@@ -159,6 +164,7 @@ export async function DesktopPostDetailView({
                 accountId={accountId}
                 postId={postId}
                 postCaption={post.caption}
+                templates={templates}
               />
             </div>
           </div>

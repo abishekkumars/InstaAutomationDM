@@ -30,6 +30,13 @@ values, passed straight through to a Zernio field of the same shape — not a ne
 user-defined behaviour. "Any comments" in particular is not a new trigger *type*: it is the
 absence of keywords, which Zernio already treats as "match everything."
 
+### Templates (Phase 19) do not extend the model
+
+An `AutomationTemplate` is a saved copy of the same fixed fields, used only to fill in the
+create popup. It is never executed and never sent to Zernio. An automation created from one is an
+ordinary `Automation` with no link back to it. Templates add no trigger, condition or action, and
+the vocabulary above is unchanged. See `docs/DATABASE.md`.
+
 ## Resolved: Zernio does the matching (verified live during Phase 10)
 
 Fetched Zernio's live OpenAPI spec (`docs.zernio.com/api/openapi`) rather than assuming

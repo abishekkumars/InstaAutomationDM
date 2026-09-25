@@ -399,6 +399,53 @@ stored locally (per `docs/ADR/0005`):
 Errors: `401` (no/invalid bearer token), `404` (not a member of `:organizationId`). A Zernio
 outage does **not** produce an error here — it degrades to `stats: null` / `post: null`.
 
+## Automation templates (`/api/organizations/:organizationId/automation-templates`, Phase 19)
+
+Organization-wide, pre-filled starting points for the create-automation popup. See
+`docs/DATABASE.md`, "`AutomationTemplate`". None of these endpoints call Zernio. Every route
+requires a bearer token. Any member of `:organizationId` may use all of them; anyone else gets
+`404`. A `:templateId` that belongs to a different organization also gets `404`, so an outsider
+cannot confirm the id exists.
+
+A template in every response:
+```json
+{
+  "id": "clx...",
+  "name": "Price enquiry",
+  "triggerType": "keywords",
+  "keywords": ["price", "cost"],
+  "matchMode": "contains",
+  "audience": "any",
+  "commentReply": "Sent you the details in DM",
+  "commentReplyVariations": ["Check your DMs!"],
+  "dmMessage": "Here is our price list.",
+  "buttons": [{ "title": "See prices", "url": "https://example.com/prices" }],
+  "isActive": true,
+  "isDefault": true,
+  "createdAt": "2026-09-25T12:00:00.000Z",
+  "updatedAt": "2026-09-25T12:00:00.000Z"
+}
+```
+Unlike the automation endpoints, the enum fields use the form's lowercase values (`contains`,
+`non_follower`, `any`). They are the same values the request body takes, so the editor can send
+back exactly what it read. `commentReply` and `dmMessage` are `null` when the template leaves
+them for the popup to fill.
+
+The request body for `POST` and `PUT` is `automationTemplateSchema` (`packages/validation`).
+Only `name` is required. Every other field defaults as above and follows the automation limits:
+640 DM characters once a button is attached, and no alternates without a primary reply. Blank
+optional text is stored as `null`. Keywords are dropped when `triggerType` is `any`. A bad body
+returns `400` with the first validation message.
+
+| Method and path | Does | Success |
+| --- | --- | --- |
+| `GET /` | Lists the templates, oldest first. | `200`, array |
+| `POST /` | Creates one. The organization's first template becomes the default. `400` past 50 templates. | `201`, template |
+| `PUT /:templateId` | Replaces every field. `isDefault` is not in the body and does not change. | `200`, template |
+| `POST /:templateId/default` | Makes this the default and clears it everywhere else. | `200`, template |
+| `POST /:templateId/clone` | Copies every field into a new, non-default "Copy of &lt;name&gt;". `400` past 50 templates. | `201`, template |
+| `DELETE /:templateId` | Deletes it. If it was the default, the oldest remaining template becomes the default. | `204` |
+
 ## Administration (`/api/admin/*`, Phase 15.2)
 
 Every route below requires a bearer token **and** the caller's global role to be `ADMIN`.

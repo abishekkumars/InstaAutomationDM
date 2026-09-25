@@ -14,6 +14,8 @@ import { MobileNav } from './mobile-nav';
 // items (Instagram accounts, Settings) don't have pages yet, so they're not here.
 const NAV_ITEMS = [
   { href: '/', label: 'Dashboard' },
+  // Phase 19: directly under Dashboard, as the approved templates design places it.
+  { href: '/templates', label: 'Templates' },
   { href: '/status', label: 'Status' },
 ];
 

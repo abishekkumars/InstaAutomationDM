@@ -120,6 +120,7 @@ model Organization {
   instagramAccounts InstagramAccount[]
   automations Automation[]
   metaConnections MetaConnection[]
+  automationTemplates AutomationTemplate[]
 
   @@map("organizations")
 }
@@ -384,4 +385,64 @@ model Automation {
   /// "List an organization's automations" - a future dashboard/history view (Phase 12).
   @@index([organizationId])
   @@map("automations")
+}
+
+/// Which trigger tab a template opens the create popup on (Phase 19).
+///
+/// Automations do not need this: for them an empty `keywords` list already means "any comment".
+/// A template is allowed to be incomplete, though, so "Specific keyword, none chosen yet" and
+/// "Any comments" are different states that an empty array cannot tell apart.
+enum TemplateTriggerType {
+  KEYWORDS
+  ANY_COMMENT
+}
+
+/// A saved, pre-filled starting point for the create-automation popup (Phase 19).
+///
+/// Shared by the whole organization. Exactly one row per organization has `isDefault`, and
+/// the popup applies that one automatically. The "exactly one" rule is kept by
+/// AutomationTemplatesService, which does every write inside a transaction that locks the
+/// organization row. It is not a database constraint because Prisma cannot declare the
+/// partial unique index it would need.
+///
+/// Nothing here is sent to Zernio. A template only pre-fills the form; the automation created
+/// from it is an ordinary, independent Automation row. Editing or deleting a template never
+/// changes an automation. Fields mirror Automation's, except that only `name` is required.
+model AutomationTemplate {
+  id String @id @default(cuid())
+
+  organizationId String @map("organization_id")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  /// The template's own label on the Templates page. Not the automation name: that still
+  /// comes from the post caption when the automation is created.
+  name String
+
+  triggerType TemplateTriggerType @default(KEYWORDS) @map("trigger_type")
+
+  /// Always empty when `triggerType` is ANY_COMMENT.
+  keywords  String[]
+  matchMode AutomationMatchMode @default(CONTAINS) @map("match_mode")
+  audience  AutomationAudience  @default(ANY)
+
+  commentReply           String?  @map("comment_reply")
+  commentReplyVariations String[] @map("comment_reply_variations")
+
+  /// Nullable, unlike Automation.dmMessage: a template may leave the DM for the popup to fill.
+  dmMessage String? @map("dm_message")
+
+  /// `[{ title, url }]`, the same shape as Automation.buttons.
+  buttons Json?
+
+  isActive Boolean @default(true) @map("is_active")
+
+  isDefault Boolean @default(false) @map("is_default")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// "List an organization's templates, oldest first" - the Templates page, the create popup's
+  /// dropdown, and picking the oldest template as the new default after a delete.
+  @@index([organizationId, createdAt])
+  @@map("automation_templates")
 }

@@ -2,21 +2,25 @@
 
 import { usePathname } from 'next/navigation';
 import { LoadingLink } from '@/views/shared/loader';
-import { DashboardIcon, ListIcon, PlusIcon, PulseIcon, SettingsIcon } from './icons';
+import { DashboardIcon, ListIcon, PlusIcon, SettingsIcon, TemplateIcon } from './icons';
 
-type TabKey = 'listing' | 'dashboard' | 'posts' | 'status' | 'settings';
+type TabKey = 'listing' | 'dashboard' | 'posts' | 'templates' | 'settings';
 
 function activeTab(pathname: string): TabKey | null {
   if (pathname === '/') return 'listing';
   if (pathname.startsWith('/dashboard')) return 'dashboard';
   if (pathname.startsWith('/instagram/posts')) return 'posts';
-  if (pathname.startsWith('/status')) return 'status';
-  if (pathname.startsWith('/settings')) return 'settings';
+  if (pathname.startsWith('/templates')) return 'templates';
+  // Status moved into Settings in Phase 19, so Settings stays lit while it is open.
+  if (pathname.startsWith('/settings') || pathname.startsWith('/status')) return 'settings';
   return null;
 }
 
 /** The frosted-glass bottom navigation from the approved mobile design: Listing, Dashboard, the
- * raised + (the posts grid, where a new automation starts), Status and Settings.
+ * raised + (the posts grid, where a new automation starts), Templates and Settings.
+ *
+ * Templates took the slot after + in Phase 19; Status, which used to sit there, is now a row in
+ * Settings (docs/ADR/0010-device-specific-views.md, amendment 2026-09-25).
  *
  * Docked flush to the bottom edge (the design review asked for no floating gap), with the home-
  * indicator inset added underneath on phones that have one. A client component only for
@@ -51,8 +55,8 @@ export function MobileTabBar({ postsHref }: { postsHref: string }) {
           <PlusIcon size={28} strokeWidth={2.4} />
         </LoadingLink>
       </div>
-      <Tab href="/status" label="Status" active={current === 'status'}>
-        <PulseIcon />
+      <Tab href="/templates" label="Templates" active={current === 'templates'}>
+        <TemplateIcon />
       </Tab>
       <Tab href="/settings" label="Settings" active={current === 'settings'}>
         <SettingsIcon />
