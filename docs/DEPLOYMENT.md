@@ -227,10 +227,17 @@ In the **`api`** Vercel project:
 1. Settings → Environment Variables: `DIRECT_URL` must exist for the **Production** environment.
    It is the Supabase session pooler / direct connection on port 5432. Migrations cannot use the
    transaction pooler in `DATABASE_URL`.
-2. Settings → Build and Deployment → Build Command: turn on the override and put
-   `pnpm --filter @automationdm/database run migrate:vercel && ` in front of the existing command.
-   Keep the existing command exactly as it was after the `&&`. If the field was empty (Vercel's
-   default), use `pnpm --filter @automationdm/database run migrate:vercel && pnpm run build`.
+2. Settings → Build and Deployment → Build Command: add
+   ` && pnpm --filter @automationdm/database run migrate:vercel` to the **end** of the existing
+   command. The production value is:
+
+   ```
+   cd ../.. && pnpm --filter @automationdm/database run generate && pnpm --filter "@automationdm/api..." run build && pnpm --filter @automationdm/database run migrate:vercel
+   ```
+
+   Last, not first: Vercel promotes a deployment only if the whole command succeeds, so this way
+   the database is touched only once the API has compiled. A failed or blocked migration still
+   fails the build, and the new code never goes live against the old schema.
 3. Redeploy production once and read the build log. It prints `[migrate] Database is up to
    date` or lists what it applied. A preview deployment prints `[migrate] Skipped`.
 

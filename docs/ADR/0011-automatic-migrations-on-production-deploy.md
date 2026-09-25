@@ -18,8 +18,10 @@ And a new table, the common case, needs no human judgement at all.
 ## Decision
 
 1. **The `apps/api` production build applies pending migrations.** The Vercel project's Build
-   Command runs `pnpm --filter @automationdm/database run migrate:vercel` before the rest of the
-   build (`packages/database/deploy/migrate-on-deploy.mjs`).
+   Command runs `pnpm --filter @automationdm/database run migrate:vercel` as its last step, after
+   the API has compiled (`packages/database/deploy/migrate-on-deploy.mjs`). Vercel promotes a
+   deployment only when the whole command succeeds, so the new code still never goes live against
+   a schema that failed to migrate.
 2. **Only production.** The script does nothing unless `VERCEL_ENV` is `production`. Vercel builds
    a preview deployment for every branch push, and a preview must never change the production
    database.
@@ -47,4 +49,4 @@ And a new table, the common case, needs no human judgement at all.
 - `prisma db push` against production is now actively harmful. It changes the schema without
   recording the change, so the next deploy tries to apply the recorded migration again and fails.
   Use migrations only.
-- Rollback: remove the `migrate:vercel` prefix from the Build Command. Nothing else depends on it.
+- Rollback: remove the `migrate:vercel` step from the Build Command. Nothing else depends on it.

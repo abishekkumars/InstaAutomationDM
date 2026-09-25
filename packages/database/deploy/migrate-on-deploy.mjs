@@ -1,8 +1,9 @@
 // Applies pending Prisma migrations as part of the apps/api PRODUCTION build on Vercel - see
 // docs/ADR/0011-automatic-migrations-on-production-deploy.md.
 //
-// Usage (prepended to the api project's existing Build Command in the Vercel dashboard):
-//   pnpm --filter @automationdm/database run migrate:vercel && <existing build command>
+// Usage (appended to the api project's existing Build Command in the Vercel dashboard, so the
+// database is only touched once the API has compiled):
+//   <existing build command> && pnpm --filter @automationdm/database run migrate:vercel
 //
 // What it does:
 //   - Anything other than a production build (preview deployments, which Vercel builds for every
