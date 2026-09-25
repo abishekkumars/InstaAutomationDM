@@ -7,6 +7,7 @@ import { getSession } from '@/lib/session';
 import { DesktopShell } from '@/views/desktop/shell';
 import { MobileShell } from '@/views/mobile/shell';
 import { BrandLogo } from '@/views/shared/brand-logo';
+import { MobileZoomLock } from '@/views/mobile/zoom-lock';
 import { SessionExpiryWatcher } from '@/views/shared/session-expiry-watcher';
 import { ThemeScript, ThemeToggle } from '@/views/shared/theme-toggle';
 import { ToastHost } from '@/views/shared/toast';
@@ -22,22 +23,34 @@ export const metadata: Metadata = {
   appleWebApp: { title: 'AutomationDM', capable: true, statusBarStyle: 'default' },
 };
 
-export const viewport: Viewport = {
-  width: 'device-width',
-  initialScale: 1,
-  // Tints the mobile browser's address bar to match the page canvas in each theme.
-  themeColor: [
-    { media: '(prefers-color-scheme: light)', color: '#f5f5fb' },
-    { media: '(prefers-color-scheme: dark)', color: '#0e1220' },
-  ],
-};
+/** Per device, so the mobile view can lock zoom while desktop keeps it (requested 2026-09-25).
+ * Reads the user agent, which the layout already does on every request (lib/device.ts), so this
+ * makes nothing dynamic that was not already. */
+export async function generateViewport(): Promise<Viewport> {
+  const { view } = await getViewInfo();
+  return {
+    width: 'device-width',
+    initialScale: 1,
+    // The mobile view is laid out for a phone screen at 1x and does not zoom. This stops pinch
+    // zoom on Android and the automatic zoom iOS applies when a small input is focused. iOS
+    // ignores `userScalable` for pinch, so MobileZoomLock and the `data-view` CSS rule in
+    // globals.css cover that.
+    ...(view === 'mobile' ? { maximumScale: 1, userScalable: false } : {}),
+    // Tints the mobile browser's address bar to match the page canvas in each theme.
+    themeColor: [
+      { media: '(prefers-color-scheme: light)', color: '#f5f5fb' },
+      { media: '(prefers-color-scheme: dark)', color: '#0e1220' },
+    ],
+  };
+}
 
 export default async function RootLayout({ children }: { children: ReactNode }) {
-  const session = await getSession();
+  // Read up front: both the signed-out and signed-in documents lock zoom in the mobile view.
+  const [session, { view, isPhone }] = await Promise.all([getSession(), getViewInfo()]);
 
   if (!session?.user) {
     return (
-      <html lang="en" suppressHydrationWarning>
+      <html lang="en" data-view={view} suppressHydrationWarning>
         <head>
           <ThemeScript />
         </head>
@@ -62,6 +75,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
           <Suspense fallback={null}>
             <ToastHost />
           </Suspense>
+          {view === 'mobile' && <MobileZoomLock />}
         </body>
       </html>
     );
@@ -80,10 +94,9 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
       return { organizations: [], active: null };
     },
   );
-  const { view, isPhone } = await getViewInfo();
 
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" data-view={view} suppressHydrationWarning>
       <head>
         <ThemeScript />
       </head>
@@ -129,6 +142,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
         <Suspense fallback={null}>
           <ToastHost />
         </Suspense>
+        {view === 'mobile' && <MobileZoomLock />}
       </body>
     </html>
   );

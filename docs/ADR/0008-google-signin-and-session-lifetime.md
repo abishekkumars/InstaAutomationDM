@@ -116,3 +116,27 @@ on the next poll teaches people to dismiss the notice that matters.
   out mid-task at an arbitrary moment with no relationship to whether they were using the app.
 - **Registering the Google provider unconditionally** and letting it fail loudly. It fails at
   import time, so "loudly" means the entire authentication layer, not just Google.
+
+## Amendment 2026-09-25: 5-day sessions on phones
+
+Requested by the user. The 30-minute idle timeout suited desktops, but on phones, which the 3-4
+users of this tool mostly work from, it meant signing in again almost every time the app was
+opened.
+
+- **Phones: 5 days without use.** Any use of the app renews it to a full 5 days again: a page
+  load, a server action, or `SessionExpiryWatcher`'s once-a-minute check while the app is open.
+- **Desktop and tablet: unchanged**, 30 minutes idle, even for the same user.
+- **How.** Auth.js allows one `session.maxAge`, so it is now 5 days, the longer limit. The per-device
+  limit is enforced by `renewSessionWindow` (`packages/shared/src/session-lifetime.ts`), called from
+  the `jwt` callback. Auth.js runs that callback on every session read, the proxy's included, and
+  ends the session when it returns null. The token carries `phone` (set at sign-in) and
+  `idleUntil` (moved forward on every read).
+- **"Phone" means the device**, from the sign-in request's user agent, the same check that picks the
+  mobile view (`lib/device.ts`). The "Use desktop site" preference changes the layout, not the
+  session. A desktop browser can never get the 5-day window.
+- **Existing sessions** carry no `phone` field and are treated as desktop sessions, so phone users
+  sign in once more after this ships.
+- **Trade-off accepted**: a lost or unlocked phone stays signed in for up to 5 days. Signing out
+  from Settings still ends the session at once.
+- `updateAge` is left as it was. It has no effect on JWT sessions, which Auth.js re-issues on every
+  session read anyway.

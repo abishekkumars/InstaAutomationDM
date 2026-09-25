@@ -53,8 +53,8 @@ of the rest.
 work and extended item 6. In summary:
 
 - **Item 1 (authentication)** now also offers Google sign-in beside email/password, requires a
-  password confirmation at sign-up, and ends a session after 30 minutes of inactivity — see
-  `docs/ADR/0008-google-signin-and-session-lifetime.md`.
+  password confirmation at sign-up, and ends a session after 30 minutes of inactivity on
+  desktop, or 5 days on a phone — see `docs/ADR/0008-google-signin-and-session-lifetime.md`.
 - **Item 2 (organization/multi-tenancy)** is no longer self-service. Registration lands
   directly on the dashboard, and an administrator admits the user by assigning them an
   organization. Multi-tenancy itself is unchanged. See

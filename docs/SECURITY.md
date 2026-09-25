@@ -99,10 +99,16 @@ before anything is written. See `docs/ARCHITECTURE.md`'s "Instagram connect flow
     resolve to a user that does not exist. Linking never overwrites an existing account's
     `passwordHash` or its `authProvider`, so an account created by email/password keeps
     working both ways.
-- **Session lifetime (Phase 15.6)**: a rolling **30-minute idle timeout**
-  (`session.maxAge`, with `updateAge` at 5 minutes). Because the strategy is JWT, `maxAge` is
-  the token's own lifetime and Auth.js re-issues the cookie as the session is used — so this
-  is "30 minutes of genuine inactivity", not "signed out 30 minutes after signing in".
+- **Session lifetime (Phase 15.6, per device since 2026-09-25)**: a rolling idle timeout of
+  **30 minutes on desktop and tablet, 5 days on a phone**. Because the strategy is JWT, Auth.js
+  re-issues the cookie as the session is used, so each limit means "that long without using the
+  app", not "that long after signing in". Auth.js has one `session.maxAge`, so it is set to the
+  longer limit, and the `jwt` callback enforces each device's own limit on every session read,
+  in the proxy too (`packages/shared/src/session-lifetime.ts`). Whether a session belongs to a
+  phone is decided once, at sign-in, from that request's user agent, and is stored only inside
+  the encrypted session cookie. The "Use desktop site" preference does not change it. A lost,
+  unlocked phone therefore stays signed in for up to 5 days; signing out from Settings ends the
+  session immediately. See ADR 0008's amendment.
   `SessionExpiryWatcher` (`apps/web/src/views/shared/session-expiry-watcher.tsx`) polls
   `/api/auth/session` and shows a blocking notice when it lapses, so an expired session is
   visible before the user loses work to a failed submission. It treats **only** a successful
