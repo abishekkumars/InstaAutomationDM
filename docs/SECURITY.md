@@ -48,6 +48,21 @@ authenticated, non-member user requesting another organization's member list get
 just that the status code is right. `apps/api/src/instagram/__tests__/instagram.e2e.test.ts`
 (Phase 8) extends the same pattern to the Instagram connect/callback/list endpoints.
 
+**The organization switcher is a preference, not a trust input** (2026-09-25). A user who
+belongs to several organizations picks which one `apps/web` shows through the sidebar
+dropdown (`views/shared/organization-switcher.tsx`). The choice lives in an `org` cookie
+(`httpOnly`, `sameSite=lax`, `secure` in production), written only by
+`switchOrganizationAction` (`apps/web/src/app/organization-actions.ts`), and only after the
+submitted id is found in the caller's own `GET /api/organizations` list. Every read of it
+(`getActiveOrganization()` in `apps/web/src/lib/organization.ts`, through
+`pickActiveOrganization` in `packages/shared`) checks it against that list again. A stale or
+forged id falls back to the caller's first membership, which is what happened for everyone
+before the switcher existed. None of this weakens the boundary above: `apps/api` still checks
+membership on every `/api/organizations/:id/...` route, whatever id `apps/web` sends. After a
+switch, the action redirects only to a fixed list of paths (`/`, `/dashboard`, `/settings`).
+Every other page belongs to a single organization's data, and the fixed list also rules out an
+open redirect.
+
 **A second, Phase-8-specific trust boundary**: the Instagram OAuth callback carries
 `profileId`/`accountId` as query params on a URL the *end user's own browser* follows — even
 though Zernio produced those values, they arrive to us via a channel we don't fully control.
@@ -88,7 +103,7 @@ before anything is written. See `docs/ARCHITECTURE.md`'s "Instagram connect flow
   (`session.maxAge`, with `updateAge` at 5 minutes). Because the strategy is JWT, `maxAge` is
   the token's own lifetime and Auth.js re-issues the cookie as the session is used — so this
   is "30 minutes of genuine inactivity", not "signed out 30 minutes after signing in".
-  `SessionExpiryWatcher` (`apps/web/src/app/session-expiry-watcher.tsx`) polls
+  `SessionExpiryWatcher` (`apps/web/src/views/shared/session-expiry-watcher.tsx`) polls
   `/api/auth/session` and shows a blocking notice when it lapses, so an expired session is
   visible before the user loses work to a failed submission. It treats **only** a successful
   response carrying no user as expiry — a 5xx or a dropped connection is ignored, since a

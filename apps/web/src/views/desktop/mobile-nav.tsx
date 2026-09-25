@@ -2,7 +2,8 @@
 
 import { useEffect, useState, type ReactNode } from 'react';
 import { usePathname } from 'next/navigation';
-import { MenuIcon } from './icons';
+import { BrandLogo } from '@/views/shared/brand-logo';
+import { MenuIcon } from '@/views/shared/icons';
 
 /** Mobile-only slide-in nav drawer.
  *
@@ -10,7 +11,7 @@ import { MenuIcon } from './icons';
  * content, which cost vertical space and pushed the user/sign-out controls off to the side. This
  * replaces that with a hamburger button and an off-canvas drawer holding the same sidebar
  * content. At `md` and up this component renders nothing at all - the desktop sidebar in
- * layout.tsx is unchanged and is the only nav on wide screens.
+ * shell.tsx is unchanged and is the only nav on wide screens.
  *
  * `children` is the sidebar markup, rendered by the server layout and passed in. That keeps the
  * client bundle to the open/close state alone: the nav links and the sign-out form (a server
@@ -53,12 +54,7 @@ export function MobileNav({ children }: { children: ReactNode }) {
         >
           <MenuIcon />
         </button>
-        <span className="flex h-[26px] w-[26px] items-center justify-center rounded-lg bg-gradient-to-br from-[#5b6dff] to-accent text-[13px] font-bold">
-          A
-        </span>
-        <span className="text-[15px] font-bold whitespace-nowrap">
-          Automation<span className="text-[#8f9bff]">DM</span>
-        </span>
+        <BrandLogo accentClassName="text-[#8f9bff]" />
       </div>
 
       {open && (

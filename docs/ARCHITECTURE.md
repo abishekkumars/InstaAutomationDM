@@ -95,6 +95,31 @@ Real versions installed (pnpm-resolved, not hand-picked):
   queue connection, no processors; kept in the repo only to avoid the churn of deleting a
   directory that costs nothing to leave alone.
 
+## Device-specific views (Phase 18, ADR 0010)
+
+`apps/web` renders one of two presentations per request: phones get a mobile view (a glass bottom
+tab bar for Listing, Dashboard, +, Status and Settings), and everything else gets the desktop
+sidebar layout. See `docs/ADR/0010-device-specific-views.md`.
+
+```
+src/app/**/page.tsx        routes: params, redirects, metadata, which view to render
+src/lib/device.ts          getView()/getViewInfo(): user agent, overridable by the `view` cookie
+src/views/desktop/**       the desktop UI, including the sidebar shell
+src/views/mobile/**        the mobile UI, including the tab-bar shell and collapsing page header
+src/views/shared/**        both trees: loader, toasts, theme, icons, org switcher, and the
+                           create/edit automation dialogs (`mobile:` variant styling)
+```
+
+- **One data layer.** `app/dashboard-data.ts`, `app/instagram/posts/posts-data.ts`,
+  `app/instagram/posts/[postId]/post-detail-data.ts`, `app/status/status-data.ts` and the
+  server actions are shared, so the two views cannot show different numbers.
+- **The shell is chosen in `app/layout.tsx`, the page in each route**, both from the same
+  `getViewInfo()`. `/dashboard` and `/settings` are mobile-only and redirect a desktop browser
+  to `/`.
+- **Overrides:** mobile Settings has "Use desktop site" (`app/view-actions.ts` sets the `view`
+  cookie), and the desktop top bar offers "Use mobile site" only to a phone.
+- **No schema, API or Zernio change** came with any of this.
+
 ## Database (Phase 4, extended Phase 7/8)
 
 `packages/database` owns the Prisma schema, migrations, generated client, and a singleton
@@ -219,7 +244,7 @@ organization membership became the access gate (requirement 16): a user waiting 
 could simply create an organization and admit themselves. See
 `docs/ADR/0007-global-user-roles-and-administration.md`.
 
-What a new sign-up sees instead: `apps/web/src/app/page.tsx` still checks the caller's live
+What a new sign-up sees instead: `apps/web/src/views/desktop/dashboard/dashboard-view.tsx` (routed from `src/app/page.tsx`) still checks the caller's live
 organization count (in the page, not `proxy.ts`, since it needs a real count rather than just
 "is there a session"), but now *renders* an "awaiting access" state rather than redirecting.
 There is nowhere useful to redirect to — every route behind sign-in needs an organization — so

@@ -2,10 +2,10 @@
 
 import { useState, type KeyboardEvent } from 'react';
 import { AUTOMATION_LIMITS } from '@automationdm/validation';
-import { FormPendingOverlay } from '../../../loader';
-import { Toggle } from '@/app/toggle';
-import { ReplySuggestions } from '@/app/reply-suggestions';
-import { createAutomationAction } from './actions';
+import { FormPendingOverlay } from '@/views/shared/loader';
+import { Toggle } from '@/views/shared/toggle';
+import { ReplySuggestions } from './reply-suggestions';
+import { createAutomationAction } from '@/app/instagram/posts/[postId]/actions';
 
 interface ButtonRow {
   key: number;
@@ -82,12 +82,16 @@ export function CreateAutomationModal({
   accountId,
   postId,
   postCaption,
+  trigger = 'desktop',
 }: {
   organizationId: string;
   accountId: string;
   postId: string;
   /** Seeds the name field - see defaultAutomationName. */
   postCaption: string;
+  /** How the opener renders. The mobile post detail (Phase 18.4) uses a full-width, thumb-sized
+   * button; the wizard itself is the same in both views, and is already full-screen on phones. */
+  trigger?: 'desktop' | 'mobile';
 }) {
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<1 | 2 | 3>(1);
@@ -185,9 +189,13 @@ export function CreateAutomationModal({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-ink hover:opacity-90"
+        className={
+          trigger === 'mobile'
+            ? 'h-[52px] w-full rounded-2xl bg-accent text-[15px] font-bold text-accent-ink'
+            : 'rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-ink hover:opacity-90'
+        }
       >
-        + New automation
+        {trigger === 'mobile' ? 'Create automation' : '+ New automation'}
       </button>
 
       {open && (
@@ -199,12 +207,19 @@ export function CreateAutomationModal({
         // inset-0 element is sized against the large viewport, so this scroll container extended
         // behind the URL bar and its last rows - including the Next/Confirm footer - could not be
         // reached. See layout.tsx for the full explanation.
-        <div className="fixed inset-0 z-50 flex h-dvh items-start justify-center overflow-y-auto bg-ink-950/60 p-0 sm:items-center sm:p-6">
+        //
+        // `text-left` because the dialog renders inside its opener, and the mobile post page opens it
+        // from a centered empty-state card. `data-variant` switches on the `mobile:` classes (the
+        // mobile bottom-sheet design) when opened from the mobile view - see globals.css.
+        <div
+          data-variant={trigger === 'mobile' ? 'mobile' : undefined}
+          className="fixed inset-0 z-50 flex h-dvh items-start justify-center overflow-y-auto bg-ink-950/60 p-0 text-left sm:items-center sm:p-6 mobile:items-end mobile:bg-ink-950/45"
+        >
           <div
             role="dialog"
             aria-modal="true"
             aria-label="Create automation"
-            className="flex h-full w-full flex-col overflow-hidden bg-surface shadow-lg sm:h-auto sm:max-h-[85dvh] sm:max-w-lg sm:rounded-xl sm:border sm:border-border"
+            className="flex h-full w-full flex-col overflow-hidden bg-surface shadow-lg sm:h-auto sm:max-h-[85dvh] sm:max-w-lg sm:rounded-xl sm:border sm:border-border mobile:h-[92dvh] mobile:rounded-t-[28px] mobile:border-t mobile:border-glass-border mobile:shadow-glass"
           >
             {/* Steps 1-2 are a plain <div>; only step 3 renders a real <form>. A <form
                 action={serverAction}> is submitted by React itself, and preventDefault() in an
@@ -240,9 +255,17 @@ export function CreateAutomationModal({
                   </div>
                 ))}
 
-              <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-                <span className="text-lg">💬</span>
-                <h2 className="flex-1 text-sm font-semibold text-text">
+              {/* Grab handle - drawn only in the mobile bottom-sheet design. */}
+
+              <span
+                aria-hidden="true"
+
+                className="mx-auto mt-2.5 hidden h-[5px] w-10 shrink-0 rounded-full bg-switch-off mobile:block"
+              />
+
+              <div className="flex items-center gap-2 border-b border-border px-4 py-3 mobile:px-5 mobile:pt-2 mobile:pb-4">
+                <span className="text-lg mobile:hidden">💬</span>
+                <h2 className="flex-1 text-sm font-semibold text-text mobile:text-[17px] mobile:font-extrabold">
                   {step === 1
                     ? 'When someone comments on your post or reel'
                     : step === 2
@@ -253,19 +276,19 @@ export function CreateAutomationModal({
                   type="button"
                   onClick={close}
                   aria-label="Close"
-                  className="text-text-faint hover:text-text"
+                  className="text-text-faint hover:text-text mobile:flex mobile:h-9 mobile:w-9 mobile:items-center mobile:justify-center mobile:rounded-full mobile:bg-seg mobile:text-text"
                 >
                   ✕
                 </button>
               </div>
 
-              <div className="flex-1 overflow-y-auto px-4 py-4">
+              <div className="flex-1 overflow-y-auto px-4 py-4 mobile:space-y-5 mobile:px-5 mobile:py-5">
                 {step === 1 && (
                   <div className="space-y-4">
                     <div>
                       <label
                         htmlFor="automation-name"
-                        className="block text-sm font-medium text-text"
+                        className="block text-sm font-medium text-text mobile:text-[13px] mobile:font-bold"
                       >
                         Name
                       </label>
@@ -281,7 +304,7 @@ export function CreateAutomationModal({
                         value={name}
                         maxLength={AUTOMATION_LIMITS.nameMax}
                         onChange={(e) => setName(e.target.value)}
-                        className="mt-1 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
+                        className="mt-1 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text mobile:rounded-2xl mobile:border-border mobile:px-3.5 mobile:py-3 mobile:text-[15px]"
                       />
                       {name.length > AUTOMATION_LIMITS.nameMax - 40 && (
                         <p className="mt-1 text-right text-xs text-text-faint">
@@ -296,7 +319,7 @@ export function CreateAutomationModal({
                       <div
                         role="tablist"
                         aria-label="What triggers this automation"
-                        className="flex rounded-md border border-border-strong p-0.5"
+                        className="flex rounded-md border border-border-strong p-0.5 mobile:flex mobile:rounded-[14px] mobile:border-0 mobile:bg-seg mobile:p-1"
                       >
                         {TRIGGER_TYPES.map((option) => (
                           <button
@@ -307,8 +330,8 @@ export function CreateAutomationModal({
                             onClick={() => setTriggerType(option.value)}
                             className={
                               triggerType === option.value
-                                ? 'flex-1 rounded-[5px] bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink'
-                                : 'flex-1 rounded-[5px] px-3 py-1.5 text-xs font-medium text-text-muted hover:text-text'
+                                ? 'flex-1 rounded-[5px] bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink mobile:flex-1 mobile:rounded-[11px] mobile:bg-seg-selected mobile:py-2.5 mobile:text-[13.5px] mobile:font-bold mobile:text-text mobile:shadow-sm'
+                                : 'flex-1 rounded-[5px] px-3 py-1.5 text-xs font-medium text-text-muted hover:text-text mobile:flex-1 mobile:py-2.5 mobile:text-[13.5px] mobile:font-bold'
                             }
                           >
                             {option.label}
@@ -327,8 +350,10 @@ export function CreateAutomationModal({
                     {triggerType === 'keywords' && (
                       <>
                         <div>
-                          <span className="block text-sm font-medium text-text">Match mode</span>
-                          <div className="mt-1 inline-flex rounded-md border border-border-strong p-0.5">
+                          <span className="block text-sm font-medium text-text mobile:text-[13px] mobile:font-bold">
+                            Match mode
+                          </span>
+                          <div className="mt-1 inline-flex rounded-md border border-border-strong p-0.5 mobile:flex mobile:rounded-[14px] mobile:border-0 mobile:bg-seg mobile:p-1">
                             {MATCH_MODES.map((mode) => (
                               <button
                                 key={mode.value}
@@ -336,8 +361,8 @@ export function CreateAutomationModal({
                                 onClick={() => setMatchMode(mode.value)}
                                 className={
                                   matchMode === mode.value
-                                    ? 'rounded-[5px] bg-accent px-3 py-1 text-xs font-semibold text-accent-ink'
-                                    : 'rounded-[5px] px-3 py-1 text-xs font-medium text-text-muted hover:text-text'
+                                    ? 'rounded-[5px] bg-accent px-3 py-1 text-xs font-semibold text-accent-ink mobile:flex-1 mobile:rounded-[11px] mobile:bg-seg-selected mobile:py-2.5 mobile:text-[13.5px] mobile:font-bold mobile:text-text mobile:shadow-sm'
+                                    : 'rounded-[5px] px-3 py-1 text-xs font-medium text-text-muted hover:text-text mobile:flex-1 mobile:py-2.5 mobile:text-[13.5px] mobile:font-bold'
                                 }
                               >
                                 {mode.label}
@@ -347,7 +372,7 @@ export function CreateAutomationModal({
                         </div>
 
                         <div>
-                          <span className="block text-sm font-medium text-text">
+                          <span className="block text-sm font-medium text-text mobile:text-[13px] mobile:font-bold">
                             Should include any of these keywords
                           </span>
                           <div className="mt-1 flex gap-2">
@@ -357,12 +382,12 @@ export function CreateAutomationModal({
                               onChange={(e) => setKeywordDraft(e.target.value)}
                               onKeyDown={onKeywordKeyDown}
                               placeholder="Type a keyword and press Enter"
-                              className="flex-1 rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
+                              className="flex-1 rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text mobile:rounded-2xl mobile:border-border mobile:px-3.5 mobile:py-3 mobile:text-[15px]"
                             />
                             <button
                               type="button"
                               onClick={addKeyword}
-                              className="rounded-md border border-border-strong px-3 py-1.5 text-sm font-medium text-text-muted hover:bg-surface-2"
+                              className="rounded-md border border-border-strong px-3 py-1.5 text-sm font-medium text-text-muted hover:bg-surface-2 mobile:h-[52px] mobile:rounded-2xl mobile:border-border mobile:px-5 mobile:text-[15px] mobile:font-bold mobile:text-text"
                             >
                               + Add
                             </button>
@@ -372,7 +397,7 @@ export function CreateAutomationModal({
                               {keywords.map((keyword) => (
                                 <span
                                   key={keyword}
-                                  className="inline-flex items-center gap-1.5 rounded-full bg-muted-bg px-2.5 py-1 text-xs font-medium text-text"
+                                  className="inline-flex items-center gap-1.5 rounded-full bg-muted-bg px-2.5 py-1 text-xs font-medium text-text mobile:bg-accent-soft mobile:px-3 mobile:py-1.5 mobile:text-[13px] mobile:font-bold mobile:text-accent"
                                 >
                                   {keyword}
                                   <button
@@ -401,8 +426,10 @@ export function CreateAutomationModal({
                         have messaged the account before, so this is a best-effort filter - see
                         docs/ZERNIO-INTEGRATION.md. */}
                     <div>
-                      <span className="block text-sm font-medium text-text">Send to</span>
-                      <div className="mt-1 inline-flex rounded-md border border-border-strong p-0.5">
+                      <span className="block text-sm font-medium text-text mobile:text-[13px] mobile:font-bold">
+                        Send to
+                      </span>
+                      <div className="mt-1 inline-flex rounded-md border border-border-strong p-0.5 mobile:flex mobile:rounded-[14px] mobile:border-0 mobile:bg-seg mobile:p-1">
                         {AUDIENCES.map((option) => (
                           <button
                             key={option.value}
@@ -410,8 +437,8 @@ export function CreateAutomationModal({
                             onClick={() => setAudience(option.value)}
                             className={
                               audience === option.value
-                                ? 'rounded-[5px] bg-accent px-3 py-1 text-xs font-semibold text-accent-ink'
-                                : 'rounded-[5px] px-3 py-1 text-xs font-medium text-text-muted hover:text-text'
+                                ? 'rounded-[5px] bg-accent px-3 py-1 text-xs font-semibold text-accent-ink mobile:flex-1 mobile:rounded-[11px] mobile:bg-seg-selected mobile:py-2.5 mobile:text-[13.5px] mobile:font-bold mobile:text-text mobile:shadow-sm'
+                                : 'rounded-[5px] px-3 py-1 text-xs font-medium text-text-muted hover:text-text mobile:flex-1 mobile:py-2.5 mobile:text-[13.5px] mobile:font-bold'
                             }
                           >
                             {option.label}
@@ -427,7 +454,7 @@ export function CreateAutomationModal({
 
                     <div>
                       <div className="flex items-center justify-between">
-                        <span className="text-sm font-medium text-text">
+                        <span className="text-sm font-medium text-text mobile:text-[13px] mobile:font-bold">
                           Public reply on the comment (optional)
                         </span>
                         <Toggle
@@ -444,7 +471,7 @@ export function CreateAutomationModal({
                             maxLength={AUTOMATION_LIMITS.commentReplyMax}
                             onChange={(e) => setCommentReply(e.target.value)}
                             placeholder="Thanks! Sent you a DM 🙌"
-                            className="mt-2 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
+                            className="mt-2 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text mobile:rounded-2xl mobile:border-border mobile:px-3.5 mobile:py-3 mobile:text-[15px]"
                           />
                           <ReplySuggestions value={commentReply} onAppend={setCommentReply} />
 
@@ -465,7 +492,7 @@ export function CreateAutomationModal({
                                       )
                                     }
                                     placeholder={`Alternative reply ${index + 1}`}
-                                    className="flex-1 rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
+                                    className="flex-1 rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text mobile:rounded-2xl mobile:border-border mobile:px-3.5 mobile:py-3 mobile:text-[15px]"
                                   />
                                   <button
                                     type="button"
@@ -475,7 +502,7 @@ export function CreateAutomationModal({
                                       )
                                     }
                                     aria-label={`Remove alternative reply ${index + 1}`}
-                                    className="px-1 text-text-faint hover:text-text"
+                                    className="px-1 text-text-faint hover:text-text mobile:px-2 mobile:text-base"
                                   >
                                     ✕
                                   </button>
@@ -492,7 +519,7 @@ export function CreateAutomationModal({
                               // [commentReply, ...variations], so alternates with nothing to
                               // rotate against are rejected by the API.
                               disabled={commentReply.trim().length === 0}
-                              className="mt-2 w-full rounded-md border border-dashed border-border-strong px-3 py-2 text-xs font-medium text-text-muted hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40"
+                              className="mt-2 w-full rounded-md border border-dashed border-border-strong px-3 py-2 text-xs font-medium text-text-muted hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40 mobile:h-11 mobile:rounded-2xl mobile:text-[13px] mobile:font-bold"
                             >
                               + Add another reply ({MAX_REPLY_VARIATIONS - replyVariations.length}{' '}
                               left)
@@ -519,7 +546,9 @@ export function CreateAutomationModal({
 
                     <div className="border-t border-border pt-4">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-sm font-medium text-text">Enabled</span>
+                        <span className="text-sm font-medium text-text mobile:text-[13px] mobile:font-bold">
+                          Enabled
+                        </span>
                         <Toggle
                           checked={isActive}
                           onChange={() => setIsActive(!isActive)}
@@ -537,7 +566,10 @@ export function CreateAutomationModal({
 
                 {step === 2 && (
                   <div>
-                    <label htmlFor="dmMessage" className="block text-sm font-medium text-text">
+                    <label
+                      htmlFor="dmMessage"
+                      className="block text-sm font-medium text-text mobile:text-[13px] mobile:font-bold"
+                    >
                       DM message
                     </label>
                     {/* Capped at the *plain* limit, not `limit`: lowering maxLength to 640 while
@@ -550,7 +582,7 @@ export function CreateAutomationModal({
                       value={dmMessage}
                       maxLength={AUTOMATION_LIMITS.dmMessageMax}
                       onChange={(e) => setDmMessage(e.target.value)}
-                      className="mt-1 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text"
+                      className="mt-1 block w-full rounded-md border border-border-strong bg-surface px-3 py-1.5 text-sm text-text mobile:rounded-2xl mobile:border-border mobile:px-3.5 mobile:py-3 mobile:text-[15px]"
                     />
                     <p
                       className={`mt-1 text-right text-xs ${overLimit ? 'text-danger' : 'text-text-faint'}`}
@@ -560,7 +592,9 @@ export function CreateAutomationModal({
                     </p>
 
                     <div className="mt-3 flex items-baseline justify-between">
-                      <span className="text-sm font-medium text-text">Buttons (optional)</span>
+                      <span className="text-sm font-medium text-text mobile:text-[13px] mobile:font-bold">
+                        Buttons (optional)
+                      </span>
                       <span className="text-xs text-text-faint">
                         {buttons.length} / {MAX_BUTTONS} used
                       </span>
@@ -575,20 +609,20 @@ export function CreateAutomationModal({
                               onChange={(e) => updateButton(row.key, 'title', e.target.value)}
                               maxLength={AUTOMATION_LIMITS.buttonTitleMax}
                               placeholder="Label (max 20 chars)"
-                              className="w-32 rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-text"
+                              className="w-32 rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-text mobile:rounded-2xl mobile:border-border mobile:px-3.5 mobile:py-3 mobile:text-[15px]"
                             />
                             <input
                               type="text"
                               value={row.url}
                               onChange={(e) => updateButton(row.key, 'url', e.target.value)}
                               placeholder="https://..."
-                              className="flex-1 rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-text"
+                              className="flex-1 rounded-md border border-border-strong bg-surface px-2 py-1.5 text-sm text-text mobile:rounded-2xl mobile:border-border mobile:px-3.5 mobile:py-3 mobile:text-[15px]"
                             />
                             <button
                               type="button"
                               onClick={() => removeButton(row.key)}
                               aria-label="Remove button"
-                              className="px-1 text-text-faint hover:text-text"
+                              className="px-1 text-text-faint hover:text-text mobile:px-2 mobile:text-base"
                             >
                               ✕
                             </button>
@@ -600,7 +634,7 @@ export function CreateAutomationModal({
                       <button
                         type="button"
                         onClick={addButton}
-                        className="mt-2 w-full rounded-md border border-dashed border-border-strong px-3 py-2 text-xs font-medium text-text-muted hover:bg-surface-2"
+                        className="mt-2 w-full rounded-md border border-dashed border-border-strong px-3 py-2 text-xs font-medium text-text-muted hover:bg-surface-2 mobile:h-11 mobile:rounded-2xl mobile:text-[13px] mobile:font-bold"
                       >
                         + Add button ({MAX_BUTTONS - buttons.length} left)
                       </button>
@@ -611,14 +645,14 @@ export function CreateAutomationModal({
                     </p>
 
                     {(dmMessage || buttons.length > 0) && (
-                      <div className="mt-4 overflow-hidden rounded-lg border border-border bg-muted-bg p-3">
+                      <div className="mt-4 overflow-hidden rounded-lg border border-border bg-muted-bg p-3 mobile:rounded-[18px] mobile:border-0 mobile:bg-seg mobile:p-3.5">
                         <p className="mb-2 text-xs text-text-faint">Preview</p>
                         {/* whitespace-pre-wrap keeps the user's own line breaks; break-words
                             splits a long unbroken run (a pasted URL, a word with no spaces)
                             that would otherwise render as one line wider than the bubble and
                             overflow the modal. min-w-0 lets the bubble actually shrink inside
                             its flex/grid parent instead of being sized by its content. */}
-                        <div className="min-w-0 whitespace-pre-wrap break-words rounded-2xl bg-surface px-3 py-2 text-sm text-text shadow-sm">
+                        <div className="min-w-0 whitespace-pre-wrap break-words rounded-2xl bg-surface px-3 py-2 text-sm text-text shadow-sm mobile:rounded-[18px] mobile:rounded-bl-md mobile:px-3.5 mobile:py-3">
                           {dmMessage || '(your DM message)'}
                         </div>
                         {buttons.some((b) => b.title) && (
@@ -659,7 +693,7 @@ export function CreateAutomationModal({
                             {keywords.map((keyword) => (
                               <span
                                 key={keyword}
-                                className="rounded-full bg-muted-bg px-2.5 py-0.5 text-xs font-medium text-text"
+                                className="rounded-full bg-muted-bg px-2.5 py-0.5 text-xs font-medium text-text mobile:bg-accent-soft mobile:px-3 mobile:py-1.5 mobile:text-[13px] mobile:font-bold mobile:text-accent"
                               >
                                 {keyword}
                               </span>
@@ -683,13 +717,13 @@ export function CreateAutomationModal({
                             : 'reply publicly with'
                         }
                       >
-                        <p className="whitespace-pre-wrap break-words rounded-lg bg-muted-bg px-3 py-2 text-text">
+                        <p className="whitespace-pre-wrap break-words rounded-lg bg-muted-bg px-3 py-2 text-text mobile:rounded-2xl mobile:bg-seg mobile:px-3.5 mobile:py-3">
                           &quot;{commentReply}&quot;
                         </p>
                         {submittedVariations.map((reply, index) => (
                           <p
                             key={index}
-                            className="mt-1 whitespace-pre-wrap break-words rounded-lg bg-muted-bg px-3 py-2 text-text"
+                            className="mt-1 whitespace-pre-wrap break-words rounded-lg bg-muted-bg px-3 py-2 text-text mobile:rounded-2xl mobile:bg-seg mobile:px-3.5 mobile:py-3"
                           >
                             &quot;{reply}&quot;
                           </p>
@@ -697,7 +731,7 @@ export function CreateAutomationModal({
                       </ReviewRow>
                     )}
                     <ReviewRow label="and send this DM">
-                      <p className="whitespace-pre-wrap break-words rounded-lg bg-muted-bg px-3 py-2 text-text">
+                      <p className="whitespace-pre-wrap break-words rounded-lg bg-muted-bg px-3 py-2 text-text mobile:rounded-2xl mobile:bg-seg mobile:px-3.5 mobile:py-3">
                         {dmMessage}
                       </p>
                       {buttons.some((b) => b.title) && (
@@ -738,16 +772,16 @@ export function CreateAutomationModal({
                 )}
               </div>
 
-              <div className="flex items-center justify-between border-t border-border px-4 py-3">
+              <div className="flex items-center justify-between border-t border-border px-4 py-3 mobile:flex-col mobile:items-stretch mobile:gap-2.5 mobile:px-5 mobile:pt-3 mobile:pb-[calc(1rem+env(safe-area-inset-bottom))]">
                 <span className="text-xs text-text-faint">Step {step} of 3</span>
-                <div className="flex gap-2">
+                <div className="flex gap-2 mobile:w-full">
                   {step === 1 ? (
                     // The backdrop no longer closes the dialog, so step 1 needs an explicit
                     // way out that is not just the small corner ✕.
                     <button
                       type="button"
                       onClick={close}
-                      className="rounded-md border border-border-strong px-3 py-1.5 text-sm font-medium text-text-muted hover:bg-surface-2"
+                      className="rounded-md border border-border-strong px-3 py-1.5 text-sm font-medium text-text-muted hover:bg-surface-2 mobile:h-[52px] mobile:rounded-2xl mobile:border-border mobile:px-5 mobile:text-[15px] mobile:font-bold mobile:text-text"
                     >
                       Cancel
                     </button>
@@ -755,7 +789,7 @@ export function CreateAutomationModal({
                     <button
                       type="button"
                       onClick={() => setStep((step - 1) as 1 | 2 | 3)}
-                      className="rounded-md border border-border-strong px-3 py-1.5 text-sm font-medium text-text-muted hover:bg-surface-2"
+                      className="rounded-md border border-border-strong px-3 py-1.5 text-sm font-medium text-text-muted hover:bg-surface-2 mobile:h-[52px] mobile:rounded-2xl mobile:border-border mobile:px-5 mobile:text-[15px] mobile:font-bold mobile:text-text"
                     >
                       Back
                     </button>
@@ -765,7 +799,7 @@ export function CreateAutomationModal({
                       type="button"
                       onClick={() => setStep((step + 1) as 1 | 2 | 3)}
                       disabled={step === 1 ? !step1Valid : !step2Valid}
-                      className="rounded-md bg-ink-950 px-4 py-1.5 text-sm font-medium text-white disabled:opacity-40"
+                      className="rounded-md bg-ink-950 px-4 py-1.5 text-sm font-medium text-white disabled:opacity-40 mobile:h-[52px] mobile:flex-1 mobile:rounded-2xl mobile:bg-accent mobile:px-6 mobile:text-[15px] mobile:font-bold mobile:text-accent-ink"
                     >
                       Next
                     </button>
@@ -775,7 +809,7 @@ export function CreateAutomationModal({
                     <button
                       type="submit"
                       data-confirm="true"
-                      className="rounded-md bg-ink-950 px-4 py-1.5 text-sm font-medium text-white"
+                      className="rounded-md bg-ink-950 px-4 py-1.5 text-sm font-medium text-white mobile:h-[52px] mobile:flex-1 mobile:rounded-2xl mobile:bg-accent mobile:px-6 mobile:text-[15px] mobile:font-bold mobile:text-accent-ink"
                     >
                       Confirm &amp; create
                     </button>

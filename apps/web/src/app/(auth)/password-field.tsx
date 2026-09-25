@@ -71,7 +71,7 @@ export function PasswordField({
   );
 }
 
-// Local to this file rather than app/icons.tsx: that module is imported by the signed-in shell,
+// Local to this file rather than views/shared/icons.tsx: that module is imported by the signed-in shell,
 // and these two glyphs are only ever used on the two auth pages.
 function EyeIcon() {
   return (

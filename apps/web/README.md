@@ -11,36 +11,52 @@ not before.
 
 ## Structure
 
-- `src/app/layout.tsx` — root layout: fixed sidebar + fixed top bar, with scrolling delegated
-  to the content pane only (`h-screen overflow-hidden` on the shell; the `min-h-0` on the
-  flex child is load-bearing — a flex item defaults to `min-height:auto` and refuses to
-  shrink below its content, which puts the scrollbar back on the page). Shows the signed-in
-  user, a sign-out button, and the theme switch.
-- `src/app/automations-browser.tsx` (Phase 10.3) — the dashboard's automations table as a
-  client component: search (name/keywords/account/caption), sort (most sent, most clicks,
+Since Phase 18.1 (`docs/ADR/0010-device-specific-views.md`) routes and presentation are split:
+
+- `src/app/**` — routes only: params/searchParams, auth-dependent redirects, metadata, server
+  actions, the shared data layer (`dashboard-data.ts`, `admin/admin-data.ts`), and which view to
+  render. `src/lib/device.ts` decides desktop vs mobile (user agent, overridable by the `view`
+  cookie). Until Phase 18.2 every request still gets the desktop view.
+- `src/views/desktop/**` — the desktop UI (shell, dashboard, posts, post detail, status, admin
+  browser, modals). Views may be async server components that stream their own Suspense
+  sections from the shared data layer.
+- `src/views/mobile/**` — the mobile UI (Phase 18.2 onward): `shell.tsx` (scroll area + glass
+  bottom tab bar, Plus Jakarta Sans via `next/font`), `page-header.tsx` (large title that collapses
+  into a pinned glass header on scroll), and `listing/` (the Listing tab at `/`) and `dashboard/` (the Dashboard tab at `/dashboard`, mobile only; desktop redirects to `/`), plus `posts/`, `post-detail/`, `status/` and `settings/` (`/settings`, mobile only).
+- `src/views/shared/**` — pieces both trees use: loader, toast, toggle, icons, theme switch,
+  session-expiry watcher, freshness label, platform badges, `useUrlState`.
+
+Notable files:
+
+- `src/app/layout.tsx` — root layout: `<html>`/`<body>`, the signed-out shell, and the signed-in
+  body (`h-dvh overflow-hidden`), which renders `src/views/desktop/shell.tsx`'s `DesktopShell` —
+  fixed sidebar + fixed top bar, with scrolling delegated to the content pane only (the
+  `min-h-0` on the flex child is load-bearing — a flex item defaults to `min-height:auto` and
+  refuses to shrink below its content, which puts the scrollbar back on the page). Shows the
+  signed-in user, a sign-out button, and the theme switch.
+- `src/views/desktop/automations-browser.tsx` (Phase 10.3) — the dashboard's automations table
+  as a client component: search (name/keywords/account/caption), sort (most sent, most clicks,
   name, enabled-first), post thumbnails, and live sent/click counts. Renders an em dash, never
   a `0`, when `stats` is null — a failed Zernio stats fetch must not read as "sent nothing".
-  The `AutomationListItem` shape lives here rather than in `page.tsx` so the server page and
-  the component that renders it cannot drift apart.
-- `src/app/theme-toggle.tsx` (Phase 10.2b) — Light/Auto/Dark switch. "Auto" removes the
+  The `AutomationListItem` shape lives in `src/app/dashboard-data.ts`, next to the fetcher that
+  returns it, so both view trees and the data layer share one definition.
+- `src/views/shared/theme-toggle.tsx` (Phase 10.2b) — Light/Auto/Dark switch. "Auto" removes the
   `data-theme` attribute rather than resolving it, so the page keeps following the OS. The
   stored choice is applied by `ThemeScript`, inlined into `<head>` so it runs *before first
   paint* — a React effect runs after paint and would flash the wrong theme. See the three
   theme states documented in `src/app/globals.css`.
-- `src/app/loader.tsx` (Phase 10.2b) — the loading overlay (blurred backdrop + spinner).
+- `src/views/shared/loader.tsx` (Phase 10.2b) — the loading overlay (blurred backdrop + spinner).
   `callApi` is server-side only, so there is no client fetch to attach a spinner to: every
   API call is either a server render (a navigation) or a server action (a form submit), and
   these components track exactly those two via `useLinkStatus`/`useFormStatus`. Use
   `LoadingLink` instead of `next/link` for any link that changes page. The spinner's CSS
   lives in `globals.css` as `.loader` — note its animation is deliberately **not** named
   `spin`, which would collide with Tailwind's own `@keyframes spin` and silently replace it.
-- `src/app/page.tsx` (Phase 6) — dashboard: calls `apps/api` for the caller's organizations;
-  redirects to `/onboarding` if there are none, otherwise shows the first org's name/slug/
-  role and member list, degrading gracefully (a message, not a crash) if `apps/api` is
-  unreachable — same philosophy as `/status`.
-- `src/app/onboarding/` (Phase 6) — create-organization form (calls
-  `POST /api/organizations` via `src/lib/api.ts`), shown to any signed-in user with zero
-  organizations.
+- `src/app/page.tsx` → `src/views/desktop/dashboard/dashboard-view.tsx` — dashboard: calls
+  `apps/api` for the caller's organizations; shows the "waiting for access" state if there are
+  none (Phase 15.3 removed `/onboarding`), otherwise the stats, accounts, automations and team
+  sections, degrading gracefully (a message, not a crash) if `apps/api` is unreachable — same
+  philosophy as `/status`.
 - `src/app/instagram/` (Phase 8) — `actions.ts`'s `connectInstagramAction` (calls
   `POST .../instagram/connect`, redirects the browser to the returned `authUrl` - a real
   redirect to an external origin) and `callback/page.tsx` (where Zernio redirects the
@@ -52,20 +68,22 @@ not before.
   account's **whole** synced window in one call (limit 500, Zernio's own max) rather than one
   server page at a time, because Zernio's list endpoint has no search or sort parameters, so
   both happen client-side — and they must cover every post, not just the visible page, or
-  "search" would silently only search one page. `posts/posts-browser.tsx` owns that UI:
+  "search" would silently only search one page. `src/views/desktop/posts/posts-browser.tsx` owns that UI:
   card/list toggle, caption search, newest/oldest sort, page size, numbered jump pagination,
   and a windowed virtual scroller. The scroller's fixed row heights (88px list / 248px grid)
   must stay in step with the card contents, or content drifts against the scrollbar.
   `posts/[postId]/page.tsx` (Phase 9: caption, media, permalink; Phase 10: a comment-
   automation section — shows the existing automation if one exists, otherwise a create
-  button) + `[postId]/create-automation-modal.tsx` (Phase 10.1) — a 3-step modal wizard.
+  button) + `src/views/shared/automation/create-automation-modal.tsx` (Phase 10.1; shared with the mobile view since Phase 18.4) — a 3-step modal wizard.
   Because each step is conditionally rendered, React unmounts the off-screen steps, and an
   unmounted input is absent from `FormData`; **every submitted value therefore lives in an
   always-mounted hidden field**, and the visible inputs carry no `name` (Phase 10.2b — this
   was a real bug that made every submit fail validation). `[postId]/actions.ts` (Phase 10)
-  `createAutomationAction` posts to `.../automations`. Both pages read the caller's primary
-  organization the same way `page.tsx`'s dashboard does (no multi-org switcher exists yet).
-- `src/app/status/page.tsx` — server-rendered page that fetches `apps/api`'s
+  `createAutomationAction` posts to `.../automations`. Both pages read the caller's _active_
+  organization via `getActiveOrganizationId()` (`src/lib/organization.ts`). That is the one
+  picked in the sidebar organization switcher (an `org` cookie, re-validated against the caller's
+  memberships on every read), or else their first membership.
+- `src/app/status/page.tsx` (view: `src/views/desktop/status/status-view.tsx`) — server-rendered page that fetches `apps/api`'s
   `GET /api/health` and shows whether the API is reachable; demonstrates the
   `NEXT_PUBLIC_API_URL` env wiring end to end. Public — not auth-protected.
 - `src/lib/env.ts` — small env accessor (`getApiUrl()`).
@@ -78,7 +96,7 @@ not before.
 - `src/proxy.ts` — Next.js 16's route-protection convention (formerly `middleware.ts`);
   redirects unauthenticated requests to `/sign-in` for every route except `/sign-in`,
   `/sign-up`, `/status`, and Auth.js's own `/api/auth/*`. (The "does this user have an
-  organization yet" check is a separate, live check in `src/app/page.tsx` — not something a
+  organization yet" check is a separate, live check in the dashboard view — not something a
   middleware pass can answer without calling the API on every request.)
 - `src/app/(auth)/actions.ts` — server actions: `signInAction`, `registerAction`,
   `signOutAction`.

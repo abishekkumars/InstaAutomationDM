@@ -2,7 +2,7 @@
 
 import { useActionState } from 'react';
 import { MIN_PASSWORD_LENGTH } from '@automationdm/validation';
-import { LoadingOverlay } from '../loader';
+import { LoadingOverlay } from '@/views/shared/loader';
 import { PasswordField } from './password-field';
 import { registerAction, type AuthActionResult } from './actions';
 
